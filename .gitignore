@@ -1,0 +1,21 @@
+# Rust
+/target/
+/debug/
+/release/
+*.rs.bk
+*.rlib
+*.prof*
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Logs & env
+*.log
+.env*
+
+# macOS
+.DS_Store
+
+# Coverage / tooling
+coverage/
