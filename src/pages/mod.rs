@@ -29,15 +29,14 @@ impl PageKind {
         }
     }
 
-    pub fn icon_name(&self) -> gpui_component::IconName {
-        use gpui_component::IconName;
+    pub fn icon_path(&self) -> &'static str {
         match self {
-            PageKind::Explorer => IconName::Folder,
-            PageKind::Search => IconName::Search,
-            PageKind::Git => IconName::File,
-            PageKind::S3 => IconName::Folder,
-            PageKind::Extensions => IconName::LayoutDashboard,
-            PageKind::Settings => IconName::Settings,
+            PageKind::Explorer => "icons/folder.svg",
+            PageKind::Search => "icons/search.svg",
+            PageKind::Git => "icons/github.svg",
+            PageKind::S3 => "icons/database.svg",
+            PageKind::Extensions => "icons/layout-dashboard.svg",
+            PageKind::Settings => "icons/settings.svg",
         }
     }
 

@@ -221,7 +221,8 @@ impl RootView {
                 view.set_page(page, cx);
             }))
             .child(
-                Icon::new(page.icon_name())
+                Icon::new(Icon::empty())
+                    .path(page.icon_path())
                     .size_5()
                     .text_color(rgb(if active {
                         theme::TOOLBAR_ACTIVE_TEXT
