@@ -38,3 +38,11 @@ notify = "6"
 trash = "5"
 time = { version = "0.3", features = ["formatting", "macros"] }
 walkdir = "2"
+tantivy = { version = "0.21", default-features = false, features = ["mmap"] }
+
+zstd = { version = "=0.12.3", default-features = false, features = ["experimental"] }
+zstd-safe = { version = "=6.0.3", default-features = false, features = ["std", "experimental"] }
+zstd-sys = { version = "=2.0.7", default-features = false, features = ["experimental"] }
+
+[dev-dependencies]
+tempfile = "3"
