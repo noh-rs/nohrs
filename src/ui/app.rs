@@ -25,9 +25,9 @@ use gpui_component::Icon;
 use gpui_component::Root;
 use tracing::info;
 
-pub struct NohrApp;
+pub struct NohrsApp;
 
-impl NohrApp {
+impl NohrsApp {
     pub fn run() {
         init_logging();
 

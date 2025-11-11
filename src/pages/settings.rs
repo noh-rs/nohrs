@@ -23,14 +23,14 @@ impl Render for SettingsPage {
                     .text_2xl()
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(rgb(theme::FG))
-                    .child("⚙️ 設定"),
+                    .child("⚙️ Settings"),
             )
             .child(
                 div()
                     .mt(px(16.0))
                     .text_base()
                     .text_color(rgb(theme::FG_SECONDARY))
-                    .child("アプリケーション設定を実装予定"),
+                    .child("Application settings to be implemented"),
             )
     }
 }

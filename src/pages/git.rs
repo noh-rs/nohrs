@@ -30,7 +30,7 @@ impl Render for GitPage {
                     .mt(px(16.0))
                     .text_base()
                     .text_color(rgb(theme::FG_SECONDARY))
-                    .child("Git連携機能を実装予定"),
+                    .child("Git integration feature to be implemented"),
             )
     }
 }

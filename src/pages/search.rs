@@ -23,14 +23,14 @@ impl Render for SearchPage {
                     .text_2xl()
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(rgb(theme::FG))
-                    .child("🔍 検索"),
+                    .child("🔍 Search"),
             )
             .child(
                 div()
                     .mt(px(16.0))
                     .text_base()
                     .text_color(rgb(theme::FG_SECONDARY))
-                    .child("全文検索機能を実装予定"),
+                    .child("Full-text search feature to be implemented"),
             )
     }
 }

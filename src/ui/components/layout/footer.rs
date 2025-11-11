@@ -27,7 +27,7 @@ impl Default for FooterProps {
     }
 }
 
-/// VSCode風のフッター（ステータスバー）
+/// A VSCode-like footer (status bar)
 pub fn footer<V: gpui::Render>(props: FooterProps, cx: &mut Context<V>) -> impl IntoElement {
     div()
         .h(px(28.0))
@@ -59,7 +59,7 @@ pub fn footer<V: gpui::Render>(props: FooterProps, cx: &mut Context<V>) -> impl 
                     this.child(footer_button(
                         ("footer-selected", 1_usize),
                         IconName::File,
-                        &format!("{} 選択", props.selected_count),
+                        &format!("{} selected", props.selected_count),
                         cx,
                     ))
                 })
@@ -67,7 +67,7 @@ pub fn footer<V: gpui::Render>(props: FooterProps, cx: &mut Context<V>) -> impl 
                 .child(footer_button(
                     ("footer-total", 2_usize),
                     IconName::Folder,
-                    &format!("{} 項目", props.total_count),
+                    &format!("{} items", props.total_count),
                     cx,
                 ))
                 // Total size

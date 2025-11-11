@@ -30,7 +30,7 @@ impl Render for S3Page {
                     .mt(px(16.0))
                     .text_base()
                     .text_color(rgb(theme::FG_SECONDARY))
-                    .child("S3互換ストレージ連携を実装予定"),
+                    .child("S3 compatible storage integration to be implemented"),
             )
     }
 }

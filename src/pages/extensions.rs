@@ -23,14 +23,14 @@ impl Render for ExtensionsPage {
                     .text_2xl()
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(rgb(theme::FG))
-                    .child("🧩 拡張機能"),
+                    .child("🧩 Extensions"),
             )
             .child(
                 div()
                     .mt(px(16.0))
                     .text_base()
                     .text_color(rgb(theme::FG_SECONDARY))
-                    .child("拡張機能ストアを実装予定"),
+                    .child("Extension store to be implemented"),
             )
     }
 }

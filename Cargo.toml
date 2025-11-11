@@ -1,10 +1,10 @@
 [package]
-name = "nohr"
+name = "nohrs"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "nohr"
+name = "nohrs"
 path = "src/lib.rs"
 
 
@@ -13,7 +13,7 @@ default = []
 gui = ["dep:gpui", "dep:gpui-component", "dep:rust-embed"]
 
 [[bin]]
-name = "nohr"
+name = "Nohrs"
 path = "src/gui/main.rs"
 required-features = ["gui"]
 
