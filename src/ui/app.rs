@@ -46,7 +46,7 @@ impl NohrApp {
                 let explorer = cx.new(|cx| {
                     ExplorerPage::new(resizable.clone(), search_input.clone(), cx.focus_handle())
                 });
-                let search = cx.new(|_cx| SearchPage::new());
+                let search = cx.new(|cx| SearchPage::new(resizable.clone(), window, cx));
                 let git = cx.new(|_cx| GitPage::new());
                 let s3 = cx.new(|_cx| S3Page::new());
                 let extensions = cx.new(|_cx| ExtensionsPage::new());
