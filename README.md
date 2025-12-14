@@ -1,6 +1,23 @@
-# Nohrs
-
-Develop a fast, flexible, and extensible file explorer using Rust and gpui as a modern alternative to macOS Finder. The goal is to achieve both everyday usability and power-user functionality through a seamless, high-performance interface.
+<div align="center">
+  <img src="assets/doc/icon.png" alt="Nohrs Icon" width="128" height="128">
+  
+  # Nohrs
+  
+  **A fast, flexible, and extensible file explorer for macOS**
+  
+  Built with Rust 🦀 and gpui for blazing-fast performance
+  
+  [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+  [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
+  [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos)
+  
+  <img src="assets/doc/screen-shot.jpeg" alt="Nohrs Screenshot" width="800">
+  
+  ---
+  
+  A modern alternative to macOS Finder, combining everyday usability with power-user functionality through a seamless, high-performance interface.
+  
+</div>
 
 ## Development
 
