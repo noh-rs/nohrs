@@ -41,5 +41,6 @@ tantivy = "0.22"
 ignore = "0.4"
 grep = "0.3"
 dirs = "5.0"
+notify-debouncer-mini = "0.4"
 [dev-dependencies]
 tempfile = "3"

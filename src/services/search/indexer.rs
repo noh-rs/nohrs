@@ -163,4 +163,16 @@ impl IndexManager {
     pub fn index(&self) -> &Index {
         &self.index
     }
+
+    pub fn update_file(&self, path: &Path) -> Result<()> {
+        let writer = self.writer()?;
+        let schema = self.index.schema();
+        let path_field = schema.get_field("path").context("Schema error")?;
+        let content_field = schema.get_field("content").context("Schema error")?;
+
+        let mut index_writer = writer;
+        self.index_single_file(path, &mut index_writer, path_field, content_field)?;
+        index_writer.commit()?;
+        Ok(())
+    }
 }

@@ -1,6 +1,8 @@
 pub mod backend;
+pub mod engine;
 pub mod indexer;
 pub mod ripgrep;
+pub mod watcher;
 
 use anyhow::Result;
 use std::path::PathBuf;
