@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
-use tantivy::schema::{Field, Schema, Term, FAST, STORED, TEXT};
+use tantivy::schema::{Field, Schema, Term, Value, FAST, STORED, TEXT};
 use tantivy::TantivyDocument;
 use tantivy::{Index, IndexWriter}; // Import trait for add_text etc? No, TantivyDocument implements it.
 
@@ -160,6 +160,7 @@ impl IndexManager {
 
         Ok(())
     }
+
     pub fn index(&self) -> &Index {
         &self.index
     }
@@ -174,5 +175,50 @@ impl IndexManager {
         self.index_single_file(path, &mut index_writer, path_field, content_field)?;
         index_writer.commit()?;
         Ok(())
+    }
+}
+
+impl super::backend::SearchBackend for IndexManager {
+    fn search(&self, query_str: &str) -> Result<Vec<super::SearchResult>> {
+        let reader = self.index.reader()?;
+        // Wait, self.index.reader()? self.index is Index.
+        // Correct way:
+        let searcher = reader.searcher();
+
+        let schema = self.index.schema();
+        let path_field = schema.get_field("path").context("Field not found")?;
+        let content_field = schema.get_field("content").context("Field not found")?;
+
+        let query_parser =
+            tantivy::query::QueryParser::for_index(&self.index, vec![path_field, content_field]);
+        let query = query_parser.parse_query(query_str)?;
+
+        let top_docs = searcher.search(&query, &tantivy::collector::TopDocs::with_limit(50))?;
+
+        let mut results = Vec::new();
+        for (_score, doc_address) in top_docs {
+            let retrieved_doc: TantivyDocument = searcher.doc(doc_address)?;
+
+            // value is OwnedValue.
+            // In Tantivy 0.22, retrieved_doc.get_first(field) returns Option<&OwnedValue>.
+            // OwnedValue has as_str() if it's a string.
+            // We need to import Value trait if we want to use generic accessors,
+            // but OwnedValue might have direct methods.
+            // Let's rely on explicit match or Debug to find out what works if as_str() fails.
+            // Actually, for OwnedValue, it is an enum.
+            // If I import Value trait, I can use .as_str().
+
+            if let Some(path_val) = retrieved_doc.get_first(path_field) {
+                if let Some(path_str) = path_val.as_str() {
+                    let path_buf = PathBuf::from(path_str);
+                    results.push(super::SearchResult {
+                        path: path_buf,
+                        line_number: 1,
+                        line_content: "Refinement needed: Line finding".to_string(),
+                    });
+                }
+            }
+        }
+        Ok(results)
     }
 }

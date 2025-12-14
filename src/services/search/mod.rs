@@ -4,8 +4,13 @@ pub mod indexer;
 pub mod ripgrep;
 pub mod watcher;
 
-use anyhow::Result;
 use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchScope {
+    Home,
+    Root,
+}
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {
@@ -14,9 +19,7 @@ pub struct SearchResult {
     pub line_content: String,
 }
 
-pub trait SearchBackend {
-    fn search(&self, query: &str) -> Result<Vec<SearchResult>>;
-}
+pub use backend::SearchBackend;
 
 pub struct SearchService {
     // We will add backend instances here later
