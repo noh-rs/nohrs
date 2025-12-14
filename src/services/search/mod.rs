@@ -21,12 +21,24 @@ pub struct SearchResult {
 
 pub use backend::SearchBackend;
 
+use anyhow::Result;
+use std::sync::Arc;
+
 pub struct SearchService {
-    // We will add backend instances here later
+    engine: Arc<engine::SearchEngine>,
 }
 
 impl SearchService {
-    pub fn new() -> Self {
-        Self {}
+    pub async fn new() -> Result<Self> {
+        let engine = Arc::new(engine::SearchEngine::new().await?);
+        Ok(Self { engine })
+    }
+
+    pub async fn search(&self, query: String, scope: SearchScope) -> Result<Vec<SearchResult>> {
+        self.engine.search(query, scope).await
+    }
+
+    pub fn progress_subscription(&self) -> tokio::sync::watch::Receiver<f32> {
+        self.engine.progress_subscription()
     }
 }

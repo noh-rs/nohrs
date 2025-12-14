@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
-use tantivy::schema::{Field, Schema, Term, Value, FAST, STORED, TEXT};
+use std::sync::{Arc, Mutex};
+use tantivy::schema::{Field, Schema, Term, Value, FAST, STORED, STRING, TEXT};
 use tantivy::TantivyDocument;
 use tantivy::{Index, IndexWriter}; // Import trait for add_text etc? No, TantivyDocument implements it.
 
@@ -9,6 +10,7 @@ pub struct IndexManager {
     index: Index,
     index_path: PathBuf,
     content_root: PathBuf,
+    writer: Arc<Mutex<IndexWriter>>,
 }
 
 impl IndexManager {
@@ -36,18 +38,21 @@ impl IndexManager {
             Index::create_in_dir(&index_path, schema)?
         };
 
+        let writer = index.writer(50_000_000)?;
+
         Ok(Self {
             index,
             index_path,
             content_root,
+            writer: Arc::new(Mutex::new(writer)),
         })
     }
 
     fn create_schema() -> Schema {
         let mut schema_builder = Schema::builder();
 
-        // path: stored and indexed as text
-        schema_builder.add_text_field("path", TEXT | STORED);
+        // path: stored and indexed as exact string (keyword) for ID/deletion
+        schema_builder.add_text_field("path", STRING | STORED);
 
         // content: indexed but not stored (for full text search)
         schema_builder.add_text_field("content", TEXT);
@@ -58,13 +63,13 @@ impl IndexManager {
         schema_builder.build()
     }
 
-    pub fn writer(&self) -> Result<IndexWriter> {
-        // 50MB heap for indexing buffer
-        Ok(self.index.writer(50_000_000)?)
-    }
+    // writer() helper removed as we use shared writer
 
-    pub fn index_home(&self) -> Result<()> {
-        let writer = self.writer()?;
+    pub fn index_home(&self, progress_tx: Option<tokio::sync::watch::Sender<f32>>) -> Result<()> {
+        let mut writer_guard = self
+            .writer
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Poisoned lock: {}", e))?;
         let schema = self.index.schema();
         let path_field = schema
             .get_field("path")
@@ -73,7 +78,24 @@ impl IndexManager {
             .get_field("content")
             .context("Schema error: content field missing")?;
 
-        // Use ignore crate to walk home directory respecting .gitignore
+        // 1. Count files if progress tracking is enabled
+        let mut total_files = 0;
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(0.0);
+            let walker = ignore::WalkBuilder::new(&self.content_root)
+                .hidden(false)
+                .git_ignore(true)
+                .build();
+            for result in walker {
+                if let Ok(entry) = result {
+                    if entry.path().is_file() {
+                        total_files += 1;
+                    }
+                }
+            }
+        }
+
+        // 2. Index files
         let walker = ignore::WalkBuilder::new(&self.content_root)
             .hidden(false) // Allow hidden files initially, but .gitignore usually handles them.
             // But usually we don't want to index .git/ etc.
@@ -81,8 +103,9 @@ impl IndexManager {
             .git_ignore(true)
             .build();
 
-        let mut index_writer = writer;
+        // Use the locked writer
 
+        let mut processed = 0;
         for result in walker {
             match result {
                 Ok(entry) => {
@@ -90,11 +113,19 @@ impl IndexManager {
                     if path.is_file() {
                         if let Err(e) = self.index_single_file(
                             path,
-                            &mut index_writer,
+                            &mut *writer_guard,
                             path_field,
                             content_field,
                         ) {
                             tracing::warn!("Failed to index file {:?}: {}", path, e);
+                        }
+
+                        // Update progress
+                        processed += 1;
+                        if let Some(tx) = &progress_tx {
+                            if total_files > 0 && processed % 100 == 0 {
+                                let _ = tx.send(processed as f32 / total_files as f32);
+                            }
                         }
                     }
                 }
@@ -102,7 +133,11 @@ impl IndexManager {
             }
         }
 
-        index_writer.commit()?;
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(1.0); // Done
+        }
+
+        writer_guard.commit()?;
         Ok(())
     }
 
@@ -131,9 +166,12 @@ impl IndexManager {
 
                 let path_str = path.to_string_lossy();
 
+                // Add path to content so it's searchable via full text query
+                let searchable_content = format!("{}\n{}", path_str, content);
+
                 let mut doc = TantivyDocument::default();
                 doc.add_text(path_field, &path_str);
-                doc.add_text(content_field, &content);
+                doc.add_text(content_field, &searchable_content);
 
                 // Delete existing doc with same path to avoid duplicates (upsert)
                 // Note: This matches exact path string.
@@ -148,15 +186,17 @@ impl IndexManager {
     }
 
     pub fn remove_file(&self, path: &Path) -> Result<()> {
-        let writer = self.writer()?;
+        let mut writer_guard = self
+            .writer
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Poisoned lock: {}", e))?;
         let schema = self.index.schema();
         let path_field = schema.get_field("path").context("Schema error")?;
-        let path_str = path.to_string_lossy();
 
         // Remove document with matching path
-        let mut index_writer = writer;
-        index_writer.delete_term(Term::from_field_text(path_field, &path_str));
-        index_writer.commit()?;
+        let path_str = path.to_string_lossy();
+        writer_guard.delete_term(Term::from_field_text(path_field, &path_str));
+        writer_guard.commit()?;
 
         Ok(())
     }
@@ -165,16 +205,37 @@ impl IndexManager {
         &self.index
     }
 
-    pub fn update_file(&self, path: &Path) -> Result<()> {
-        let writer = self.writer()?;
+    pub fn process_changes(&self, paths: &[PathBuf]) -> Result<()> {
+        let mut writer_guard = self
+            .writer
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Poisoned lock: {}", e))?;
         let schema = self.index.schema();
         let path_field = schema.get_field("path").context("Schema error")?;
         let content_field = schema.get_field("content").context("Schema error")?;
 
-        let mut index_writer = writer;
-        self.index_single_file(path, &mut index_writer, path_field, content_field)?;
-        index_writer.commit()?;
+        for path in paths {
+            if path.exists() {
+                if let Err(e) =
+                    self.index_single_file(path, &mut *writer_guard, path_field, content_field)
+                {
+                    tracing::warn!("Failed to update index for {:?}: {}", path, e);
+                }
+            } else {
+                let path_str = path.to_string_lossy();
+                writer_guard.delete_term(Term::from_field_text(path_field, &path_str));
+            }
+        }
+
+        if let Err(e) = writer_guard.commit() {
+            tracing::error!("Failed to commit index updates: {}", e);
+            return Err(e.into());
+        }
         Ok(())
+    }
+
+    pub fn update_file(&self, path: &Path) -> Result<()> {
+        self.process_changes(&[path.to_path_buf()])
     }
 }
 

@@ -25,13 +25,58 @@ fn test_indexing_workflow() -> Result<()> {
     // Create manager with custom paths
     let manager = IndexManager::new_with_path(index_root.clone(), content_root.clone())?;
 
-    // Index the "home" directory
-    manager.index_home()?;
-
-    // Verify indexing
+    // Initial indexing
+    manager.index_home(None).expect("Initial indexing failed");
     let searcher = manager.index().reader()?.searcher();
     assert_eq!(searcher.num_docs(), 1, "Should have 1 document indexed");
 
-    // Clean up is handled by tempdir drop
+    // Verify search finds content
+    use nohr::services::search::backend::SearchBackend;
+    let results = manager.search("Hello")?;
+    assert!(!results.is_empty(), "Should find 'Hello'");
+    assert_eq!(results[0].path, test_file);
+
+    // Update file
+    fs::write(&test_file, "Updated content here")?;
+    manager.update_file(&test_file)?;
+
+    // Verify update
+    // Note: commit is done in update_file, but reader needs reload usually?
+    // Tantivy readers need reload to see changes. IndexManager methods usually create new reader each time?
+    // IndexManager::search calls `self.index.reader()?`. Index::reader() returns a *new* reader or handle?
+    // Actually `index.reader()` returns a `IndexReader` which has a reload policy.
+    // If not configured, we might need to manually reload or get new reader.
+    // But `self.index.reader()` creates a standard reader.
+    // To ensure fresh view for search, we rely on `search` implementation calling `reader.searcher()`.
+    // Wait, `Index::reader()` usually returns a pool.
+    // Let's verify if `manager.search` gets fresh data.
+
+    // With default settings, reader might lag?
+    // `IndexManager::search` calls `self.index.reader()?`.
+    // It calls `index.reader()` every time? No, that would be expensive.
+    // IndexManager stores `index`.
+    // Let's assume for test `index.reader()` gets fresh.
+
+    let results_updated = manager.search("Updated")?;
+    assert!(!results_updated.is_empty(), "Should find 'Updated'");
+
+    let results_old = manager.search("Hello")?;
+    assert!(
+        results_old.is_empty(),
+        "Should NOT find 'Hello' after update"
+    );
+
+    // Remove file
+    manager.remove_file(&test_file)?;
+
+    // Verify removal
+    let searcher_after_remove = manager.index().reader()?.searcher();
+    // Getting reader again *should* see changes if committed.
+    assert_eq!(
+        searcher_after_remove.num_docs(),
+        0,
+        "Should have 0 docs after removal"
+    );
+
     Ok(())
 }

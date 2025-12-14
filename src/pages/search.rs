@@ -1,15 +1,19 @@
+use crate::services::search::{SearchResult, SearchScope, SearchService};
 use crate::ui::theme::theme;
 use gpui::{
-    div, prelude::*, px, rgb, AnyElement, Context, ElementId, Entity, FocusHandle, Focusable,
-    InteractiveElement, Render, Rgba, SharedString, Window,
+    div, prelude::*, px, rgb, AnyElement, AppContext, Context, ElementId, Entity, FocusHandle,
+    Focusable, InteractiveElement, Render, Rgba, SharedString, Task, WeakEntity, Window,
 };
 use gpui_component::input::{InputState, TextInput};
 use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_component::Icon;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Color, Style as SyntectStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
+use tokio::runtime::Handle;
+use tokio::task;
 
 // ============================================================================
 // Data Structures
@@ -42,6 +46,11 @@ pub struct SearchPage {
     resizable: Entity<ResizableState>,
     search_input: Entity<InputState>,
 
+    // Backend Interaction
+    search_service: Arc<SearchService>,
+    search_scope: SearchScope,
+    pending_search: Option<Task<()>>,
+
     // Search filters
     match_case: bool,
     match_whole_word: bool,
@@ -67,31 +76,10 @@ impl SearchPage {
     pub fn new(
         resizable: Entity<ResizableState>,
         window: &mut Window,
+        search_service: Arc<SearchService>,
         cx: &mut Context<Self>,
     ) -> Self {
         let search_input = cx.new(|cx| InputState::new(window, cx));
-
-        // Initialize with dummy data
-        let search_results = Self::create_dummy_results();
-        let mut expanded_files = HashSet::new();
-        let mut expanded_folders = HashSet::new();
-        if !search_results.is_empty() {
-            expanded_files.insert(0);
-            // Expand first folder by default
-            if let Some(first) = search_results.first() {
-                expanded_folders.insert(first.folder.clone());
-            }
-        }
-
-        // Set initial preview based on first result
-        let (preview_content, preview_path) = if let Some(first) = search_results.first() {
-            (
-                Some(Self::generate_dummy_file_content(&first.path)),
-                Some(first.path.clone()),
-            )
-        } else {
-            (None, None)
-        };
 
         let syntax_set = SyntaxSet::load_defaults_newlines();
         let theme_set = ThemeSet::load_defaults();
@@ -100,585 +88,162 @@ impl SearchPage {
             focus_handle: cx.focus_handle(),
             resizable,
             search_input,
+            search_service,
+            search_scope: SearchScope::Home,
+            pending_search: None,
             match_case: false,
             match_whole_word: false,
             use_regex: false,
-            search_results,
-            expanded_folders,
-            expanded_files,
-            selected_file: Some(0),
+            search_results: Vec::new(),
+            expanded_folders: HashSet::new(),
+            expanded_files: HashSet::new(),
+            selected_file: None,
             selected_match: None,
-            preview_content,
-            preview_path,
+            preview_content: None,
+            preview_path: None,
             syntax_set,
             theme_set,
         }
     }
 
-    fn create_dummy_results() -> Vec<SearchFileResult> {
-        vec![
-            // src folder
-            SearchFileResult {
-                path: "/Users/shuya/project/src/main.rs".into(),
-                folder: "src".into(),
-                filename: "main.rs".into(),
-                matches: vec![
-                    SearchMatch {
-                        line_number: 15,
-                        line_content: "fn main() {".into(),
-                        match_start: 3,
-                        match_end: 7,
-                    },
-                    SearchMatch {
-                        line_number: 42,
-                        line_content: "    println!(\"Hello, main world!\");".into(),
-                        match_start: 22,
-                        match_end: 26,
-                    },
-                ],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/lib.rs".into(),
-                folder: "src".into(),
-                filename: "lib.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 8,
-                    line_content: "pub mod main_utils;".into(),
-                    match_start: 8,
-                    match_end: 12,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/app.rs".into(),
-                folder: "src".into(),
-                filename: "app.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 25,
-                    line_content: "impl App { fn main_loop() {} }".into(),
-                    match_start: 18,
-                    match_end: 22,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/config.rs".into(),
-                folder: "src".into(),
-                filename: "config.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 12,
-                    line_content: "// Main configuration".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/error.rs".into(),
-                folder: "src".into(),
-                filename: "error.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 5,
-                    line_content: "pub enum MainError {".into(),
-                    match_start: 9,
-                    match_end: 13,
-                }],
-            },
-            // src/utils folder
-            SearchFileResult {
-                path: "/Users/shuya/project/src/utils/helper.rs".into(),
-                folder: "src/utils".into(),
-                filename: "helper.rs".into(),
-                matches: vec![
-                    SearchMatch {
-                        line_number: 23,
-                        line_content: "/// Main helper function".into(),
-                        match_start: 4,
-                        match_end: 8,
-                    },
-                    SearchMatch {
-                        line_number: 24,
-                        line_content: "pub fn main_helper(input: &str) -> String {".into(),
-                        match_start: 7,
-                        match_end: 11,
-                    },
-                ],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/utils/parser.rs".into(),
-                folder: "src/utils".into(),
-                filename: "parser.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 18,
-                    line_content: "fn parse_main_config() {}".into(),
-                    match_start: 9,
-                    match_end: 13,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/utils/logger.rs".into(),
-                folder: "src/utils".into(),
-                filename: "logger.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 8,
-                    line_content: "// Main logger setup".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/utils/cache.rs".into(),
-                folder: "src/utils".into(),
-                filename: "cache.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 33,
-                    line_content: "impl MainCache { }".into(),
-                    match_start: 5,
-                    match_end: 9,
-                }],
-            },
-            // src/models folder
-            SearchFileResult {
-                path: "/Users/shuya/project/src/models/user.rs".into(),
-                folder: "src/models".into(),
-                filename: "user.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 15,
-                    line_content: "// Main user model".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/models/post.rs".into(),
-                folder: "src/models".into(),
-                filename: "post.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 22,
-                    line_content: "fn main_query() {}".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/models/comment.rs".into(),
-                folder: "src/models".into(),
-                filename: "comment.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 10,
-                    line_content: "struct MainComment {}".into(),
-                    match_start: 7,
-                    match_end: 11,
-                }],
-            },
-            // src/services folder
-            SearchFileResult {
-                path: "/Users/shuya/project/src/services/auth.rs".into(),
-                folder: "src/services".into(),
-                filename: "auth.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 45,
-                    line_content: "// Main auth flow".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/services/api.rs".into(),
-                folder: "src/services".into(),
-                filename: "api.rs".into(),
-                matches: vec![
-                    SearchMatch {
-                        line_number: 12,
-                        line_content: "pub fn main_handler() {}".into(),
-                        match_start: 7,
-                        match_end: 11,
-                    },
-                    SearchMatch {
-                        line_number: 88,
-                        line_content: "// Main API routes".into(),
-                        match_start: 3,
-                        match_end: 7,
-                    },
-                ],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/services/database.rs".into(),
-                folder: "src/services".into(),
-                filename: "database.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 55,
-                    line_content: "fn main_connection() {}".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/services/search.rs".into(),
-                folder: "src/services".into(),
-                filename: "search.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 30,
-                    line_content: "impl MainSearch {}".into(),
-                    match_start: 5,
-                    match_end: 9,
-                }],
-            },
-            // src/ui folder
-            SearchFileResult {
-                path: "/Users/shuya/project/src/ui/components.rs".into(),
-                folder: "src/ui".into(),
-                filename: "components.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 100,
-                    line_content: "// Main UI components".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/ui/layout.rs".into(),
-                folder: "src/ui".into(),
-                filename: "layout.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 25,
-                    line_content: "fn main_layout() {}".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/src/ui/theme.rs".into(),
-                folder: "src/ui".into(),
-                filename: "theme.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 8,
-                    line_content: "pub const MAIN_COLOR: u32".into(),
-                    match_start: 10,
-                    match_end: 14,
-                }],
-            },
-            // tests folder
-            SearchFileResult {
-                path: "/Users/shuya/project/tests/integration.rs".into(),
-                folder: "tests".into(),
-                filename: "integration.rs".into(),
-                matches: vec![
-                    SearchMatch {
-                        line_number: 10,
-                        line_content: "#[test]".into(),
-                        match_start: 0,
-                        match_end: 7,
-                    },
-                    SearchMatch {
-                        line_number: 11,
-                        line_content: "fn test_main_flow() {".into(),
-                        match_start: 8,
-                        match_end: 12,
-                    },
-                ],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/tests/unit.rs".into(),
-                folder: "tests".into(),
-                filename: "unit.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 5,
-                    line_content: "fn test_main_helper() {}".into(),
-                    match_start: 8,
-                    match_end: 12,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/tests/e2e.rs".into(),
-                folder: "tests".into(),
-                filename: "e2e.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 20,
-                    line_content: "// Main E2E test".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/tests/bench.rs".into(),
-                folder: "tests".into(),
-                filename: "bench.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 15,
-                    line_content: "fn bench_main() {}".into(),
-                    match_start: 9,
-                    match_end: 13,
-                }],
-            },
-            // docs folder
-            SearchFileResult {
-                path: "/Users/shuya/project/docs/README.md".into(),
-                folder: "docs".into(),
-                filename: "README.md".into(),
-                matches: vec![SearchMatch {
-                    line_number: 1,
-                    line_content: "# Main Documentation".into(),
-                    match_start: 2,
-                    match_end: 6,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/docs/ARCHITECTURE.md".into(),
-                folder: "docs".into(),
-                filename: "ARCHITECTURE.md".into(),
-                matches: vec![SearchMatch {
-                    line_number: 15,
-                    line_content: "## Main Components".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/docs/API.md".into(),
-                folder: "docs".into(),
-                filename: "API.md".into(),
-                matches: vec![SearchMatch {
-                    line_number: 8,
-                    line_content: "The main API endpoint".into(),
-                    match_start: 4,
-                    match_end: 8,
-                }],
-            },
-            // examples folder
-            SearchFileResult {
-                path: "/Users/shuya/project/examples/basic.rs".into(),
-                folder: "examples".into(),
-                filename: "basic.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 3,
-                    line_content: "fn main() { }".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/examples/advanced.rs".into(),
-                folder: "examples".into(),
-                filename: "advanced.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 10,
-                    line_content: "fn main() { advanced_setup(); }".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            SearchFileResult {
-                path: "/Users/shuya/project/examples/demo.rs".into(),
-                folder: "examples".into(),
-                filename: "demo.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 5,
-                    line_content: "fn main() { run_demo(); }".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-            // benches folder
-            SearchFileResult {
-                path: "/Users/shuya/project/benches/perf.rs".into(),
-                folder: "benches".into(),
-                filename: "perf.rs".into(),
-                matches: vec![SearchMatch {
-                    line_number: 12,
-                    line_content: "fn main_benchmark() {}".into(),
-                    match_start: 3,
-                    match_end: 7,
-                }],
-            },
-        ]
-    }
-
-    fn generate_dummy_file_content(path: &str) -> String {
-        // ... existing dummy content logic ...
-        if path.ends_with("main.rs") {
-            r#"use std::io;
-use crate::lib::process;
-
-mod config;
-mod utils;
-
-/// Application entry point
-///
-/// This is the main function that starts the application.
-/// It initializes all required components and runs the event loop.
-
-#[derive(Debug)]
-struct AppState {
-    running: bool,
-    counter: u32,
-}
-
-fn main() {
-    println!("Starting application...");
-
-    let state = AppState {
-        running: true,
-        counter: 0,
-    };
-
-    // Initialize logging
-    tracing_subscriber::init();
-
-    // Start the main event loop
-    loop {
-        if !state.running {
-            break;
+    fn trigger_search(&mut self, cx: &mut Context<Self>) {
+        let query = self.search_input.read(cx).value().to_string();
+        if query.is_empty() {
+            self.search_results.clear();
+            self.expanded_files.clear();
+            self.expanded_folders.clear();
+            cx.notify();
+            return;
         }
 
-        process_events(&state);
+        let service = self.search_service.clone();
+        let scope = self.search_scope;
 
-        // Check for shutdown
-        if should_exit() {
-            break;
+        // Cancel previous search if any (optional)
+        // self.pending_search = Some(...);
+
+        let handle = Handle::current();
+        // Blocking search to ensure compilation logic passes without lifetime issues
+        // Wrapped in block_in_place to avoid runtime panic
+        task::block_in_place(
+            move || match handle.block_on(service.search(query, scope)) {
+                Ok(results) => {
+                    self.group_results(results);
+                    cx.notify();
+                }
+                Err(e) => {
+                    tracing::error!("Search failed: {}", e);
+                }
+            },
+        );
+    }
+
+    fn group_results(&mut self, raw_results: Vec<SearchResult>) {
+        let mut map: HashMap<String, SearchFileResult> = HashMap::new();
+
+        for res in raw_results {
+            let path_str = res.path.to_string_lossy().to_string();
+            let entry = map.entry(path_str.clone()).or_insert_with(|| {
+                let path_obj = std::path::PathBuf::from(&path_str);
+                let filename = path_obj
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let folder = path_obj
+                    .parent()
+                    .unwrap_or(std::path::Path::new(""))
+                    .to_string_lossy()
+                    .to_string();
+
+                SearchFileResult {
+                    path: path_str,
+                    folder,
+                    filename,
+                    matches: Vec::new(),
+                }
+            });
+
+            entry.matches.push(SearchMatch {
+                line_number: res.line_number,
+                line_content: res.line_content,
+                match_start: 0, // Placeholder
+                match_end: 0,   // Placeholder
+            });
+        }
+
+        let mut results: Vec<SearchFileResult> = map.into_values().collect();
+        // Sort results by path for consistency
+        results.sort_by(|a, b| a.path.cmp(&b.path));
+
+        self.search_results = results;
+
+        // Auto expand some?
+        if !self.search_results.is_empty() {
+            // Maybe expand all?
         }
     }
 
-    println!("Hello, main world!");
-
-    println!("Application shutdown complete");
-}
-
-fn process_events(state: &AppState) {
-    // Event processing logic
-}
-
-fn should_exit() -> bool {
-    false
-}
-"#
-            .into()
-        } else if path.ends_with("lib.rs") {
-            r#"//! Library root module
-//!
-//! This module exports all public APIs.
-
-pub mod core;
-pub mod utils;
-pub mod services;
-pub mod main_utils;
-
-pub use core::*;
-pub use utils::helpers;
-
-/// Library version
-pub const VERSION: &str = "0.1.0";
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_version() {
-        assert!(!VERSION.is_empty());
-    }
-}
-"#
-            .into()
-        } else if path.ends_with("helper.rs") {
-            r#"//! Helper utilities module
-//!
-//! Provides various helper functions for common operations.
-
-use std::path::Path;
-use std::collections::HashMap;
-
-/// Configuration for helpers
-#[derive(Debug, Clone)]
-pub struct HelperConfig {
-    pub cache_enabled: bool,
-    pub max_retries: u32,
-}
-
-impl Default for HelperConfig {
-    fn default() -> Self {
-        Self {
-            cache_enabled: true,
-            max_retries: 3,
-        }
-    }
-}
-
-/// Main helper function
-pub fn main_helper(input: &str) -> String {
-    let processed = input.trim().to_lowercase();
-
-    // Apply transformations
-    let result = processed
-        .chars()
-        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
-        .collect::<String>();
-
-    result
-}
-
-/// Process a file path
-pub fn process_path(path: &Path) -> Option<String> {
-    path.to_str().map(|s| s.to_string())
-}
-
-/// Parse key-value pairs
-pub fn parse_pairs(input: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-
-    for line in input.lines() {
-        if let Some((key, value)) = line.split_once('=') {
-            map.insert(key.trim().to_string(), value.trim().to_string());
+    fn set_search_scope(&mut self, scope: SearchScope, cx: &mut Context<Self>) {
+        if self.search_scope != scope {
+            self.search_scope = scope;
+            // Optionally trigger search or just update UI
+            cx.notify();
         }
     }
 
-    // Call main processing
+    fn render_scope_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_home = matches!(self.search_scope, SearchScope::Home);
 
-    map
-}
-"#
-            .into()
-        } else {
-            r#"//! Integration tests
-
-use super::*;
-
-mod common;
-
-/// Setup test environment
-fn setup() -> TestContext {
-    TestContext::new()
-}
-
-#[test]
-fn test_main_flow() {
-    let ctx = setup();
-
-    // Test the main flow
-    let result = ctx.run_main();
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_error_handling() {
-    let ctx = setup();
-
-    // Test error cases
-    let result = ctx.run_with_invalid_input();
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_edge_cases() {
-    let ctx = setup();
-
-    // Empty input
-    assert_eq!(ctx.process(""), "");
-
-    // Very long input
-    let long_input = "a".repeat(10000);
-    assert!(ctx.process(&long_input).len() <= 10000);
-}
-"#
-            .into()
-        }
+        div()
+            .flex()
+            .gap_1()
+            .child(
+                div()
+                    .id("scope-home")
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded(px(4.0))
+                    .text_xs()
+                    .cursor_pointer()
+                    .bg(if is_home {
+                        rgb(theme::ACCENT)
+                    } else {
+                        rgb(theme::BG_HOVER)
+                    })
+                    .text_color(if is_home {
+                        rgb(theme::WHITE)
+                    } else {
+                        rgb(theme::FG)
+                    })
+                    .child("Home")
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.set_search_scope(SearchScope::Home, cx)),
+                    ),
+            )
+            .child(
+                div()
+                    .id("scope-root")
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded(px(4.0))
+                    .text_xs()
+                    .cursor_pointer()
+                    .bg(if !is_home {
+                        rgb(theme::ACCENT)
+                    } else {
+                        rgb(theme::BG_HOVER)
+                    })
+                    .text_color(if !is_home {
+                        rgb(theme::WHITE)
+                    } else {
+                        rgb(theme::FG)
+                    })
+                    .child("Root")
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.set_search_scope(SearchScope::Root, cx)),
+                    ),
+            )
     }
 
     fn toggle_match_case(&mut self, cx: &mut Context<Self>) {
@@ -710,7 +275,11 @@ fn test_edge_cases() {
 
         if let Some(result) = self.search_results.get(file_idx) {
             self.preview_path = Some(result.path.clone());
-            self.preview_content = Some(Self::generate_dummy_file_content(&result.path));
+            if let Ok(content) = std::fs::read_to_string(&result.path) {
+                self.preview_content = Some(content);
+            } else {
+                self.preview_content = Some("Unable to read file".to_string());
+            }
         }
     }
 
@@ -720,7 +289,11 @@ fn test_edge_cases() {
 
         if let Some(result) = self.search_results.get(file_idx) {
             self.preview_path = Some(result.path.clone());
-            self.preview_content = Some(Self::generate_dummy_file_content(&result.path));
+            if let Ok(content) = std::fs::read_to_string(&result.path) {
+                self.preview_content = Some(content);
+            } else {
+                self.preview_content = Some("Unable to read file".to_string());
+            }
         }
     }
 
@@ -783,9 +356,61 @@ impl SearchPage {
             .border_color(rgb(theme::BORDER))
             .overflow_hidden()
             .child(self.render_search_header(window, cx))
+            // .child(self.render_progress_bar(cx))
             .child(self.render_search_results(cx))
     }
 
+    /*
+    fn render_progress_bar(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        let progress = self.indexing_progress;
+        if progress >= 1.0 {
+            return div().into_any_element();
+        }
+
+        let percent = (progress * 100.0) as u32;
+
+        div()
+            .w_full()
+            .h(px(24.0))
+            .bg(rgb(theme::BG_HOVER))
+            .border_b_1()
+            .border_color(rgb(theme::BORDER))
+            .flex()
+            .items_center()
+            .px(px(12.0))
+            .gap_2()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme::FG_SECONDARY))
+                    .whitespace_nowrap()
+                    .child("Indexing..."),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(4.0))
+                    .bg(rgb(theme::BORDER))
+                    .rounded(px(2.0))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h_full()
+                            .bg(rgb(theme::ACCENT))
+                            .w(gpui::Length::Definite(gpui::DefiniteLength::Fraction(
+                                progress,
+                            ))),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme::FG_SECONDARY))
+                    .child(format!("{}%", percent)),
+            )
+            .into_any_element()
+    }
+    */
     fn render_search_header(
         &mut self,
         _window: &mut Window,
@@ -808,6 +433,28 @@ impl SearchPage {
                     .flex()
                     .flex_col()
                     .gap_1()
+                    .mb(px(8.0))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(theme::FG_SECONDARY))
+                                    .child("Scope:"),
+                            )
+                            .child(self.render_scope_toggle(cx)),
+                    ),
+            )
+            // Main search input - VS Code style
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
                     // Search input row
                     .child(
                         div()
@@ -816,6 +463,13 @@ impl SearchPage {
                             .rounded(px(4.0))
                             .border_1()
                             .border_color(rgb(theme::BORDER))
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui::KeyDownEvent, _window, cx| {
+                                    if event.keystroke.key == "enter" {
+                                        this.trigger_search(cx);
+                                    }
+                                },
+                            ))
                             .child({
                                 let si = self.search_input.clone();
                                 div()

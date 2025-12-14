@@ -12,6 +12,7 @@ pub struct SearchEngine {
     ripgrep_backend: Arc<RipgrepBackend>,
     _watcher: FileWatcher, // Keep alive
     _watcher_task: JoinHandle<()>,
+    progress_rx: tokio::sync::watch::Receiver<f32>,
 }
 
 impl SearchEngine {
@@ -23,24 +24,28 @@ impl SearchEngine {
         let (tx, mut rx) = mpsc::channel(100);
 
         let home_dir = dirs::home_dir().expect("Home dir not found");
-        let watcher = FileWatcher::new(home_dir, tx)?;
+        use std::time::Duration;
+        let watcher = FileWatcher::new(home_dir, tx, Duration::from_secs(2))?;
 
         // Spawn event handler task
         let manager_clone = index_manager.clone();
         let watcher_task = tokio::spawn(async move {
             while let Some(paths) = rx.recv().await {
-                for path in paths {
-                    tracing::debug!("File changed: {:?}", path);
-                    if path.exists() {
-                        if let Err(e) = manager_clone.update_file(&path) {
-                            tracing::warn!("Failed to update index for {:?}: {}", path, e);
-                        }
-                    } else {
-                        if let Err(e) = manager_clone.remove_file(&path) {
-                            tracing::warn!("Failed to remove index for {:?}: {}", path, e);
-                        }
-                    }
+                if let Err(e) = manager_clone.process_changes(&paths) {
+                    tracing::warn!("Failed to process batch changes: {}", e);
                 }
+            }
+        });
+
+        // Trigger initial indexing in background
+        // specific to Home scope currently
+        let (progress_tx, progress_rx) = tokio::sync::watch::channel(0.0);
+        let initial_manager = index_manager.clone();
+        tokio::task::spawn_blocking(move || {
+            // TODO: Check if index is empty or needs refresh?
+            // For now, simple walk ensures consistent state.
+            if let Err(e) = initial_manager.index_home(Some(progress_tx)) {
+                tracing::error!("Initial indexing failed: {}", e);
             }
         });
 
@@ -49,7 +54,12 @@ impl SearchEngine {
             ripgrep_backend,
             _watcher: watcher,
             _watcher_task: watcher_task,
+            progress_rx,
         })
+    }
+
+    pub fn progress_subscription(&self) -> tokio::sync::watch::Receiver<f32> {
+        self.progress_rx.clone()
     }
 
     pub fn index_manager(&self) -> Arc<IndexManager> {

@@ -12,6 +12,7 @@ pub struct FooterProps {
     pub current_path: String,
     pub git_branch: Option<String>,
     pub storage_status: Option<String>,
+    pub indexing_progress: Option<f32>,
 }
 
 impl Default for FooterProps {
@@ -23,6 +24,7 @@ impl Default for FooterProps {
             current_path: String::from("/"),
             git_branch: None,
             storage_status: None,
+            indexing_progress: None,
         }
     }
 }
@@ -53,6 +55,20 @@ pub fn footer<V: gpui::Render>(props: FooterProps, cx: &mut Context<V>) -> impl 
                         &branch,
                         cx,
                     ))
+                })
+                // Indexing Progress
+                .when_some(props.indexing_progress, |this, progress| {
+                    if progress < 1.0 {
+                        let percent = (progress * 100.0) as u32;
+                        this.child(footer_button(
+                            ("footer-indexing", 99_usize),
+                            IconName::File, // Use a spinner icon if available? IconName::Sync?
+                            &format!("Indexing: {}%", percent),
+                            cx,
+                        ))
+                    } else {
+                        this
+                    }
                 })
                 // Selected items
                 .when(props.selected_count > 0, |this| {
