@@ -308,14 +308,25 @@ impl super::backend::SearchBackend for IndexManager {
                 if let Some(path_str) = path_val.as_str() {
                     let path_buf = PathBuf::from(path_str);
 
-                    // Find actual line number and content by searching file
-                    let (line_number, line_content) = find_match_line(&path_buf, query_str);
+                    // Find ALL matching lines in file
+                    let match_lines = find_all_match_lines(&path_buf, query_str);
 
-                    results.push(super::SearchResult {
-                        path: path_buf,
-                        line_number,
-                        line_content,
-                    });
+                    if match_lines.is_empty() {
+                        // No content matches, but file matched by filename - add with empty line
+                        results.push(super::SearchResult {
+                            path: path_buf,
+                            line_number: 0,
+                            line_content: String::new(),
+                        });
+                    } else {
+                        for (line_number, line_content) in match_lines {
+                            results.push(super::SearchResult {
+                                path: path_buf.clone(),
+                                line_number,
+                                line_content,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -323,16 +334,25 @@ impl super::backend::SearchBackend for IndexManager {
     }
 }
 
-/// Find the first line in a file that matches the query (case-insensitive)
-fn find_match_line(path: &Path, query: &str) -> (usize, String) {
+/// Find ALL lines in a file that match the query (case-insensitive)
+fn find_all_match_lines(path: &Path, query: &str) -> Vec<(usize, String)> {
+    let mut matches = Vec::new();
     if let Ok(content) = fs::read_to_string(path) {
         let query_lower = query.to_lowercase();
         for (idx, line) in content.lines().enumerate() {
             if line.to_lowercase().contains(&query_lower) {
-                return (idx + 1, line.to_string());
+                matches.push((idx + 1, line.to_string()));
             }
         }
     }
-    // Fallback: return first line or empty
-    (1, String::new())
+    // Debug log if NOHR_DEBUG is set
+    if std::env::var("NOHR_DEBUG").is_ok() {
+        tracing::info!(
+            "[DEBUG] find_all_match_lines: path={:?}, query='{}', matches={}",
+            path,
+            query,
+            matches.len()
+        );
+    }
+    matches
 }

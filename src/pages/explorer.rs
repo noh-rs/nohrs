@@ -37,6 +37,13 @@ enum ViewMode {
     Grid,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SearchType {
+    Filename,
+    Content,
+    All,
+}
+
 // Search Data Structures
 #[derive(Clone)]
 pub struct SearchMatch {
@@ -89,11 +96,13 @@ pub struct ExplorerPage {
     // Search
     search_service: Arc<SearchService>,
     search_scope: SearchScope,
+    search_type: SearchType,
     match_case: bool,
     match_whole_word: bool,
     use_regex: bool,
     search_results: Option<Vec<SearchFileResult>>, // Changed type
     is_performing_search: bool,
+    expanded_search_files: std::collections::HashSet<String>,
     // Syntax
     syntax_service: Arc<SyntaxService>,
     preview_highlights: Option<Vec<(std::ops::Range<usize>, gpui::Hsla)>>,
@@ -165,11 +174,13 @@ impl ExplorerPage {
             // Search
             search_service,
             search_scope: SearchScope::Home,
+            search_type: SearchType::All,
             match_case: false,
             match_whole_word: false,
             use_regex: false,
             search_results: None,
             is_performing_search: false,
+            expanded_search_files: std::collections::HashSet::new(),
             syntax_service: Arc::new(SyntaxService::new()),
         }
     }
@@ -263,16 +274,31 @@ impl ExplorerPage {
                     }
                 });
 
-            entry.matches.push(SearchMatch {
-                line_number: res.line_number,
-                line_content: res.line_content,
-                match_start: 0,
-                match_end: 0,
-            });
+            // Only add to matches if it's a real content match (not filename-only)
+            if res.line_number > 0 {
+                entry.matches.push(SearchMatch {
+                    line_number: res.line_number,
+                    line_content: res.line_content,
+                    match_start: 0,
+                    match_end: 0,
+                });
+            }
         }
 
         let mut sorted_results: Vec<SearchFileResult> = file_map.into_values().collect();
         sorted_results.sort_by(|a, b| a.path.cmp(&b.path));
+
+        // Debug log if NOHR_DEBUG is set
+        if std::env::var("NOHR_DEBUG").is_ok() {
+            for r in &sorted_results {
+                tracing::info!(
+                    "[DEBUG] group_results: file='{}', matches={}",
+                    r.filename,
+                    r.matches.len()
+                );
+            }
+        }
+
         sorted_results
     }
 
@@ -321,17 +347,33 @@ impl ExplorerPage {
     }
 
     fn update_item_sizes(&mut self) {
-        let total_width = self.col_name_width
-            + self.col_type_width
-            + self.col_size_width
-            + self.col_modified_width
-            + self.col_action_width
-            + 48.0;
+        let total_width = self.total_table_width();
+        let base_row_height = 32.0;
+        let snippet_row_height = 24.0;
+        let max_snippets = 10;
 
         let sizes = self
             .filtered_entries
             .iter()
-            .map(|_| size(px(total_width), px(32.0)))
+            .map(|entry| {
+                // Check if there are match snippets for this file AND it's expanded
+                let is_expanded = self.expanded_search_files.contains(&entry.path);
+                let snippet_count = if is_expanded {
+                    self.search_results
+                        .as_ref()
+                        .and_then(|results| {
+                            results
+                                .iter()
+                                .find(|r| r.path == entry.path)
+                                .map(|r| r.matches.len().min(max_snippets))
+                        })
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                let total_height = base_row_height + (snippet_count as f32 * snippet_row_height);
+                size(px(total_width), px(total_height))
+            })
             .collect();
         self.item_sizes = Rc::new(sizes);
     }
@@ -1200,32 +1242,91 @@ impl ExplorerPage {
         if query.is_empty() {
             return highlights;
         }
-        let lower_text = text.to_lowercase();
-        let lower_query = query.to_lowercase();
-        let mut start = 0;
-        while let Some(pos) = lower_text[start..].find(&lower_query) {
-            let actual_start = start + pos;
-            let actual_end = actual_start + query.len();
-            highlights.push((
-                actual_start..actual_end,
-                gpui::HighlightStyle {
-                    background_color: Some(gpui::Hsla::from(gpui::Rgba {
-                        r: 1.0,
-                        g: 0.9,
-                        b: 0.0,
-                        a: 0.5,
-                    })),
-                    color: Some(gpui::Hsla::from(gpui::Rgba {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 1.0,
-                    })),
-                    ..Default::default()
-                },
-            ));
-            start = actual_end;
+
+        let query_lower: Vec<char> = query.to_lowercase().chars().collect();
+        let text_chars: Vec<(usize, char)> = text.char_indices().collect();
+
+        let mut i = 0;
+        while i < text_chars.len() {
+            let mut match_found = true;
+            let mut q_idx = 0;
+
+            // Try to match query against text starting at i
+            // We iterate text characters (i + t_offset) and their lowercased expansion
+            let mut current_t_offset = 0;
+
+            while q_idx < query_lower.len() {
+                if i + current_t_offset >= text_chars.len() {
+                    match_found = false;
+                    break;
+                }
+
+                let (_, t_char) = text_chars[i + current_t_offset];
+                let t_lower = t_char.to_lowercase();
+
+                // Iterate through expansion of current text char
+                for tc in t_lower {
+                    if q_idx >= query_lower.len() || query_lower[q_idx] != tc {
+                        match_found = false;
+                        break;
+                    }
+                    q_idx += 1;
+                }
+
+                if !match_found {
+                    break;
+                }
+                current_t_offset += 1;
+            }
+
+            if match_found && q_idx == query_lower.len() {
+                // Match found! Calculate indices safely from char_indices
+                let start_byte = text_chars[i].0;
+                let end_byte = if i + current_t_offset < text_chars.len() {
+                    text_chars[i + current_t_offset].0
+                } else {
+                    text.len()
+                };
+
+                highlights.push((
+                    start_byte..end_byte,
+                    gpui::HighlightStyle {
+                        background_color: Some(gpui::Hsla::from(gpui::Rgba {
+                            r: 1.0,
+                            g: 0.9,
+                            b: 0.0,
+                            a: 0.5,
+                        })),
+                        color: Some(gpui::Hsla::from(gpui::Rgba {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        })),
+                        ..Default::default()
+                    },
+                ));
+
+                i += current_t_offset;
+            } else {
+                i += 1;
+            }
         }
+
+        // Universal defensive check: Ensure all highlights are valid char boundaries
+        // This is strictly necessary to prevent panics in GPUI if logic drift occurs
+        highlights.retain(|(range, _)| {
+            let start_ok = text.is_char_boundary(range.start);
+            let end_ok = text.is_char_boundary(range.end);
+            if !start_ok || !end_ok {
+                if std::env::var("NOHR_DEBUG").is_ok() {
+                    tracing::error!("[CRITICAL] find_query_highlights: Removing invalid highlight: {:?} (start_ok={}, end_ok={}) in text len {}", range, start_ok, end_ok, text.len());
+                }
+                return false;
+            }
+            true
+        });
+
         highlights
     }
 
@@ -1448,6 +1549,16 @@ impl ExplorerPage {
                             .child("Scope:")
                             .child(self.render_scope_button(SearchScope::Home, "Home", cx))
                             .child(self.render_scope_button(SearchScope::Root, "Root", cx)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .items_center()
+                            .child("Type:")
+                            .child(self.render_type_button(SearchType::All, "All", cx))
+                            .child(self.render_type_button(SearchType::Filename, "Filename", cx))
+                            .child(self.render_type_button(SearchType::Content, "Content", cx)),
                     ),
             )
             .child(
@@ -1579,6 +1690,33 @@ impl ExplorerPage {
                 gpui::MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.set_search_scope(scope, cx);
+                }),
+            )
+            .child(label.to_string())
+    }
+
+    fn render_type_button(
+        &self,
+        search_type: SearchType,
+        label: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_active = self.search_type == search_type;
+        div()
+            .cursor_pointer()
+            .px(px(4.0))
+            .rounded(px(4.0))
+            .when(is_active, |this| {
+                this.bg(rgb(theme::ACCENT)).text_color(rgb(theme::BG))
+            })
+            .when(!is_active, |this| {
+                this.hover(|s| s.bg(rgb(theme::BG_HOVER)))
+            })
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.search_type = search_type;
+                    cx.notify();
                 }),
             )
             .child(label.to_string())
@@ -1770,6 +1908,10 @@ impl ExplorerPage {
             "dir" => IconName::Folder,
             _ => IconName::File,
         };
+        let icon_color = match item.kind.as_str() {
+            "dir" => rgb(theme::ACCENT),
+            _ => rgb(theme::GRAY_600),
+        };
 
         let bg_color = if ix % 2 == 0 {
             theme::BG
@@ -1786,105 +1928,214 @@ impl ExplorerPage {
         let item_for_preview = item.clone();
         let item_for_activate = item.clone();
 
-        ListItem::new(("file-row", ix))
+        // Check if query matches filename (for highlighting)
+        let query_lower = self.search_query.to_lowercase();
+        let has_filename_match =
+            !self.search_query.is_empty() && item.name.to_lowercase().contains(&query_lower);
+
+        // Check if there are content matches (for expand arrow)
+        let has_content_matches = self
+            .search_results
+            .as_ref()
+            .map(|results| {
+                results
+                    .iter()
+                    .any(|r| r.path == item.path && !r.matches.is_empty())
+            })
+            .unwrap_or(false);
+
+        let is_expanded = self.expanded_search_files.contains(&item.path);
+
+        let match_snippets: Vec<(usize, String)> = if is_expanded && has_content_matches {
+            self.search_results
+                .as_ref()
+                .and_then(|results| {
+                    results.iter().find(|r| r.path == item.path).map(|r| {
+                        r.matches
+                            .iter()
+                            .take(10) // Limit to 10 snippets
+                            .map(|m| (m.line_number, m.line_content.clone()))
+                            .collect()
+                    })
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let query = self.search_query.clone();
+        let path_for_toggle = item.path.clone();
+        let expand_icon = if is_expanded {
+            IconName::ChevronDown
+        } else {
+            IconName::ChevronRight
+        };
+
+        // Create styled filename with highlighted matches
+        let styled_name = if has_filename_match && !self.search_query.is_empty() {
+            let highlights = Self::find_query_highlights(&display_name, &query);
+            StyledText::new(display_name.clone()).with_highlights(highlights)
+        } else {
+            StyledText::new(display_name.clone())
+        };
+
+        div()
+            .flex()
+            .flex_col()
             .w(px(total_width))
-            .h(px(32.0))
-            .px(px(24.0))
-            .bg(rgb(bg_color))
-            .on_click(
-                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                    if let gpui::ClickEvent::Mouse(mouse) = event {
-                        if mouse.up.button == gpui::MouseButton::Left {
-                            this.record_click(ix, mouse.up.click_count);
-                            this.selected_index = Some(ix);
-                            if item_for_preview.kind == "file" {
-                                this.open_preview(item_for_preview.path.clone());
-                            }
-                            if mouse.up.click_count >= 2 {
-                                this.activate_entry(item_for_activate.clone(), window, cx);
-                            }
-                        }
-                    } else if let gpui::ClickEvent::Keyboard(_) = event {
-                        this.selected_index = Some(ix);
-                        this.activate_entry(item_for_activate.clone(), window, cx);
-                    }
-                }),
-            )
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .w_full()
-                    .h_full()
+                ListItem::new(("file-row", ix))
+                    .w(px(total_width))
+                    .h(px(32.0))
+                    .px(px(24.0))
+                    .bg(rgb(bg_color))
+                    .on_click(
+                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                            if let gpui::ClickEvent::Mouse(mouse) = event {
+                                if mouse.up.button == gpui::MouseButton::Left {
+                                    this.record_click(ix, mouse.up.click_count);
+                                    this.selected_index = Some(ix);
+                                    if item_for_preview.kind == "file" {
+                                        this.open_preview(item_for_preview.path.clone());
+                                    }
+                                    if mouse.up.click_count >= 2 {
+                                        this.activate_entry(item_for_activate.clone(), window, cx);
+                                    }
+                                }
+                            }
+                        }),
+                    )
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_3()
-                            .w(px(self.col_name_width))
-                            .flex_shrink_0()
+                            .w_full()
+                            .h_full()
                             .child(
-                                Icon::new(icon_name)
-                                    .size_4()
-                                    .text_color(rgb(theme::GRAY_600)),
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .w(px(self.col_name_width))
+                                    .flex_shrink_0()
+                                    .when(has_content_matches, |this| {
+                                        this.child(
+                                            div()
+                                                .cursor_pointer()
+                                                .hover(|s| {
+                                                    s.bg(rgb(theme::BG_HOVER)).rounded(px(4.0))
+                                                })
+                                                .p(px(2.0))
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener({
+                                                        let path = path_for_toggle.clone();
+                                                        move |this, _, _, cx| {
+                                                            if this
+                                                                .expanded_search_files
+                                                                .contains(&path)
+                                                            {
+                                                                this.expanded_search_files
+                                                                    .remove(&path);
+                                                            } else {
+                                                                this.expanded_search_files
+                                                                    .insert(path.clone());
+                                                            }
+                                                            this.update_item_sizes();
+                                                            cx.notify();
+                                                        }
+                                                    }),
+                                                )
+                                                .child(
+                                                    Icon::new(expand_icon)
+                                                        .size_3()
+                                                        .text_color(rgb(theme::GRAY_600)),
+                                                ),
+                                        )
+                                    })
+                                    .when(!has_content_matches, |this| {
+                                        this.child(div().w(px(20.0)))
+                                    })
+                                    .child(Icon::new(icon_name).size_4().text_color(icon_color))
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(rgb(theme::FG))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .child(styled_name),
+                                    ),
                             )
                             .child(
                                 div()
+                                    .w(px(self.col_type_width))
+                                    .flex_shrink_0()
                                     .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(rgb(theme::FG))
+                                    .text_color(rgb(theme::FG_SECONDARY))
                                     .overflow_hidden()
                                     .text_ellipsis()
                                     .whitespace_nowrap()
-                                    .child(display_name),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w(px(self.col_type_width))
-                            .flex_shrink_0()
-                            .text_sm()
-                            .text_color(rgb(theme::FG_SECONDARY))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(file_type),
-                    )
-                    .child(
-                        div()
-                            .w(px(self.col_size_width))
-                            .flex_shrink_0()
-                            .text_sm()
-                            .text_color(rgb(theme::FG_SECONDARY))
-                            .child(match item.kind.as_str() {
-                                "file" => human_bytes(item.size),
-                                "dir" => "-".to_string(),
-                                other => other.to_string(),
-                            }),
-                    )
-                    .child(
-                        div()
-                            .w(px(self.col_modified_width))
-                            .flex_shrink_0()
-                            .text_sm()
-                            .text_color(rgb(theme::FG_SECONDARY))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(format_date(&item.modified)),
-                    )
-                    .child(
-                        div()
-                            .w(px(self.col_action_width))
-                            .flex_shrink_0()
-                            .flex()
-                            .justify_end()
+                                    .child(file_type),
+                            )
                             .child(
-                                Icon::new(IconName::File)
-                                    .size_4()
-                                    .text_color(rgb(theme::MUTED)),
+                                div()
+                                    .w(px(self.col_size_width))
+                                    .flex_shrink_0()
+                                    .text_sm()
+                                    .text_color(rgb(theme::FG_SECONDARY))
+                                    .child(match item.kind.as_str() {
+                                        "file" => human_bytes(item.size),
+                                        "dir" => "-".to_string(),
+                                        other => other.to_string(),
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .w(px(self.col_modified_width))
+                                    .flex_shrink_0()
+                                    .text_sm()
+                                    .text_color(rgb(theme::FG_SECONDARY))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .child(format_date(&item.modified)),
                             ),
                     ),
+            )
+            .children(
+                match_snippets
+                    .into_iter()
+                    .map(|(line_num, content)| {
+                        let highlights = Self::find_query_highlights(&content, &query);
+                        let styled = StyledText::new(content.clone()).with_highlights(highlights);
+                        div()
+                            .h(px(24.0)) // Fixed height matching update_item_sizes
+                            .pl(px(48.0))
+                            .pr(px(24.0))
+                            .bg(rgb(theme::GRAY_50))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(theme::MUTED))
+                                    .w(px(32.0))
+                                    .child(format!("{}", line_num)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(theme::FG_SECONDARY))
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(styled),
+                            )
+                    })
+                    .collect::<Vec<_>>(),
             )
     }
 
@@ -1992,7 +2243,8 @@ impl ExplorerPage {
                             .line_height(px(20.0))
                             .child(if let Some(highlights) = &self.preview_highlights {
                                 let text = self.preview_text.as_deref().unwrap_or("");
-                                let highlight_styles: Vec<(
+                                // Collect syntax highlights with default black color if missing
+                                let mut highlight_styles: Vec<(
                                     std::ops::Range<usize>,
                                     gpui::HighlightStyle,
                                 )> = highlights
@@ -2007,8 +2259,74 @@ impl ExplorerPage {
                                         )
                                     })
                                     .collect();
+
+                                // Add query highlights on top of syntax highlights
+                                if !self.search_query.is_empty() {
+                                    let query_highlights =
+                                        Self::find_query_highlights(text, &self.search_query);
+                                    // highlight_styles.extend(query_highlights);
+                                    highlight_styles.extend(query_highlights);
+                                }
+
+                                // Flatten highlights to handle overlaps correctly
+                                // This is crucial because GPUI's text/coretext handling can panic with overlapping ranges on multibyte strings
+                                let mut points = Vec::new();
+                                for (i, (range, _)) in highlight_styles.iter().enumerate() {
+                                    points.push((range.start, true, i));
+                                    points.push((range.end, false, i));
+                                }
+
+                                // Sort: position asc, then End types (false) before Start types (true)
+                                points.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+                                let mut flattened_styles: Vec<(
+                                    std::ops::Range<usize>,
+                                    gpui::HighlightStyle,
+                                )> = Vec::new();
+                                let mut active_stack = Vec::new();
+                                let mut prev_pos = 0;
+
+                                for (pos, is_start, idx) in points {
+                                    if pos > prev_pos {
+                                        // Current segment is [prev_pos, pos)
+                                        // Check boundary validity just in case
+                                        if text.is_char_boundary(prev_pos)
+                                            && text.is_char_boundary(pos)
+                                        {
+                                            if let Some(&top_idx) = active_stack.last() {
+                                                // Create a style using the top-most (latest) style
+                                                let item: &(
+                                                    std::ops::Range<usize>,
+                                                    gpui::HighlightStyle,
+                                                ) = &highlight_styles[top_idx];
+                                                let style = item.1.clone();
+                                                flattened_styles.push((prev_pos..pos, style));
+                                            }
+                                        }
+                                    }
+
+                                    if is_start {
+                                        active_stack.push(idx);
+                                    } else {
+                                        if let Some(position) =
+                                            active_stack.iter().rposition(|&x| x == idx)
+                                        {
+                                            active_stack.remove(position);
+                                        }
+                                    }
+                                    prev_pos = pos;
+                                }
+
                                 let styled = StyledText::new(text.to_string())
-                                    .with_highlights(highlight_styles);
+                                    .with_highlights(flattened_styles);
+                                div().child(styled)
+                            } else if !self.search_query.is_empty() {
+                                // Even without syntax highlights, show query highlights
+                                let text = self.preview_text.as_deref().unwrap_or("");
+                                let query_highlights =
+                                    Self::find_query_highlights(text, &self.search_query);
+                                let styled = StyledText::new(text.to_string())
+                                    .with_highlights(query_highlights);
                                 div().child(styled)
                             } else {
                                 div().child(body)
