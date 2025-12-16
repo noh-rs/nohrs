@@ -1,10 +1,12 @@
 use crate::services::fs::listing::{list_dir_sync, FileEntryDto, ListParams};
+use crate::services::search::{SearchResult, SearchScope, SearchService};
 use crate::ui::components::file_list::FileListDelegate;
 use crate::ui::theme::theme;
 
+use crate::services::syntax::SyntaxService;
 use gpui::{
     div, prelude::*, px, rgb, size, AnyElement, Context, Entity, FocusHandle, Focusable,
-    IntoElement, Render, Window,
+    InteractiveElement, IntoElement, Render, StyledText, Window,
 };
 use gpui_component::breadcrumb::{Breadcrumb, BreadcrumbItem};
 use gpui_component::input::{InputState, TextInput};
@@ -12,9 +14,13 @@ use gpui_component::list::{List, ListEvent};
 use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_component::{v_virtual_list, Icon, IconName, VirtualListScrollHandle};
 use std::{
+    collections::HashMap,
     rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
+use tokio::runtime::Handle;
+use tokio::task;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -29,6 +35,23 @@ enum SortKey {
 enum ViewMode {
     List,
     Grid,
+}
+
+// Search Data Structures
+#[derive(Clone)]
+pub struct SearchMatch {
+    pub line_number: usize,
+    pub line_content: String,
+    pub match_start: usize,
+    pub match_end: usize,
+}
+
+#[derive(Clone)]
+pub struct SearchFileResult {
+    pub path: String,
+    pub folder: String,
+    pub filename: String,
+    pub matches: Vec<SearchMatch>,
 }
 
 pub struct ExplorerPage {
@@ -62,6 +85,19 @@ pub struct ExplorerPage {
     focus_requested: bool,
     last_click_info: Option<LastClickInfo>,
     view_mode: ViewMode,
+
+    // Search
+    search_service: Arc<SearchService>,
+    search_scope: SearchScope,
+    match_case: bool,
+    match_whole_word: bool,
+    use_regex: bool,
+    search_results: Option<Vec<SearchFileResult>>, // Changed type
+    is_performing_search: bool,
+    // Syntax
+    syntax_service: Arc<SyntaxService>,
+    preview_highlights: Option<Vec<(std::ops::Range<usize>, gpui::Hsla)>>,
+    // Search View State
 }
 
 impl Focusable for ExplorerPage {
@@ -89,6 +125,7 @@ impl ExplorerPage {
     pub fn new(
         resizable: Entity<ResizableState>,
         search_input: Entity<InputState>,
+        search_service: Arc<SearchService>,
         focus_handle: FocusHandle,
     ) -> Self {
         Self {
@@ -109,6 +146,7 @@ impl ExplorerPage {
             subs: Vec::new(),
             preview_path: None,
             preview_text: None,
+            preview_highlights: None,
             selected_index: None,
             virtual_scroll_handle: VirtualListScrollHandle::new(),
             item_sizes: Rc::new(Vec::new()),
@@ -123,7 +161,141 @@ impl ExplorerPage {
             focus_requested: false,
             last_click_info: None,
             view_mode: ViewMode::List,
+
+            // Search
+            search_service,
+            search_scope: SearchScope::Home,
+            match_case: false,
+            match_whole_word: false,
+            use_regex: false,
+            search_results: None,
+            is_performing_search: false,
+            syntax_service: Arc::new(SyntaxService::new()),
         }
+    }
+
+    fn trigger_search(&mut self, cx: &mut Context<Self>) {
+        if self.search_query.is_empty() {
+            self.search_results = None;
+            self.apply_filter();
+            cx.notify();
+            return;
+        }
+
+        self.is_performing_search = true;
+        cx.notify();
+
+        let service = self.search_service.clone();
+        let query = self.search_query.clone();
+        let scope = self.search_scope;
+
+        let handle = Handle::current();
+        let results = task::block_in_place(move || handle.block_on(service.search(query, scope)));
+
+        match results {
+            Ok(res) => {
+                let grouped = self.group_results(res);
+                let entries: Vec<FileEntryDto> = grouped
+                    .iter()
+                    .map(|res| {
+                        let meta = std::fs::metadata(&res.path).ok();
+                        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                        let modified = meta
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        FileEntryDto {
+                            name: if res.folder.is_empty() {
+                                res.filename.clone()
+                            } else {
+                                format!("{}/{}", res.folder, res.filename)
+                            },
+                            path: res.path.clone(),
+                            kind: "file".to_string(),
+                            size,
+                            modified,
+                        }
+                    })
+                    .collect();
+
+                self.filtered_entries = entries;
+                self.search_results = Some(grouped);
+            }
+            Err(e) => {
+                tracing::error!("Search failed: {}", e);
+                self.search_results = Some(Vec::new());
+                self.filtered_entries = Vec::new(); // Clear filtered entries on search error
+            }
+        }
+        self.is_performing_search = false;
+        self.update_item_sizes();
+        cx.notify();
+    }
+
+    fn group_results(&self, results: Vec<SearchResult>) -> Vec<SearchFileResult> {
+        let mut file_map: HashMap<String, SearchFileResult> = HashMap::new();
+
+        for res in results {
+            let entry = file_map
+                .entry(res.path.to_string_lossy().to_string())
+                .or_insert_with(|| {
+                    let path = std::path::Path::new(&res.path);
+                    let filename = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+
+                    // Improved folder logic: show relative path from CWD or Home
+                    // Since we index Documents, let's try to be relative to CWD if possible
+                    let folder = if let Some(parent) = path.parent() {
+                        parent.to_string_lossy().to_string()
+                    } else {
+                        String::new()
+                    };
+
+                    SearchFileResult {
+                        path: res.path.to_string_lossy().to_string(),
+                        folder, // simplified
+                        filename,
+                        matches: Vec::new(),
+                    }
+                });
+
+            entry.matches.push(SearchMatch {
+                line_number: res.line_number,
+                line_content: res.line_content,
+                match_start: 0,
+                match_end: 0,
+            });
+        }
+
+        let mut sorted_results: Vec<SearchFileResult> = file_map.into_values().collect();
+        sorted_results.sort_by(|a, b| a.path.cmp(&b.path));
+        sorted_results
+    }
+
+    fn set_search_scope(&mut self, scope: SearchScope, cx: &mut Context<Self>) {
+        if self.search_scope != scope {
+            self.search_scope = scope;
+            cx.notify();
+        }
+    }
+
+    fn toggle_match_case(&mut self, cx: &mut Context<Self>) {
+        self.match_case = !self.match_case;
+        cx.notify();
+    }
+
+    fn toggle_match_whole_word(&mut self, cx: &mut Context<Self>) {
+        self.match_whole_word = !self.match_whole_word;
+        cx.notify();
+    }
+
+    fn toggle_use_regex(&mut self, cx: &mut Context<Self>) {
+        self.use_regex = !self.use_regex;
+        cx.notify();
     }
 
     fn ensure_loaded(&mut self) {
@@ -186,6 +358,38 @@ impl ExplorerPage {
                 .collect();
         }
         self.update_item_sizes();
+        if self.search_results.is_some() {
+            return;
+        }
+
+        if self.entries.is_empty() {
+            self.filtered_entries = Vec::new();
+            return;
+        }
+
+        self.filtered_entries = self.entries.clone();
+
+        // Apply sorting
+        let key = self.sort_key;
+        let asc = self.sort_asc;
+
+        self.filtered_entries.sort_by(|a, b| {
+            let order = match key {
+                SortKey::Name => a.name.cmp(&b.name),
+                SortKey::Size => a.size.cmp(&b.size),
+                SortKey::Modified => a.modified.cmp(&b.modified),
+                SortKey::Type => {
+                    let type_a = crate::ui::components::file_list::get_file_type(&a.name, &a.kind);
+                    let type_b = crate::ui::components::file_list::get_file_type(&b.name, &b.kind);
+                    type_a.cmp(&type_b)
+                }
+            };
+            if asc {
+                order
+            } else {
+                order.reverse()
+            }
+        });
     }
 
     fn set_sort_key(&mut self, key: SortKey) {
@@ -389,6 +593,7 @@ impl ExplorerPage {
             return;
         }
         self.search_visible = false;
+        self.search_results = None;
         self.search_query.clear();
         self.apply_filter();
         self.search_input.update(cx, |input, cx| {
@@ -410,8 +615,15 @@ impl ExplorerPage {
             if md.is_file() && md.len() <= 1024 * 1024 * 2 {
                 if let Ok(bytes) = std::fs::read(&path) {
                     if let Ok(text) = String::from_utf8(bytes) {
+                        let highlights = self.syntax_service.highlight(
+                            &text,
+                            std::path::Path::new(&path)
+                                .extension()
+                                .and_then(|s| s.to_str()),
+                        );
                         self.preview_path = Some(path);
                         self.preview_text = Some(text);
+                        self.preview_highlights = Some(highlights);
                         return;
                     }
                 }
@@ -419,6 +631,7 @@ impl ExplorerPage {
         }
         self.preview_path = Some(path);
         self.preview_text = Some("(プレビュー未対応ファイル)".into());
+        self.preview_highlights = None;
     }
 
     fn shortcuts(&self) -> Vec<(String, String)> {
@@ -538,9 +751,6 @@ impl Render for ExplorerPage {
                         .into_any_element(),
                 ),
             )
-            .when(self.search_visible, |this| {
-                this.child(self.render_floating_search(window, cx))
-            })
     }
 }
 
@@ -852,10 +1062,171 @@ impl ExplorerPage {
 
     fn render_listing(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.ensure_list_initialized(window, cx);
-        match self.view_mode {
+
+        let file_list = match self.view_mode {
             ViewMode::List => self.render_list_view(cx),
             ViewMode::Grid => self.render_grid_view(window, cx),
+        };
+
+        if self.search_visible {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(self.render_inline_search_bar(cx))
+                .child(file_list)
+                .into_any_element()
+        } else {
+            file_list
         }
+    }
+
+    fn render_search_results(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let results = match &self.search_results {
+            Some(r) => r.clone(),
+            None => return div().into_any_element(),
+        };
+        let query = self.search_query.clone();
+
+        div()
+            .id("search-results-scroll")
+            .size_full()
+            .overflow_scroll()
+            .flex()
+            .flex_col()
+            .children(
+                results
+                    .into_iter()
+                    .enumerate()
+                    .map(|(file_idx, file_result)| {
+                        let path = file_result.path.clone();
+                        let display_name = if file_result.folder.is_empty() {
+                            file_result.filename.clone()
+                        } else {
+                            format!("{}/{}", file_result.folder, file_result.filename)
+                        };
+
+                        div()
+                            .flex()
+                            .flex_col()
+                            .w_full()
+                            .child(
+                                // File header
+                                div()
+                                    .px(px(12.0))
+                                    .py(px(6.0))
+                                    .bg(rgb(theme::BG_HOVER))
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Icon::new(IconName::File)
+                                            .size_4()
+                                            .text_color(rgb(theme::GRAY_600)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .text_color(rgb(theme::FG))
+                                            .child(display_name),
+                                    )
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _, _, _| {
+                                            this.open_preview(path.clone());
+                                        }),
+                                    ),
+                            )
+                            .children(
+                                file_result
+                                    .matches
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(match_idx, m)| {
+                                        let line_content = m.line_content.clone();
+                                        let q = query.clone();
+
+                                        // Highlight query in line content
+                                        let highlights =
+                                            Self::find_query_highlights(&line_content, &q);
+                                        let styled = StyledText::new(line_content.clone())
+                                            .with_highlights(highlights);
+
+                                        div()
+                                            .id(gpui::SharedString::from(format!(
+                                                "match-{}-{}",
+                                                file_idx, match_idx
+                                            )))
+                                            .px(px(24.0))
+                                            .py(px(4.0))
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .hover(|s| s.bg(rgb(theme::BG_HOVER)))
+                                            .cursor_pointer()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(rgb(theme::MUTED))
+                                                    .w(px(40.0))
+                                                    .child(format!("{}", m.line_number)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(rgb(theme::FG_SECONDARY))
+                                                    .flex_1()
+                                                    .overflow_hidden()
+                                                    .text_ellipsis()
+                                                    .whitespace_nowrap()
+                                                    .child(styled),
+                                            )
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .into_any_element()
+    }
+
+    fn find_query_highlights(
+        text: &str,
+        query: &str,
+    ) -> Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> {
+        let mut highlights = Vec::new();
+        if query.is_empty() {
+            return highlights;
+        }
+        let lower_text = text.to_lowercase();
+        let lower_query = query.to_lowercase();
+        let mut start = 0;
+        while let Some(pos) = lower_text[start..].find(&lower_query) {
+            let actual_start = start + pos;
+            let actual_end = actual_start + query.len();
+            highlights.push((
+                actual_start..actual_end,
+                gpui::HighlightStyle {
+                    background_color: Some(gpui::Hsla::from(gpui::Rgba {
+                        r: 1.0,
+                        g: 0.9,
+                        b: 0.0,
+                        a: 0.5,
+                    })),
+                    color: Some(gpui::Hsla::from(gpui::Rgba {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    })),
+                    ..Default::default()
+                },
+            ));
+            start = actual_end;
+        }
+        highlights
     }
 
     fn render_list_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1009,30 +1380,37 @@ impl ExplorerPage {
             .into_any_element()
     }
 
-    fn render_floating_search(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_inline_search_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let current_text = self.search_input.read(cx).text().to_string();
         if current_text != self.search_query {
             self.search_query = current_text;
+            // If query changed, revert to file list filter until user explicitly triggers search?
+            // Or we could auto-search? Auto-search is expensive for full content.
+            // So default to file filter.
+            self.search_results = None;
             self.apply_filter();
         }
 
         let is_empty = self.search_query.is_empty();
-        let match_count = self.filtered_entries.len();
+        let match_count = if let Some(results) = &self.search_results {
+            results.iter().map(|r| r.matches.len()).sum()
+        } else {
+            self.filtered_entries.len()
+        };
+        let is_full_search = self.search_results.is_some();
+        let status_text = if is_full_search {
+            format!("{} matches in content", match_count)
+        } else if !is_empty {
+            format!("{} files filtered", match_count)
+        } else {
+            String::new()
+        };
 
         div()
-            .absolute()
-            .top(px(12.0))
-            .right(px(24.0))
-            .w(px(360.0))
+            .w_full()
             .bg(rgb(theme::BG))
-            .border_1()
+            .border_b_1()
             .border_color(rgb(theme::BORDER))
-            .rounded(px(8.0))
-            .shadow_lg()
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|_this, _ev: &gpui::MouseDownEvent, _window, cx| {
@@ -1054,34 +1432,109 @@ impl ExplorerPage {
                 cx.stop_propagation();
             }))
             .child(
+                // Scope Selection
                 div()
                     .flex()
-                    .items_center()
+                    .gap_4()
+                    .px(px(12.0))
+                    .pt(px(8.0))
+                    .text_xs()
+                    .text_color(rgb(theme::FG_SECONDARY))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .items_center()
+                            .child("Scope:")
+                            .child(self.render_scope_button(SearchScope::Home, "Home", cx))
+                            .child(self.render_scope_button(SearchScope::Root, "Root", cx)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_start()
                     .gap_2()
                     .px(px(12.0))
                     .py(px(10.0))
                     .child(
                         Icon::new(IconName::Search)
                             .size_4()
-                            .text_color(rgb(theme::FG_SECONDARY)),
+                            .text_color(rgb(theme::FG_SECONDARY))
+                            .mt(px(8.0)), // Align with input
                     )
                     .child(
                         div()
                             .flex_1()
                             .flex()
                             .flex_col()
-                            .gap_1()
+                            .gap_2()
                             .child({
                                 let si = self.search_input.clone();
-                                TextInput::new(&si)
+                                div()
+                                    .on_key_down(cx.listener(
+                                        |this, event: &gpui::KeyDownEvent, window, cx| {
+                                            if event.keystroke.key == "enter" {
+                                                this.trigger_search(cx);
+                                            } else if event.keystroke.key == "escape" {
+                                                this.toggle_search(window, cx);
+                                            }
+                                        },
+                                    ))
+                                    .child(TextInput::new(&si))
                             })
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(self.render_toggle_button(
+                                        "Aa",
+                                        self.match_case,
+                                        |this, cx| this.toggle_match_case(cx),
+                                        cx,
+                                    ))
+                                    .child(self.render_toggle_button(
+                                        "ab",
+                                        self.match_whole_word,
+                                        |this, cx| this.toggle_match_whole_word(cx),
+                                        cx,
+                                    ))
+                                    .child(self.render_toggle_button(
+                                        ".*",
+                                        self.use_regex,
+                                        |this, cx| this.toggle_use_regex(cx),
+                                        cx,
+                                    ))
+                                    .child(div().flex_1())
+                                    .child(
+                                        // Run Search Button
+                                        div()
+                                            .cursor_pointer()
+                                            .bg(rgb(theme::ACCENT))
+                                            .text_color(rgb(theme::BG))
+                                            .px(px(8.0))
+                                            .py(px(2.0))
+                                            .rounded(px(4.0))
+                                            .text_xs()
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .child("Search")
+                                            .hover(|this| this.opacity(0.8))
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.trigger_search(cx);
+                                                }),
+                                            ),
+                                    ),
+                            )
                             .child(
                                 div().h(px(18.0)).child(
                                     div()
                                         .text_xs()
                                         .text_color(rgb(theme::FG_SECONDARY))
-                                        .when(!is_empty, |this| {
-                                            this.child(format!("{} matches", match_count))
+                                        .when(!status_text.is_empty(), |this| {
+                                            this.child(status_text)
                                         }),
                                 ),
                             ),
@@ -1102,6 +1555,66 @@ impl ExplorerPage {
                                     .child("×"),
                             ),
                     ),
+            )
+    }
+
+    fn render_scope_button(
+        &self,
+        scope: SearchScope,
+        label: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_active = self.search_scope == scope;
+        div()
+            .cursor_pointer()
+            .px(px(4.0))
+            .rounded(px(4.0))
+            .when(is_active, |this| {
+                this.bg(rgb(theme::ACCENT)).text_color(rgb(theme::BG))
+            })
+            .when(!is_active, |this| {
+                this.hover(|s| s.bg(rgb(theme::BG_HOVER)))
+            })
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.set_search_scope(scope, cx);
+                }),
+            )
+            .child(label.to_string())
+    }
+
+    fn render_toggle_button(
+        &self,
+        label: &str,
+        active: bool,
+        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static + Copy,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .cursor_pointer()
+            .border_1()
+            .border_color(if active {
+                rgb(theme::ACCENT)
+            } else {
+                rgb(theme::BORDER)
+            })
+            .bg(if active {
+                rgb(theme::ACCENT_LIGHT)
+            } else {
+                rgb(theme::BG)
+            })
+            .px(px(4.0))
+            .rounded(px(4.0))
+            .text_xs()
+            .font_family("Mono") // Monospace for regex/code like buttons
+            .child(label.to_string())
+            .hover(|this| this.bg(rgb(theme::BG_HOVER)))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    on_click(this, cx);
+                }),
             )
     }
 
@@ -1470,10 +1983,36 @@ impl ExplorerPage {
                     .py(px(16.0))
                     .child(
                         div()
+                            .id("preview-scroll")
+                            .size_full()
+                            .overflow_scroll()
                             .text_sm()
+                            .font_family("Mono")
                             .text_color(rgb(theme::FG_SECONDARY))
                             .line_height(px(20.0))
-                            .child(body),
+                            .child(if let Some(highlights) = &self.preview_highlights {
+                                let text = self.preview_text.as_deref().unwrap_or("");
+                                let highlight_styles: Vec<(
+                                    std::ops::Range<usize>,
+                                    gpui::HighlightStyle,
+                                )> = highlights
+                                    .iter()
+                                    .map(|(range, color)| {
+                                        (
+                                            range.clone(),
+                                            gpui::HighlightStyle {
+                                                color: Some(*color),
+                                                ..Default::default()
+                                            },
+                                        )
+                                    })
+                                    .collect();
+                                let styled = StyledText::new(text.to_string())
+                                    .with_highlights(highlight_styles);
+                                div().child(styled)
+                            } else {
+                                div().child(body)
+                            }),
                     ),
             )
     }

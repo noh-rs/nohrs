@@ -19,7 +19,8 @@ impl IndexManager {
         let nohrs_dir = home_dir.join(".nohrs");
         let index_path = nohrs_dir.join("index");
 
-        Self::new_internal(index_path, home_dir)
+        let documents_dir = home_dir.join("Documents");
+        Self::new_internal(index_path, documents_dir)
     }
 
     /// Internal constructor for testing or custom paths
@@ -33,7 +34,23 @@ impl IndexManager {
         let schema = Self::create_schema();
 
         let index = if index_path.join("meta.json").exists() {
-            Index::open_in_dir(&index_path)?
+            // Try to open existing index
+            let existing_index = Index::open_in_dir(&index_path)?;
+            let existing_schema = existing_index.schema();
+
+            // Check if schema has required fields (e.g., filename was added later)
+            if existing_schema.get_field("filename").is_err() {
+                tracing::info!("Schema outdated (missing filename field), recreating index...");
+                drop(existing_index);
+                // Delete old index
+                if let Err(e) = fs::remove_dir_all(&index_path) {
+                    tracing::warn!("Failed to remove old index: {}", e);
+                }
+                fs::create_dir_all(&index_path)?;
+                Index::create_in_dir(&index_path, schema)?
+            } else {
+                existing_index
+            }
         } else {
             Index::create_in_dir(&index_path, schema)?
         };
@@ -53,6 +70,9 @@ impl IndexManager {
 
         // path: stored and indexed as exact string (keyword) for ID/deletion
         schema_builder.add_text_field("path", STRING | STORED);
+
+        // filename: tokenized for full-text search on file names
+        schema_builder.add_text_field("filename", TEXT | STORED);
 
         // content: indexed but not stored (for full text search)
         schema_builder.add_text_field("content", TEXT);
@@ -74,6 +94,9 @@ impl IndexManager {
         let path_field = schema
             .get_field("path")
             .context("Schema error: path field missing")?;
+        let filename_field = schema
+            .get_field("filename")
+            .context("Schema error: filename field missing")?;
         let content_field = schema
             .get_field("content")
             .context("Schema error: content field missing")?;
@@ -115,6 +138,7 @@ impl IndexManager {
                             path,
                             &mut *writer_guard,
                             path_field,
+                            filename_field,
                             content_field,
                         ) {
                             tracing::warn!("Failed to index file {:?}: {}", path, e);
@@ -146,6 +170,7 @@ impl IndexManager {
         path: &Path,
         writer: &mut IndexWriter,
         path_field: Field,
+        filename_field: Field,
         content_field: Field,
     ) -> Result<()> {
         let metadata = fs::metadata(path)?;
@@ -165,12 +190,14 @@ impl IndexManager {
                 }
 
                 let path_str = path.to_string_lossy();
+                let filename = path.file_name().unwrap_or_default().to_string_lossy();
 
                 // Add path to content so it's searchable via full text query
                 let searchable_content = format!("{}\n{}", path_str, content);
 
                 let mut doc = TantivyDocument::default();
                 doc.add_text(path_field, &path_str);
+                doc.add_text(filename_field, &filename);
                 doc.add_text(content_field, &searchable_content);
 
                 // Delete existing doc with same path to avoid duplicates (upsert)
@@ -212,13 +239,18 @@ impl IndexManager {
             .map_err(|e| anyhow::anyhow!("Poisoned lock: {}", e))?;
         let schema = self.index.schema();
         let path_field = schema.get_field("path").context("Schema error")?;
+        let filename_field = schema.get_field("filename").context("Schema error")?;
         let content_field = schema.get_field("content").context("Schema error")?;
 
         for path in paths {
             if path.exists() {
-                if let Err(e) =
-                    self.index_single_file(path, &mut *writer_guard, path_field, content_field)
-                {
+                if let Err(e) = self.index_single_file(
+                    path,
+                    &mut *writer_guard,
+                    path_field,
+                    filename_field,
+                    content_field,
+                ) {
                     tracing::warn!("Failed to update index for {:?}: {}", path, e);
                 }
             } else {
@@ -248,10 +280,13 @@ impl super::backend::SearchBackend for IndexManager {
 
         let schema = self.index.schema();
         let path_field = schema.get_field("path").context("Field not found")?;
+        let filename_field = schema.get_field("filename").context("Field not found")?;
         let content_field = schema.get_field("content").context("Field not found")?;
 
-        let query_parser =
-            tantivy::query::QueryParser::for_index(&self.index, vec![path_field, content_field]);
+        let query_parser = tantivy::query::QueryParser::for_index(
+            &self.index,
+            vec![filename_field, content_field],
+        );
         let query = query_parser.parse_query(query_str)?;
 
         let top_docs = searcher.search(&query, &tantivy::collector::TopDocs::with_limit(50))?;
@@ -272,14 +307,32 @@ impl super::backend::SearchBackend for IndexManager {
             if let Some(path_val) = retrieved_doc.get_first(path_field) {
                 if let Some(path_str) = path_val.as_str() {
                     let path_buf = PathBuf::from(path_str);
+
+                    // Find actual line number and content by searching file
+                    let (line_number, line_content) = find_match_line(&path_buf, query_str);
+
                     results.push(super::SearchResult {
                         path: path_buf,
-                        line_number: 1,
-                        line_content: "Refinement needed: Line finding".to_string(),
+                        line_number,
+                        line_content,
                     });
                 }
             }
         }
         Ok(results)
     }
+}
+
+/// Find the first line in a file that matches the query (case-insensitive)
+fn find_match_line(path: &Path, query: &str) -> (usize, String) {
+    if let Ok(content) = fs::read_to_string(path) {
+        let query_lower = query.to_lowercase();
+        for (idx, line) in content.lines().enumerate() {
+            if line.to_lowercase().contains(&query_lower) {
+                return (idx + 1, line.to_string());
+            }
+        }
+    }
+    // Fallback: return first line or empty
+    (1, String::new())
 }

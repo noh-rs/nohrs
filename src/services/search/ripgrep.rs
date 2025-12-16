@@ -20,6 +20,7 @@ impl RipgrepBackend {
 struct MatchStorage {
     results: Arc<Mutex<Vec<SearchResult>>>,
     path: PathBuf,
+    max_results: usize,
 }
 
 impl Sink for MatchStorage {
@@ -35,6 +36,12 @@ impl Sink for MatchStorage {
             .results
             .lock()
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Lock poisoned"))?;
+
+        // Check if limit reached
+        if results.len() >= self.max_results {
+            return Ok(false); // Stop searching this file
+        }
+
         results.push(SearchResult {
             path: self.path.clone(),
             line_number,
@@ -50,16 +57,26 @@ impl SearchBackend for RipgrepBackend {
         let matcher = RegexMatcher::new(query_str).context("Invalid regex")?;
         let results = Arc::new(Mutex::new(Vec::new()));
 
-        let walker = WalkBuilder::new(&self.root).build();
+        let walker = WalkBuilder::new(&self.root)
+            .max_depth(Some(10)) // Limit depth to avoid deep recursion
+            .hidden(true) // Skip hidden files
+            .git_ignore(true)
+            .build();
 
-        // This is a synchronous simplified implementation.
-        // For better performance we should use correct parallel walker from ignore
-        // but that requires more complex sink handling.
-        // Let's stick to simple serial walk for now or use parallel if easy.
-        // Parallel requires `build_parallel`.
-        // Let's use serial for simplicity in this MVP step.
+        const MAX_RESULTS: usize = 100;
 
         for result in walker {
+            // Check if we've hit the result limit
+            {
+                let current_results = results
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("Lock poisoned"))?;
+                if current_results.len() >= MAX_RESULTS {
+                    tracing::info!("Search hit result limit of {}", MAX_RESULTS);
+                    break;
+                }
+            }
+
             match result {
                 Ok(entry) => {
                     if entry.file_type().map_or(false, |ft| ft.is_file()) {
@@ -68,6 +85,7 @@ impl SearchBackend for RipgrepBackend {
                         let sink = MatchStorage {
                             results: results_clone,
                             path: path.clone(),
+                            max_results: MAX_RESULTS,
                         };
 
                         let mut searcher = Searcher::new();
@@ -77,7 +95,7 @@ impl SearchBackend for RipgrepBackend {
                         }
                     }
                 }
-                Err(e) => tracing::warn!("Walk error: {}", e),
+                Err(e) => tracing::debug!("Walk error: {}", e),
             }
         }
 

@@ -4,13 +4,13 @@ pub mod explorer;
 pub mod extensions;
 pub mod git;
 pub mod s3;
-pub mod search;
+// removed search
 pub mod settings;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PageKind {
     Explorer,
-    Search,
+
     Git,
     S3,
     Extensions,
@@ -21,7 +21,7 @@ impl PageKind {
     pub fn label(&self) -> &'static str {
         match self {
             PageKind::Explorer => "エクスプローラ",
-            PageKind::Search => "検索",
+
             PageKind::Git => "Git",
             PageKind::S3 => "S3",
             PageKind::Extensions => "拡張機能",
@@ -32,7 +32,7 @@ impl PageKind {
     pub fn icon_path(&self) -> &'static str {
         match self {
             PageKind::Explorer => "icons/folder.svg",
-            PageKind::Search => "icons/search.svg",
+
             PageKind::Git => "icons/github.svg",
             PageKind::S3 => "icons/database.svg",
             PageKind::Extensions => "icons/layout-dashboard.svg",
@@ -43,7 +43,6 @@ impl PageKind {
     pub fn all() -> Vec<PageKind> {
         vec![
             PageKind::Explorer,
-            PageKind::Search,
             PageKind::Git,
             PageKind::S3,
             PageKind::Extensions,

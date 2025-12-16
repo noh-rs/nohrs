@@ -3,7 +3,7 @@
 use crate::core::telemetry::logging::init_logging;
 use crate::pages::{
     explorer::ExplorerPage, extensions::ExtensionsPage, git::GitPage, s3::S3Page,
-    search::SearchPage, settings::SettingsPage, PageKind,
+    settings::SettingsPage, PageKind,
 };
 use crate::ui::assets::Assets;
 use crate::ui::components::layout::footer::{footer, FooterProps};
@@ -18,8 +18,7 @@ use crate::services::search::SearchService;
 use gpui::Entity;
 use gpui::{
     div, prelude::*, px, rgb, size, AnyElement, App, AppContext, Application, Bounds, Context,
-    ElementId, FocusHandle, Focusable, InteractiveElement, Render, Rgba, SharedString, Task,
-    WeakEntity, Window,
+    FocusHandle, Focusable, InteractiveElement, Render, Window,
 };
 use gpui_component::input::InputState;
 use gpui_component::resizable::ResizableState;
@@ -59,13 +58,16 @@ impl NohrApp {
 
                 // Create page instances
                 let explorer = cx.new(|cx| {
-                    ExplorerPage::new(resizable.clone(), search_input.clone(), cx.focus_handle())
+                    ExplorerPage::new(
+                        resizable.clone(),
+                        search_input.clone(),
+                        search_service.clone(),
+                        cx.focus_handle(),
+                    )
                 });
-                let search = cx.new(|cx| {
-                    SearchPage::new(resizable.clone(), window, search_service.clone(), cx)
-                });
-                // let weak_search = search.downgrade();
-                // search.update(cx, |model, cx| model.init(weak_search, cx));
+                // Search page removed
+                // let search = ...
+
                 let git = cx.new(|_cx| GitPage::new());
                 let s3 = cx.new(|_cx| S3Page::new());
                 let extensions = cx.new(|_cx| ExtensionsPage::new());
@@ -76,7 +78,7 @@ impl NohrApp {
                         current_page: PageKind::Explorer,
                         focus_handle,
                         explorer,
-                        search,
+                        // search removed
                         git,
                         s3,
                         extensions,
@@ -100,7 +102,6 @@ pub struct RootView {
     focus_handle: FocusHandle,
     // Page entities
     explorer: Entity<ExplorerPage>,
-    search: Entity<SearchPage>,
     git: Entity<GitPage>,
     s3: Entity<S3Page>,
     extensions: Entity<ExtensionsPage>,
@@ -285,7 +286,7 @@ impl RootView {
     fn render_active_page(&self, _window: &mut Window, _cx: &mut Context<Self>) -> AnyElement {
         match self.current_page {
             PageKind::Explorer => self.explorer.clone().into_any_element(),
-            PageKind::Search => self.search.clone().into_any_element(),
+
             PageKind::Git => self.git.clone().into_any_element(),
             PageKind::S3 => self.s3.clone().into_any_element(),
             PageKind::Extensions => self.extensions.clone().into_any_element(),

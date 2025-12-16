@@ -37,15 +37,50 @@ impl SearchEngine {
             }
         });
 
-        // Trigger initial indexing in background
-        // specific to Home scope currently
-        let (progress_tx, progress_rx) = tokio::sync::watch::channel(0.0);
+        // Trigger initial indexing in background (only if index is empty or schema changed)
+        let (progress_tx, progress_rx) = tokio::sync::watch::channel(1.0); // Start at 1.0 (done)
         let initial_manager = index_manager.clone();
         tokio::task::spawn_blocking(move || {
-            // TODO: Check if index is empty or needs refresh?
-            // For now, simple walk ensures consistent state.
-            if let Err(e) = initial_manager.index_home(Some(progress_tx)) {
-                tracing::error!("Initial indexing failed: {}", e);
+            // Check if schema has required fields (detects schema changes)
+            let schema = initial_manager.index().schema();
+            let has_filename_field = schema.get_field("filename").is_ok();
+
+            if !has_filename_field {
+                tracing::info!(
+                    "Schema outdated (missing filename field), forcing full indexing..."
+                );
+                let _ = progress_tx.send(0.0);
+                if let Err(e) = initial_manager.index_home(Some(progress_tx)) {
+                    tracing::error!("Initial indexing failed: {}", e);
+                }
+                return;
+            }
+
+            // Check if index already has documents
+            match initial_manager.index().reader() {
+                Ok(reader) => {
+                    let doc_count = reader.searcher().num_docs();
+                    if doc_count == 0 {
+                        tracing::info!("Index is empty, starting full indexing...");
+                        let _ = progress_tx.send(0.0); // Reset to 0 for indexing
+                        if let Err(e) = initial_manager.index_home(Some(progress_tx)) {
+                            tracing::error!("Initial indexing failed: {}", e);
+                        }
+                    } else {
+                        tracing::info!(
+                            "Index already has {} documents, skipping initial indexing",
+                            doc_count
+                        );
+                        // Progress stays at 1.0 (done)
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to read index, running full indexing: {}", e);
+                    let _ = progress_tx.send(0.0);
+                    if let Err(e) = initial_manager.index_home(Some(progress_tx)) {
+                        tracing::error!("Initial indexing failed: {}", e);
+                    }
+                }
             }
         });
 
