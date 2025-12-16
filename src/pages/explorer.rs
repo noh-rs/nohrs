@@ -6,7 +6,7 @@ use crate::ui::theme::theme;
 use crate::services::syntax::SyntaxService;
 use gpui::{
     div, prelude::*, px, rgb, size, AnyElement, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, Render, StyledText, Window,
+    InteractiveElement, IntoElement, Render, ScrollHandle, SharedString, StyledText, Window,
 };
 use gpui_component::breadcrumb::{Breadcrumb, BreadcrumbItem};
 use gpui_component::input::{InputState, TextInput};
@@ -106,7 +106,11 @@ pub struct ExplorerPage {
     // Syntax
     syntax_service: Arc<SyntaxService>,
     preview_highlights: Option<Vec<(std::ops::Range<usize>, gpui::Hsla)>>,
-    // Search View State
+    // Virtual Preview
+    preview_lines: Vec<String>,
+    preview_line_highlights: HashMap<usize, Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>>,
+    preview_virtual_handle: VirtualListScrollHandle,
+    preview_scroll_handle: ScrollHandle,
 }
 
 impl Focusable for ExplorerPage {
@@ -182,6 +186,10 @@ impl ExplorerPage {
             is_performing_search: false,
             expanded_search_files: std::collections::HashSet::new(),
             syntax_service: Arc::new(SyntaxService::new()),
+            preview_lines: Vec::new(),
+            preview_line_highlights: HashMap::new(),
+            preview_virtual_handle: VirtualListScrollHandle::new(),
+            preview_scroll_handle: ScrollHandle::new(),
         }
     }
 
@@ -212,10 +220,12 @@ impl ExplorerPage {
                         let meta = std::fs::metadata(&res.path).ok();
                         let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
                         let modified = meta
+                            .as_ref()
                             .and_then(|m| m.modified().ok())
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|d| d.as_secs())
                             .unwrap_or(0);
+                        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
                         FileEntryDto {
                             name: if res.folder.is_empty() {
                                 res.filename.clone()
@@ -223,7 +233,11 @@ impl ExplorerPage {
                                 format!("{}/{}", res.folder, res.filename)
                             },
                             path: res.path.clone(),
-                            kind: "file".to_string(),
+                            kind: if is_dir {
+                                "dir".to_string()
+                            } else {
+                                "file".to_string()
+                            },
                             size,
                             modified,
                         }
@@ -653,6 +667,10 @@ impl ExplorerPage {
     }
 
     fn open_preview(&mut self, path: String) {
+        // Reset virtual preview data
+        self.preview_lines.clear();
+        self.preview_line_highlights.clear();
+
         if let Ok(md) = std::fs::metadata(&path) {
             if md.is_file() && md.len() <= 1024 * 1024 * 2 {
                 if let Ok(bytes) = std::fs::read(&path) {
@@ -664,6 +682,70 @@ impl ExplorerPage {
                                 .and_then(|s| s.to_str()),
                         );
                         self.preview_path = Some(path);
+
+                        // Populate lines
+                        self.preview_lines = text.lines().map(|s| s.to_string()).collect();
+                        if self.preview_lines.is_empty() && !text.is_empty() {
+                            // Handle case with no newlines but content
+                            self.preview_lines.push(text.clone());
+                        }
+
+                        // Map highlights to lines
+                        let mut line_highlights: HashMap<
+                            usize,
+                            Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>,
+                        > = HashMap::new();
+                        let mut current_offset = 0;
+
+                        for (line_idx, line) in self.preview_lines.iter().enumerate() {
+                            let line_len = line.len();
+                            let line_end = current_offset + line_len; // End of content, excluding newline (usually)
+
+                            // Check for overlapping highlights
+                            for (range, color) in &highlights {
+                                // Range overlap check
+                                let start = range.start.max(current_offset);
+                                let end = range.end.min(line_end);
+
+                                if start < end {
+                                    // Map to relative offset
+                                    let rel_start = start - current_offset;
+                                    let rel_end = end - current_offset;
+
+                                    // Ensure valid range
+                                    if rel_start <= line_len && rel_end <= line_len {
+                                        line_highlights.entry(line_idx).or_default().push((
+                                            rel_start..rel_end,
+                                            gpui::HighlightStyle {
+                                                color: Some(*color),
+                                                ..Default::default()
+                                            },
+                                        ));
+                                    }
+                                }
+                            }
+
+                            // Advance offset (+1 for newline if not last line... technically lines() consumes newlines)
+                            // We need to account for the newline character in the original text to keep offsets valid
+                            // But `lines()` strips them.
+                            // If we assume standard \n, we add 1. If \r\n, we add 2.
+                            // To be precise, we should just scan the original text or use `match_indices`.
+                            // Text byte indices might drift if we just +1.
+                            // Use accumulation of line.len() + 1 serves as approximation but could fail on \r\n.
+                            // Better: use `text[current_offset..]` to find the next line break.
+                            let consumed = line.len();
+                            let remainder = &text[current_offset + consumed..];
+                            let newline_len = if remainder.starts_with("\r\n") {
+                                2
+                            } else if remainder.starts_with('\n') {
+                                1
+                            } else {
+                                0
+                            };
+                            current_offset += consumed + newline_len;
+                        }
+
+                        self.preview_line_highlights = line_highlights;
                         self.preview_text = Some(text);
                         self.preview_highlights = Some(highlights);
                         return;
@@ -671,9 +753,13 @@ impl ExplorerPage {
                 }
             }
         }
+
         self.preview_path = Some(path);
-        self.preview_text = Some("(プレビュー未対応ファイル)".into());
+        let msg = "(プレビュー未対応ファイル)".to_string();
+        self.preview_text = Some(msg.clone());
+        self.preview_lines = vec![msg];
         self.preview_highlights = None;
+        self.preview_line_highlights.clear();
     }
 
     fn shortcuts(&self) -> Vec<(String, String)> {
@@ -780,14 +866,14 @@ impl Render for ExplorerPage {
                         .child(
                             resizable_panel()
                                 .size(px(240.0))
-                                .size_range(px(240.0)..px(600.0))
+                                .size_range(px(240.0)..px(2000.0))
                                 .child(
                                     div()
                                         .size_full()
                                         .overflow_hidden()
                                         .border_l_1()
                                         .border_color(rgb(theme::BORDER))
-                                        .child(self.render_preview()),
+                                        .child(self.render_preview(window)),
                                 ),
                         )
                         .into_any_element(),
@@ -2110,7 +2196,19 @@ impl ExplorerPage {
                     .map(|(line_num, content)| {
                         let highlights = Self::find_query_highlights(&content, &query);
                         let styled = StyledText::new(content.clone()).with_highlights(highlights);
+                        let path = item.path.clone();
                         div()
+                            .id(SharedString::from(format!(
+                                "snippet-{}-{}",
+                                path.clone(),
+                                line_num
+                            )))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let offset = ((line_num.max(1) - 1) as f32) * 20.0;
+                                this.preview_scroll_handle
+                                    .set_offset(gpui::Point::new(px(0.0), px(offset)));
+                                cx.notify();
+                            }))
                             .h(px(24.0)) // Fixed height matching update_item_sizes
                             .pl(px(48.0))
                             .pr(px(24.0))
@@ -2194,18 +2292,38 @@ impl ExplorerPage {
         )
     }
 
-    fn render_preview(&mut self) -> impl IntoElement {
+    fn render_preview(&mut self, window: &mut Window) -> impl IntoElement {
         let title = self
             .preview_path
             .as_ref()
             .map(|p| path_name(p))
             .unwrap_or_else(|| "プレビュー".to_string());
 
-        let body: String = self
-            .preview_text
-            .as_ref()
-            .map(|s| s.clone())
-            .unwrap_or_else(|| "ファイルを選択するとプレビューが表示されます".into());
+        let line_count = self.preview_lines.len().max(1);
+        let max_digits = line_count.to_string().len();
+
+        // Clone for closure
+        let query = self.search_query.clone();
+
+        // Virtual Scrolling Constants
+        let row_height_px = px(20.0);
+        // Use window height as approximation
+        let viewport_height = window.viewport_size().height;
+
+        // Scroll handle returns Point<Pixels>
+        // Note: scroll offset is usually negative.
+        let scroll_y = self.preview_scroll_handle.offset().y.abs();
+
+        let visible_lines = (viewport_height / row_height_px) as usize + 1;
+        let start_line = (scroll_y / row_height_px) as usize;
+        let buffer = 20; // Extra lines
+
+        let render_start = start_line.saturating_sub(buffer);
+        let render_end = (start_line + visible_lines + buffer).min(self.preview_lines.len());
+
+        // Spacers
+        let padding_top = render_start as f32 * 20.0;
+        let padding_bottom = (self.preview_lines.len().saturating_sub(render_end)) as f32 * 20.0;
 
         div()
             .size_full()
@@ -2229,108 +2347,128 @@ impl ExplorerPage {
             .child(
                 div()
                     .flex_1()
-                    .overflow_hidden()
+                    .overflow_hidden() // Container needs simple overflow hidden
                     .px(px(16.0))
                     .py(px(16.0))
                     .child(
                         div()
                             .id("preview-scroll")
                             .size_full()
-                            .overflow_scroll()
+                            .overflow_scroll() // Native scrolling
+                            .track_scroll(&self.preview_scroll_handle)
+                            .flex()
+                            .flex_col() // Vertical stack of lines
                             .text_sm()
                             .font_family("Mono")
-                            .text_color(rgb(theme::FG_SECONDARY))
-                            .line_height(px(20.0))
-                            .child(if let Some(highlights) = &self.preview_highlights {
-                                let text = self.preview_text.as_deref().unwrap_or("");
-                                // Collect syntax highlights with default black color if missing
-                                let mut highlight_styles: Vec<(
-                                    std::ops::Range<usize>,
-                                    gpui::HighlightStyle,
-                                )> = highlights
-                                    .iter()
-                                    .map(|(range, color)| {
-                                        (
-                                            range.clone(),
-                                            gpui::HighlightStyle {
-                                                color: Some(*color),
-                                                ..Default::default()
-                                            },
-                                        )
-                                    })
-                                    .collect();
+                            .line_height(row_height_px)
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .pt(px(padding_top))
+                                    .pb(px(padding_bottom))
+                                    .children(
+                                        self.preview_lines
+                                            .iter()
+                                            .enumerate()
+                                            .skip(render_start)
+                                            .take(render_end - render_start)
+                                            .map(|(ix, line_content)| {
+                                                let line_num = ix + 1;
+                                                let num_str = format!(
+                                                    "{:>width$}",
+                                                    line_num,
+                                                    width = max_digits
+                                                );
 
-                                // Add query highlights on top of syntax highlights
-                                if !self.search_query.is_empty() {
-                                    let query_highlights =
-                                        Self::find_query_highlights(text, &self.search_query);
-                                    // highlight_styles.extend(query_highlights);
-                                    highlight_styles.extend(query_highlights);
-                                }
+                                                // Get syntax highlights
+                                                let syntax = self
+                                                    .preview_line_highlights
+                                                    .get(&ix)
+                                                    .cloned()
+                                                    .unwrap_or_default();
 
-                                // Flatten highlights to handle overlaps correctly
-                                // This is crucial because GPUI's text/coretext handling can panic with overlapping ranges on multibyte strings
-                                let mut points = Vec::new();
-                                for (i, (range, _)) in highlight_styles.iter().enumerate() {
-                                    points.push((range.start, true, i));
-                                    points.push((range.end, false, i));
-                                }
+                                                // Get query highlights
+                                                let query_highlights = if !query.is_empty() {
+                                                    Self::find_query_highlights(
+                                                        line_content,
+                                                        &query,
+                                                    )
+                                                } else {
+                                                    Vec::new()
+                                                };
 
-                                // Sort: position asc, then End types (false) before Start types (true)
-                                points.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-
-                                let mut flattened_styles: Vec<(
-                                    std::ops::Range<usize>,
-                                    gpui::HighlightStyle,
-                                )> = Vec::new();
-                                let mut active_stack = Vec::new();
-                                let mut prev_pos = 0;
-
-                                for (pos, is_start, idx) in points {
-                                    if pos > prev_pos {
-                                        // Current segment is [prev_pos, pos)
-                                        // Check boundary validity just in case
-                                        if text.is_char_boundary(prev_pos)
-                                            && text.is_char_boundary(pos)
-                                        {
-                                            if let Some(&top_idx) = active_stack.last() {
-                                                // Create a style using the top-most (latest) style
-                                                let item: &(
+                                                let mut combined: Vec<(
                                                     std::ops::Range<usize>,
                                                     gpui::HighlightStyle,
-                                                ) = &highlight_styles[top_idx];
-                                                let style = item.1.clone();
-                                                flattened_styles.push((prev_pos..pos, style));
-                                            }
-                                        }
-                                    }
+                                                )> = syntax;
+                                                combined.extend(query_highlights);
 
-                                    if is_start {
-                                        active_stack.push(idx);
-                                    } else {
-                                        if let Some(position) =
-                                            active_stack.iter().rposition(|&x| x == idx)
-                                        {
-                                            active_stack.remove(position);
-                                        }
-                                    }
-                                    prev_pos = pos;
-                                }
+                                                // Flatten logic
+                                                let mut points: Vec<(usize, bool, usize)> =
+                                                    Vec::new();
+                                                for (i, (range, _)) in combined.iter().enumerate() {
+                                                    points.push((range.start, true, i));
+                                                    points.push((range.end, false, i));
+                                                }
+                                                points.sort_by(|a, b| {
+                                                    a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1))
+                                                });
 
-                                let styled = StyledText::new(text.to_string())
-                                    .with_highlights(flattened_styles);
-                                div().child(styled)
-                            } else if !self.search_query.is_empty() {
-                                // Even without syntax highlights, show query highlights
-                                let text = self.preview_text.as_deref().unwrap_or("");
-                                let query_highlights =
-                                    Self::find_query_highlights(text, &self.search_query);
-                                let styled = StyledText::new(text.to_string())
-                                    .with_highlights(query_highlights);
-                                div().child(styled)
-                            } else {
-                                div().child(body)
-                            }),
+                                                let mut flattened: Vec<(
+                                                    std::ops::Range<usize>,
+                                                    gpui::HighlightStyle,
+                                                )> = Vec::new();
+                                                let mut active: Vec<usize> = Vec::new();
+                                                let mut prev = 0;
+
+                                                for (pos, is_start, idx) in points {
+                                                    if pos > prev {
+                                                        if line_content.is_char_boundary(prev)
+                                                            && line_content.is_char_boundary(pos)
+                                                        {
+                                                            if let Some(&top) = active.last() {
+                                                                flattened.push((
+                                                                    prev..pos,
+                                                                    combined[top].1.clone(),
+                                                                ));
+                                                            }
+                                                        }
+                                                    }
+                                                    if is_start {
+                                                        active.push(idx);
+                                                    } else {
+                                                        if let Some(p) =
+                                                            active.iter().rposition(|&x| x == idx)
+                                                        {
+                                                            active.remove(p);
+                                                        }
+                                                    }
+                                                    prev = pos;
+                                                }
+
+                                                let styled = StyledText::new(line_content.clone())
+                                                    .with_highlights(flattened);
+
+                                                div()
+                                                    .flex()
+                                                    .items_start()
+                                                    .gap_4()
+                                                    .child(
+                                                        div()
+                                                            .flex_shrink_0()
+                                                            .text_color(rgb(theme::MUTED))
+                                                            .child(num_str),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .w_full()
+                                                            .whitespace_normal()
+                                                            .child(styled),
+                                                    )
+                                            }),
+                                    ),
+                            ),
                     ),
             )
     }

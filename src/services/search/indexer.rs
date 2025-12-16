@@ -39,8 +39,12 @@ impl IndexManager {
             let existing_schema = existing_index.schema();
 
             // Check if schema has required fields (e.g., filename was added later)
-            if existing_schema.get_field("filename").is_err() {
-                tracing::info!("Schema outdated (missing filename field), recreating index...");
+            if existing_schema.get_field("filename").is_err()
+                || existing_schema.get_field("is_directory").is_err()
+            {
+                tracing::info!(
+                    "Schema outdated (missing filename or is_directory field), recreating index..."
+                );
                 drop(existing_index);
                 // Delete old index
                 if let Err(e) = fs::remove_dir_all(&index_path) {
@@ -80,6 +84,9 @@ impl IndexManager {
         // last_modified: fast field for sorting or filtering
         schema_builder.add_u64_field("last_modified", FAST);
 
+        // is_directory: fast field (0=false, 1=true)
+        schema_builder.add_u64_field("is_directory", FAST | STORED);
+
         schema_builder.build()
     }
 
@@ -100,6 +107,9 @@ impl IndexManager {
         let content_field = schema
             .get_field("content")
             .context("Schema error: content field missing")?;
+        let is_directory_field = schema
+            .get_field("is_directory")
+            .context("Schema error: is_directory field missing")?;
 
         // 1. Count files if progress tracking is enabled
         let mut total_files = 0;
@@ -111,7 +121,8 @@ impl IndexManager {
                 .build();
             for result in walker {
                 if let Ok(entry) = result {
-                    if entry.path().is_file() {
+                    // Count both files and directories
+                    if entry.path().is_file() || entry.path().is_dir() {
                         total_files += 1;
                     }
                 }
@@ -120,13 +131,9 @@ impl IndexManager {
 
         // 2. Index files
         let walker = ignore::WalkBuilder::new(&self.content_root)
-            .hidden(false) // Allow hidden files initially, but .gitignore usually handles them.
-            // But usually we don't want to index .git/ etc.
-            // ignore crate handles .git automatically.
+            .hidden(false)
             .git_ignore(true)
             .build();
-
-        // Use the locked writer
 
         let mut processed = 0;
         for result in walker {
@@ -140,16 +147,28 @@ impl IndexManager {
                             path_field,
                             filename_field,
                             content_field,
+                            is_directory_field,
                         ) {
                             tracing::warn!("Failed to index file {:?}: {}", path, e);
                         }
+                    } else if path.is_dir() {
+                        if let Err(e) = self.index_single_directory(
+                            path,
+                            &mut *writer_guard,
+                            path_field,
+                            filename_field,
+                            content_field,
+                            is_directory_field,
+                        ) {
+                            tracing::warn!("Failed to index directory {:?}: {}", path, e);
+                        }
+                    }
 
-                        // Update progress
-                        processed += 1;
-                        if let Some(tx) = &progress_tx {
-                            if total_files > 0 && processed % 100 == 0 {
-                                let _ = tx.send(processed as f32 / total_files as f32);
-                            }
+                    // Update progress
+                    processed += 1;
+                    if let Some(tx) = &progress_tx {
+                        if total_files > 0 && processed % 100 == 0 {
+                            let _ = tx.send(processed as f32 / total_files as f32);
                         }
                     }
                 }
@@ -165,6 +184,29 @@ impl IndexManager {
         Ok(())
     }
 
+    fn index_single_directory(
+        &self,
+        path: &Path,
+        writer: &mut IndexWriter,
+        path_field: Field,
+        filename_field: Field,
+        content_field: Field,
+        is_directory_field: Field,
+    ) -> Result<()> {
+        let path_str = path.to_string_lossy();
+        let filename = path.file_name().unwrap_or_default().to_string_lossy();
+
+        let mut doc = TantivyDocument::default();
+        doc.add_text(path_field, &path_str);
+        doc.add_text(filename_field, &filename);
+        doc.add_text(content_field, &filename); // Allow searching dir by name content
+        doc.add_u64(is_directory_field, 1);
+
+        writer.delete_term(Term::from_field_text(path_field, &path_str));
+        writer.add_document(doc)?;
+        Ok(())
+    }
+
     fn index_single_file(
         &self,
         path: &Path,
@@ -172,6 +214,7 @@ impl IndexManager {
         path_field: Field,
         filename_field: Field,
         content_field: Field,
+        is_directory_field: Field,
     ) -> Result<()> {
         let metadata = fs::metadata(path)?;
         if metadata.len() > 10 * 1024 * 1024 {
@@ -199,6 +242,7 @@ impl IndexManager {
                 doc.add_text(path_field, &path_str);
                 doc.add_text(filename_field, &filename);
                 doc.add_text(content_field, &searchable_content);
+                doc.add_u64(is_directory_field, 0);
 
                 // Delete existing doc with same path to avoid duplicates (upsert)
                 // Note: This matches exact path string.
@@ -241,6 +285,7 @@ impl IndexManager {
         let path_field = schema.get_field("path").context("Schema error")?;
         let filename_field = schema.get_field("filename").context("Schema error")?;
         let content_field = schema.get_field("content").context("Schema error")?;
+        let is_directory_field = schema.get_field("is_directory").context("Schema error")?;
 
         for path in paths {
             if path.exists() {
@@ -250,6 +295,7 @@ impl IndexManager {
                     path_field,
                     filename_field,
                     content_field,
+                    is_directory_field,
                 ) {
                     tracing::warn!("Failed to update index for {:?}: {}", path, e);
                 }
@@ -282,6 +328,9 @@ impl super::backend::SearchBackend for IndexManager {
         let path_field = schema.get_field("path").context("Field not found")?;
         let filename_field = schema.get_field("filename").context("Field not found")?;
         let content_field = schema.get_field("content").context("Field not found")?;
+        let is_directory_field = schema
+            .get_field("is_directory")
+            .context("Field not found")?;
 
         let query_parser = tantivy::query::QueryParser::for_index(
             &self.index,
@@ -308,23 +357,36 @@ impl super::backend::SearchBackend for IndexManager {
                 if let Some(path_str) = path_val.as_str() {
                     let path_buf = PathBuf::from(path_str);
 
-                    // Find ALL matching lines in file
-                    let match_lines = find_all_match_lines(&path_buf, query_str);
-
-                    if match_lines.is_empty() {
-                        // No content matches, but file matched by filename - add with empty line
-                        results.push(super::SearchResult {
-                            path: path_buf,
-                            line_number: 0,
-                            line_content: String::new(),
-                        });
-                    } else {
-                        for (line_number, line_content) in match_lines {
+                    match retrieved_doc.get_first(is_directory_field) {
+                        Some(val) if val.as_u64() == Some(1) => {
+                            // Directory match
                             results.push(super::SearchResult {
-                                path: path_buf.clone(),
-                                line_number,
-                                line_content,
+                                path: path_buf,
+                                line_number: 0,
+                                line_content: String::new(),
                             });
+                        }
+                        _ => {
+                            // File match
+                            // Find ALL matching lines in file
+                            let match_lines = find_all_match_lines(&path_buf, query_str);
+
+                            if match_lines.is_empty() {
+                                // No content matches, but file matched by filename - add with empty line
+                                results.push(super::SearchResult {
+                                    path: path_buf,
+                                    line_number: 0,
+                                    line_content: String::new(),
+                                });
+                            } else {
+                                for (line_number, line_content) in match_lines {
+                                    results.push(super::SearchResult {
+                                        path: path_buf.clone(),
+                                        line_number,
+                                        line_content,
+                                    });
+                                }
+                            }
                         }
                     }
                 }
