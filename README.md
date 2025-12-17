@@ -93,3 +93,9 @@ Contributions are welcome! Please feel free to submit a pull request.
 ### Code Style
 
 - Rust (stable; toolchain pinned via rust-toolchain.toml): Follow standard conventions
+
+
+## Links
+
+- **Discord**: https://discord.gg/dZM7fUtE94  
+- **X (Twitter)**: https://x.com/nohrsdotapp
