@@ -7,7 +7,7 @@ Rustとgpuiを使用し、macOS Finderのモダンな代替となる、**高速�
 * **ツールチェーン:** Rust (stable)、 `rust-toolchain.toml` によりバージョン固定
 * **ビルド (コアライブラリのみ):** `cargo build`
 * **GUIバイナリのビルド (プレースホルダーUI):** `cargo build --features gui`
-* **GUIバイナリの実行:** `cargo run --features gui --bin nohr`
+* **GUIバイナリの実行:** `cargo run --features gui --bin nohrs`
 
 **注記**
 
