@@ -22,3 +22,7 @@ coverage/
 
 # AI Agent
 .agent
+
+# personal
+/.github
+/.specify

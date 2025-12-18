@@ -20,12 +20,11 @@ pub enum PageKind {
 impl PageKind {
     pub fn label(&self) -> &'static str {
         match self {
-            PageKind::Explorer => "エクスプローラ",
-
+            PageKind::Explorer => "Explorer",
             PageKind::Git => "Git",
             PageKind::S3 => "S3",
-            PageKind::Extensions => "拡張機能",
-            PageKind::Settings => "設定",
+            PageKind::Extensions => "Extensions",
+            PageKind::Settings => "Settings",
         }
     }
 

@@ -227,7 +227,7 @@ pub fn format_date(timestamp: &u64) -> String {
 
 pub fn get_file_type(name: &str, kind: &str) -> String {
     match kind {
-        "dir" => "フォルダ".to_string(),
+        "dir" => "Folder".to_string(),
         "file" => {
             if let Some(ext) = std::path::Path::new(name)
                 .extension()
@@ -235,10 +235,10 @@ pub fn get_file_type(name: &str, kind: &str) -> String {
             {
                 ext.to_uppercase()
             } else {
-                "ファイル".to_string()
+                "File".to_string()
             }
         }
-        "symlink" => "リンク".to_string(),
+        "symlink" => "Link".to_string(),
         other => other.to_string(),
     }
 }

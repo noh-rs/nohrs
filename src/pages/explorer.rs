@@ -462,25 +462,31 @@ impl ExplorerPage {
     }
 
     fn sort_entries(&self, entries: &mut [FileEntryDto]) {
-        match self.sort_key {
-            SortKey::Name => {
-                entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        entries.sort_by(|a, b| {
+            // Directories before files
+            let is_dir_a = a.kind == "dir";
+            let is_dir_b = b.kind == "dir";
+
+            match is_dir_b.cmp(&is_dir_a) {
+                std::cmp::Ordering::Equal => {
+                    let order = match self.sort_key {
+                        SortKey::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                        SortKey::Size => a.size.cmp(&b.size),
+                        SortKey::Modified => a.modified.cmp(&b.modified),
+                        SortKey::Type => {
+                            let ext_a = get_extension(&a.name, &a.kind);
+                            let ext_b = get_extension(&b.name, &b.kind);
+                            ext_a.cmp(&ext_b)
+                        }
+                    };
+                    if self.sort_asc {
+                        order
+                    } else {
+                        order.reverse()
+                    }
+                }
+                kind_order => kind_order,
             }
-            SortKey::Size => entries.sort_by(|a, b| a.size.cmp(&b.size)),
-            SortKey::Modified => entries.sort_by(|a, b| a.modified.cmp(&b.modified)),
-            SortKey::Type => entries.sort_by(|a, b| {
-                let ext_a = get_extension(&a.name, &a.kind);
-                let ext_b = get_extension(&b.name, &b.kind);
-                ext_a.cmp(&ext_b)
-            }),
-        }
-        if !self.sort_asc {
-            entries.reverse();
-        }
-        entries.sort_by(|a, b| match (a.kind.as_str(), b.kind.as_str()) {
-            ("dir", "file") => std::cmp::Ordering::Less,
-            ("file", "dir") => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
         });
     }
 
@@ -755,7 +761,7 @@ impl ExplorerPage {
         }
 
         self.preview_path = Some(path);
-        let msg = "(プレビュー未対応ファイル)".to_string();
+        let msg = "(Preview not available for this file)".to_string();
         self.preview_text = Some(msg.clone());
         self.preview_lines = vec![msg];
         self.preview_highlights = None;
@@ -1009,7 +1015,7 @@ impl ExplorerPage {
                             .text_xs()
                             .text_color(rgb(theme::FG_SECONDARY))
                             .whitespace_nowrap()
-                            .child(format!("{} 項目", self.filtered_entries.len())),
+                            .child(format!("{} items", self.filtered_entries.len())),
                     )
                     .child(self.render_view_mode_toggle(cx))
                     .child(
@@ -1040,14 +1046,14 @@ impl ExplorerPage {
                 ViewMode::List,
                 "view-mode-list",
                 IconName::PanelBottomOpen,
-                "リスト",
+                "List",
                 cx,
             ))
             .child(self.view_mode_button(
                 ViewMode::Grid,
                 "view-mode-grid",
                 IconName::LayoutDashboard,
-                "グリッド",
+                "Grid",
                 cx,
             ))
     }
@@ -1103,10 +1109,10 @@ impl ExplorerPage {
                     .flex_col()
                     .gap_1()
                     .px(px(8.0))
-                    .child(self.sidebar_item(IconName::Folder, "ホーム", true, cx))
-                    .child(self.sidebar_item(IconName::Star, "お気に入り", false, cx))
-                    .child(self.sidebar_item(IconName::File, "最近使った項目", false, cx))
-                    .child(self.sidebar_item(IconName::Folder, "ゴミ箱", false, cx)),
+                    .child(self.sidebar_item(IconName::Folder, "Home", true, cx))
+                    .child(self.sidebar_item(IconName::Star, "Favorites", false, cx))
+                    .child(self.sidebar_item(IconName::File, "Recent", false, cx))
+                    .child(self.sidebar_item(IconName::Folder, "Trash", false, cx)),
             )
             .child(
                 div()
@@ -1120,7 +1126,7 @@ impl ExplorerPage {
                             .text_xs()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(rgb(theme::FG_SECONDARY))
-                            .child("フォルダ"),
+                            .child("Folder"),
                     )
                     .child(self.render_shortcuts(cx)),
             )
@@ -1918,28 +1924,28 @@ impl ExplorerPage {
                     .w_full()
                     .h_full()
                     .child(self.render_resizable_column_header(
-                        "名前",
+                        "Name",
                         SortKey::Name,
                         0,
                         col_name,
                         cx,
                     ))
                     .child(self.render_resizable_column_header(
-                        "種類",
+                        "Type",
                         SortKey::Type,
                         1,
                         col_type,
                         cx,
                     ))
                     .child(self.render_resizable_column_header(
-                        "サイズ",
+                        "Size",
                         SortKey::Size,
                         2,
                         col_size,
                         cx,
                     ))
                     .child(self.render_resizable_column_header(
-                        "更新日",
+                        "Modified",
                         SortKey::Modified,
                         3,
                         col_modified,
@@ -2297,7 +2303,7 @@ impl ExplorerPage {
             .preview_path
             .as_ref()
             .map(|p| path_name(p))
-            .unwrap_or_else(|| "プレビュー".to_string());
+            .unwrap_or_else(|| "Preview".to_string());
 
         let line_count = self.preview_lines.len().max(1);
         let max_digits = line_count.to_string().len();

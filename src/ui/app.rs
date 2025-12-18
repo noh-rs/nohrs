@@ -29,9 +29,9 @@ use tokio::runtime::Handle;
 use tokio::task;
 use tracing::info;
 
-pub struct NohrApp;
+pub struct NohrsApp;
 
-impl NohrApp {
+impl NohrsApp {
     pub fn run() {
         init_logging();
 
