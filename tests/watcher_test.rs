@@ -1,5 +1,5 @@
 use anyhow::Result;
-use nohr::services::search::watcher::FileWatcher;
+use nohrs::services::search::watcher::FileWatcher;
 use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;

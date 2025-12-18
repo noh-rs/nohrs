@@ -1,5 +1,5 @@
 use anyhow::Result;
-use nohr::services::search::indexer::IndexManager;
+use nohrs::services::search::indexer::IndexManager;
 use std::fs;
 use tempfile::tempdir;
 
