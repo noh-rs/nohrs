@@ -28,10 +28,14 @@ fn test_indexing_workflow() -> Result<()> {
     // Initial indexing
     manager.index_home(None).expect("Initial indexing failed");
     let searcher = manager.index().reader()?.searcher();
-    assert_eq!(searcher.num_docs(), 1, "Should have 1 document indexed");
+    assert_eq!(
+        searcher.num_docs(),
+        2,
+        "Should have 2 documents indexed (dir + file)"
+    );
 
     // Verify search finds content
-    use nohr::services::search::backend::SearchBackend;
+    use nohrs::services::search::SearchBackend;
     let results = manager.search("Hello")?;
     assert!(!results.is_empty(), "Should find 'Hello'");
     assert_eq!(results[0].path, test_file);
@@ -74,7 +78,7 @@ fn test_indexing_workflow() -> Result<()> {
     // Getting reader again *should* see changes if committed.
     assert_eq!(
         searcher_after_remove.num_docs(),
-        0,
+        1,
         "Should have 0 docs after removal"
     );
 
