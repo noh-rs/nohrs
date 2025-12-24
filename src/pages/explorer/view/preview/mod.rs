@@ -1,6 +1,12 @@
 use crate::pages::explorer::ExplorerPage;
 use crate::ui::theme::theme;
+use gpui::prelude::*;
 use gpui::*;
+
+/// Calculate the maximum line width in characters for horizontal scroll sizing
+fn calculate_max_line_width(lines: &[String]) -> usize {
+    lines.iter().map(|l| l.chars().count()).max().unwrap_or(80)
+}
 
 pub fn render(page: &mut ExplorerPage, window: &mut Window) -> impl IntoElement {
     let title = page
@@ -15,22 +21,57 @@ pub fn render(page: &mut ExplorerPage, window: &mut Window) -> impl IntoElement 
     let query = page.search_query.clone();
 
     // Virtual Scrolling Constants
-    let row_height_px = px(20.0);
-    // Use window height as approximation
-    let viewport_height = window.viewport_size().height;
+    let row_height: f32 = 20.0;
+    let row_height_px = px(row_height);
 
-    // Scroll handle returns Point<Pixels>
-    let scroll_y = page.preview_scroll_handle.offset().y.abs();
+    // Calculate content dimensions
+    let total_lines = page.preview_lines.len();
+    let total_content_height = total_lines as f32 * row_height;
 
-    let visible_lines = (viewport_height / row_height_px) as usize + 1;
-    let start_line = (scroll_y / row_height_px) as usize;
-    let buffer = 20; // Extra lines
+    // Use a conservative estimate for viewport since we don't have exact panel height
+    // The key insight: we'll use a FIXED scrollbar size (percentage of track)
+    // and calculate position purely based on scroll ratio
 
+    // Scroll handle returns Point<Pixels> - y is negative when scrolled down
+    let raw_scroll_y = page.preview_scroll_handle.offset().y;
+    let scroll_y = (-f32::from(raw_scroll_y)).max(0.0);
+
+    // Window height for virtual scroll estimation (not for scrollbar)
+    let window_height = f32::from(window.viewport_size().height);
+
+    // Virtual scroll calculations
+    let visible_lines = ((window_height / row_height) as usize).max(20);
+    let start_line = (scroll_y / row_height) as usize;
+    let buffer = 20;
     let render_start = start_line.saturating_sub(buffer);
-    let render_end = (start_line + visible_lines + buffer).min(page.preview_lines.len());
+    let render_end = (start_line + visible_lines + buffer).min(total_lines);
+    let padding_top = render_start as f32 * row_height;
+    let remaining = total_lines.saturating_sub(render_end);
+    let padding_bottom = remaining as f32 * row_height;
 
-    let padding_top = render_start as f32 * 20.0;
-    let padding_bottom = (page.preview_lines.len().saturating_sub(render_end)) as f32 * 20.0;
+    // Calculate max line width for horizontal scrolling
+    let max_chars = calculate_max_line_width(&page.preview_lines);
+    // Approximate: ~8px per character + line number width + gaps
+    let line_number_width = (max_digits as f32 * 10.0) + 32.0; // padding + gap
+    let content_width = (max_chars as f32 * 8.0) + line_number_width + 64.0; // extra padding
+
+    // SCROLLBAR: Use percentage-based calculation
+    // The key is to NOT depend on exact panel height for scrollbar sizing
+    // Instead, use the content height ratio
+    let show_scrollbar = total_content_height > window_height * 0.5; // rough estimate
+
+    // Scrollbar height: fixed ratio of the visible portion
+    // If content is 2x viewport, scrollbar is 50% of track
+    // If content is 4x viewport, scrollbar is 25% of track, min 30px
+    let scrollbar_ratio = if total_content_height > 0.0 {
+        (window_height / total_content_height).clamp(0.1, 1.0)
+    } else {
+        1.0
+    };
+
+    // For position: what percentage through the content are we?
+    let max_scroll = (total_content_height - window_height * 0.3).max(1.0);
+    let scroll_progress = (scroll_y / max_scroll).clamp(0.0, 1.0);
 
     div()
         .size_full()
@@ -38,6 +79,7 @@ pub fn render(page: &mut ExplorerPage, window: &mut Window) -> impl IntoElement 
         .flex_col()
         .bg(rgb(theme::BG))
         .child(
+            // Header
             div()
                 .px(px(16.0))
                 .py(px(12.0))
@@ -52,28 +94,29 @@ pub fn render(page: &mut ExplorerPage, window: &mut Window) -> impl IntoElement 
                 ),
         )
         .child(
+            // Content area
             div()
                 .flex_1()
                 .overflow_hidden()
-                .px(px(16.0))
-                .py(px(16.0))
+                .relative()
                 .child(
+                    // Scrollable content
                     div()
                         .id("preview-scroll")
-                        .size_full()
+                        .absolute()
+                        .inset(px(0.0))
                         .overflow_scroll()
                         .track_scroll(&page.preview_scroll_handle)
-                        .flex()
-                        .flex_col()
-                        .text_sm()
-                        .font_family("Mono")
-                        .line_height(row_height_px)
                         .child(
+                            // Content container with explicit width for horizontal scroll
                             div()
-                                .flex()
-                                .flex_col()
-                                .pt(px(padding_top))
-                                .pb(px(padding_bottom))
+                                .min_w(px(content_width))
+                                .pt(px(padding_top + 16.0)) // Add padding
+                                .pb(px(padding_bottom + 16.0))
+                                .px(px(16.0))
+                                .text_sm()
+                                .font_family("Mono")
+                                .line_height(row_height_px)
                                 .children(
                                     page.preview_lines
                                         .iter()
@@ -147,9 +190,11 @@ pub fn render(page: &mut ExplorerPage, window: &mut Window) -> impl IntoElement 
                                             let styled = StyledText::new(line_content.clone())
                                                 .with_highlights(flattened);
 
+                                            // Each line row
                                             div()
+                                                .h(row_height_px)
                                                 .flex()
-                                                .items_start()
+                                                .items_center()
                                                 .gap_4()
                                                 .child(
                                                     div()
@@ -159,14 +204,41 @@ pub fn render(page: &mut ExplorerPage, window: &mut Window) -> impl IntoElement 
                                                 )
                                                 .child(
                                                     div()
-                                                        .w_full()
-                                                        .whitespace_normal()
+                                                        .flex_shrink_0()
+                                                        .whitespace_nowrap()
                                                         .child(styled),
                                                 )
                                         }),
                                 ),
                         ),
-                ),
+                )
+                // Scrollbar track (full height, positioned absolutely)
+                .when(show_scrollbar, |this| {
+                    // Use a fixed track height estimate for stable scrollbar
+                    let track_height: f32 = 400.0;
+                    let thumb_height = (track_height * scrollbar_ratio).max(30.0);
+                    let thumb_top = scroll_progress * (track_height - thumb_height);
+
+                    this.child(
+                        div()
+                            .absolute()
+                            .top(px(0.0))
+                            .right(px(2.0))
+                            .bottom(px(0.0))
+                            .w(px(6.0))
+                            .child(
+                                // Scrollbar thumb
+                                div()
+                                    .absolute()
+                                    .top(px(thumb_top))
+                                    .w_full()
+                                    .h(px(thumb_height))
+                                    .rounded(px(3.0))
+                                    .bg(rgb(theme::GRAY_400))
+                                    .opacity(0.6),
+                            ),
+                    )
+                }),
         )
 }
 

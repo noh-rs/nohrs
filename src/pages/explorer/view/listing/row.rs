@@ -246,7 +246,7 @@ pub fn render(
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let offset = ((line_num.max(1) - 1) as f32) * 20.0;
                             this.preview_scroll_handle
-                                .set_offset(gpui::Point::new(px(0.0), px(offset)));
+                                .set_offset(gpui::Point::new(px(0.0), px(-offset)));
                             cx.notify();
                         }))
                         .h(px(24.0))
