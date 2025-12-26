@@ -123,7 +123,7 @@ pub fn render(page: &mut ExplorerPage, cx: &mut Context<ExplorerPage>) -> impl I
                                 .on_key_down(cx.listener(
                                     |this, event: &gpui::KeyDownEvent, window, cx| {
                                         if event.keystroke.key == "enter" {
-                                            this.trigger_search(cx);
+                                            this.trigger_search(window, cx);
                                         } else if event.keystroke.key == "escape" {
                                             this.toggle_search(window, cx);
                                         }
@@ -170,8 +170,8 @@ pub fn render(page: &mut ExplorerPage, cx: &mut Context<ExplorerPage>) -> impl I
                                         .hover(|this| this.opacity(0.8))
                                         .on_mouse_down(
                                             gpui::MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| {
-                                                this.trigger_search(cx);
+                                            cx.listener(|this, _, window, cx| {
+                                                this.trigger_search(window, cx);
                                             }),
                                         ),
                                 ),

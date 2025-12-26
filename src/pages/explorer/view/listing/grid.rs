@@ -92,7 +92,7 @@ fn render_grid_item(
                 this.record_click(ix, event.click_count);
                 this.selected_index = Some(ix);
                 if preview_item.kind == "file" {
-                    this.open_preview(preview_item.path.clone());
+                    this.open_preview(preview_item.path.clone(), window, cx);
                 }
                 if event.click_count >= 2 {
                     this.activate_entry(activation_item.clone(), window, cx);

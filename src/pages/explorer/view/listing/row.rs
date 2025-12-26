@@ -125,7 +125,7 @@ pub fn render(
                                 this.record_click(ix, mouse.up.click_count);
                                 this.selected_index = Some(ix);
                                 if item_for_preview.kind == "file" {
-                                    this.open_preview(item_for_preview.path.clone());
+                                    this.open_preview(item_for_preview.path.clone(), window, cx);
                                 }
                                 if mouse.up.click_count >= 2 {
                                     this.activate_entry(item_for_activate.clone(), window, cx);

@@ -25,6 +25,7 @@ mod search;
 mod types;
 pub mod view;
 use types::*;
+use view::preview::editor::PreviewEditor;
 
 pub struct ExplorerPage {
     pub cwd: String,
@@ -77,6 +78,7 @@ pub struct ExplorerPage {
         HashMap<usize, Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>>,
     pub preview_virtual_handle: VirtualListScrollHandle,
     pub preview_scroll_handle: ScrollHandle,
+    pub preview_editor: Option<Entity<PreviewEditor>>,
 }
 
 impl Focusable for ExplorerPage {
@@ -143,10 +145,11 @@ impl ExplorerPage {
             preview_line_highlights: HashMap::new(),
             preview_virtual_handle: VirtualListScrollHandle::new(),
             preview_scroll_handle: ScrollHandle::new(),
+            preview_editor: None,
         }
     }
 
-    fn trigger_search(&mut self, cx: &mut Context<Self>) {
+    fn trigger_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.search_query.is_empty() {
             self.search_results = None;
             self.apply_filter();
@@ -179,7 +182,9 @@ impl ExplorerPage {
             }
         }
         self.is_performing_search = false;
+        self.is_performing_search = false;
         self.update_item_sizes();
+        self.update_editor_highlights(window, cx);
         cx.notify();
     }
 
@@ -224,6 +229,71 @@ impl ExplorerPage {
             self.update_item_sizes();
             self.preview_text = None;
             self.preview_path = None;
+            self.preview_editor = None;
+        }
+    }
+
+    fn update_editor_highlights(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor_entity) = &self.preview_editor {
+            let mut all_highlights = Vec::new();
+
+            // Syntax
+            if let Some(syntax) = &self.preview_highlights {
+                for (range, color) in syntax {
+                    all_highlights.push((
+                        range.clone(),
+                        gpui::HighlightStyle {
+                            color: Some(*color),
+                            ..Default::default()
+                        },
+                    ));
+                }
+            }
+
+            // Search matches
+            if let Some(results) = &self.search_results {
+                if let Some(path) = &self.preview_path {
+                    if let Some(file_result) = results.iter().find(|r| &r.path == path) {
+                        if let Some(text) = &self.preview_text {
+                            let match_style = gpui::HighlightStyle {
+                                background_color: Some(gpui::yellow()),
+                                ..Default::default()
+                            };
+
+                            // Calculate line offsets
+                            let mut line_offsets = Vec::new();
+                            let mut current_off = 0;
+                            // Re-scanning text to find line offsets
+                            for line in self.preview_lines.iter() {
+                                line_offsets.push(current_off);
+                                let consumed = line.len();
+                                let remainder = &text[current_off + consumed..];
+                                let newline_len = if remainder.starts_with("\r\n") {
+                                    2
+                                } else if remainder.starts_with('\n') {
+                                    1
+                                } else {
+                                    0
+                                };
+                                current_off += consumed + newline_len;
+                            }
+
+                            for m in &file_result.matches {
+                                if m.line_number < line_offsets.len() {
+                                    let start = line_offsets[m.line_number] + m.match_start;
+                                    let end = line_offsets[m.line_number] + m.match_end;
+                                    all_highlights.push((start..end, match_style));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let editor_entity = editor_entity.clone();
+            editor_entity.update(cx, |editor, cx| {
+                editor.set_highlights(all_highlights, window, cx);
+            });
         }
     }
 
@@ -408,7 +478,7 @@ impl ExplorerPage {
         if item.kind == "dir" {
             self.change_dir(item.path, window, cx);
         } else {
-            self.open_preview(item.path);
+            self.open_preview(item.path, window, cx);
         }
     }
 
@@ -425,7 +495,7 @@ impl ExplorerPage {
                         this.selected_index = Some(ix.row);
                         if let Some(item) = this.filtered_entries.get(ix.row).cloned() {
                             if item.kind == "file" {
-                                this.open_preview(item.path);
+                                this.open_preview(item.path, window, cx);
                             }
                         }
                     }
@@ -480,6 +550,7 @@ impl ExplorerPage {
         self.search_input.update(cx, |input, cx| {
             input.set_value("", window, cx);
         });
+        self.update_editor_highlights(window, cx);
         cx.notify();
     }
 
@@ -491,10 +562,11 @@ impl ExplorerPage {
         }
     }
 
-    fn open_preview(&mut self, path: String) {
+    fn open_preview(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
         // Reset virtual preview data
         self.preview_lines.clear();
         self.preview_line_highlights.clear();
+        self.preview_editor = None; // Reset editor
 
         if let Ok(md) = std::fs::metadata(&path) {
             if md.is_file() && md.len() <= 1024 * 1024 * 2 {
@@ -506,14 +578,68 @@ impl ExplorerPage {
                                 .extension()
                                 .and_then(|s| s.to_str()),
                         );
-                        self.preview_path = Some(path);
+                        self.preview_path = Some(path.clone());
+                        self.preview_text = Some(text.clone());
+                        // Create and initialize editor
+                        let editor_view = cx.new(|cx| PreviewEditor::new(window, cx));
 
+                        let text_clone = text.clone();
+                        // Basic extension to language mapping for gpui-component
+                        let extension = std::path::Path::new(&path)
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+
+                        let language = match extension.as_str() {
+                            "rs" => "rust",
+                            "md" => "markdown",
+                            "json" => "json",
+                            "js" => "javascript",
+                            "ts" => "typescript",
+                            "html" => "html",
+                            "go" => "go",
+                            "zig" => "zig",
+                            _ => "plain",
+                        }
+                        .to_string();
+
+                        editor_view.update(cx, |editor, cx| {
+                            editor.set_text(text_clone, window, cx);
+                            if language != "plain" {
+                                editor.set_language(language, window, cx);
+                            }
+                        });
+
+                        self.preview_editor = Some(editor_view.into());
+
+                        // Update highlights
+                        self.preview_highlights = Some(highlights.clone());
+                        // We must populate preview_lines before calling update_editor_highlights because it uses them for offset calculation
                         // Populate lines
                         self.preview_lines = text.lines().map(|s| s.to_string()).collect();
                         if self.preview_lines.is_empty() && !text.is_empty() {
-                            // Handle case with no newlines but content
                             self.preview_lines.push(text.clone());
                         }
+
+                        self.update_editor_highlights(window, cx);
+
+                        // Scroll to match if any
+                        if let Some(results) = &self.search_results {
+                            if let Some(file_result) = results.iter().find(|r| &r.path == &path) {
+                                if let Some(first_match) = file_result.matches.first() {
+                                    let line = first_match.line_number;
+                                    if let Some(editor) = &self.preview_editor {
+                                        let editor = editor.clone();
+                                        editor.update(cx, |editor, cx| {
+                                            editor.scroll_to_line(line, window, cx);
+                                        });
+                                    }
+                                }
+                            }
+                        }
+
+                        // Keep legacy preview lines... (already populated above)
 
                         // Map highlights to lines
                         let mut line_highlights: HashMap<
@@ -550,14 +676,7 @@ impl ExplorerPage {
                                 }
                             }
 
-                            // Advance offset (+1 for newline if not last line... technically lines() consumes newlines)
-                            // We need to account for the newline character in the original text to keep offsets valid
-                            // But `lines()` strips them.
-                            // If we assume standard \n, we add 1. If \r\n, we add 2.
-                            // To be precise, we should just scan the original text or use `match_indices`.
-                            // Text byte indices might drift if we just +1.
-                            // Use accumulation of line.len() + 1 serves as approximation but could fail on \r\n.
-                            // Better: use `text[current_offset..]` to find the next line break.
+                            // Advance offset
                             let consumed = line.len();
                             let remainder = &text[current_offset + consumed..];
                             let newline_len = if remainder.starts_with("\r\n") {
@@ -571,7 +690,6 @@ impl ExplorerPage {
                         }
 
                         self.preview_line_highlights = line_highlights;
-                        self.preview_text = Some(text);
                         self.preview_highlights = Some(highlights);
                         return;
                     }
