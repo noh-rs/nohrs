@@ -41,8 +41,16 @@ impl PreviewEditor {
         // For search results, we might need a different approach or see if `search` functionality covers it.
     }
 
-    pub fn scroll_to_line(&mut self, _line: usize, _window: &mut Window, _cx: &mut Context<Self>) {
-        // TODO: Implement scroll to line if InputState exposes it or via scroll_handle
+    pub fn scroll_to(&mut self, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor_state.update(cx, |state, cx| {
+            state.scroll_to(offset, cx);
+        });
+    }
+
+    pub fn set_search_query(&mut self, query: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor_state.update(cx, |state, cx| {
+            state.set_search_query(query, window, cx);
+        });
     }
 }
 

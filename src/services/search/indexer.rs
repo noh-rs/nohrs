@@ -8,7 +8,7 @@ use tantivy::{Index, IndexWriter}; // Import trait for add_text etc? No, Tantivy
 
 pub struct IndexManager {
     index: Index,
-    index_path: PathBuf,
+    _index_path: PathBuf,
     content_root: PathBuf,
     writer: Arc<Mutex<IndexWriter>>,
 }
@@ -63,7 +63,7 @@ impl IndexManager {
 
         Ok(Self {
             index,
-            index_path,
+            _index_path: index_path,
             content_root,
             writer: Arc::new(Mutex::new(writer)),
         })
