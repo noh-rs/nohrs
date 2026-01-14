@@ -50,6 +50,7 @@ After completing the above, try building the GUI again.
 - Tabs and split view for parallel directories
 - Inline preview for images, PDFs, text, and Markdown
 - Command palette for quick action search (VS Code-style)
+- Spotlight-style UI for fast, keyboard-driven navigation
 - File icons and custom emoji labels
 
 ### File Operations
@@ -74,6 +75,11 @@ After completing the above, try building the GUI again.
 - Diff preview and blame view
 - Merge-conflict resolution UI
 
+### Cloud Features
+- Cloud storage integrations (S3-compatible services and more)
+- Cross-device sync and offline-first workflows
+- Secure sharing with access controls
+
 ### S3-Compatible Storage
 - MinIO, Wasabi, and Cloudflare R2 support
 - Transfer queue and parallel uploads
@@ -85,6 +91,11 @@ After completing the above, try building the GUI again.
 - Folder-watch actions (auto-tag, auto-transfer)
 - CLI / HTTP API for external control
 - Remote browsing via SSH
+
+### AI Agent Features
+- AI agent assistance for file organization and workflows
+- Natural-language actions (find, move, summarize, tag)
+- Smart automation suggestions based on context
 
 ## Contributing
 
