@@ -16,6 +16,7 @@
   ---
   
   A modern alternative to macOS Finder, combining everyday usability with power-user functionality through a seamless, high-performance interface.
+  Spotlight-style navigation, cloud-connected workflows, and AI agents are planned to keep file work fast and intelligent.
   
 </div>
 
@@ -47,6 +48,7 @@ After completing the above, try building the GUI again.
 ## Planned Features
 
 ### Navigation & UI
+
 - [ ] Tabs and split view for parallel directories
 - [ ] Inline preview for images, PDFs, text, and Markdown
 - [ ] Command palette for quick action search (VS Code-style)
@@ -79,6 +81,11 @@ After completing the above, try building the GUI again.
 - [ ] Cloud storage integrations (S3-compatible services and more)
 - [ ] Cross-device sync and offline-first workflows
 - [ ] Secure sharing with access controls
+
+### Cloud Features
+- Cloud storage integrations (S3-compatible services and more)
+- Cross-device sync and offline-first workflows
+- Secure sharing with access controls
 
 ### S3-Compatible Storage
 - [ ] MinIO, Wasabi, and Cloudflare R2 support
