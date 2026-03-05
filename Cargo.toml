@@ -44,3 +44,4 @@ dirs = "5.0"
 notify-debouncer-mini = "0.4"
 [dev-dependencies]
 tempfile = "3"
+gpui = { version = "0.2", features = ["test-support"] }

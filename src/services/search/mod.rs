@@ -24,6 +24,11 @@ pub use backend::SearchBackend;
 use anyhow::Result;
 use std::sync::Arc;
 
+/// 検索プロバイダートレイト: テスト時にモック差し替え可能
+pub trait SearchProvider: Send + Sync {
+    fn search_blocking(&self, query: &str, scope: SearchScope) -> Result<Vec<SearchResult>>;
+}
+
 pub struct SearchService {
     engine: Arc<engine::SearchEngine>,
 }
@@ -40,5 +45,12 @@ impl SearchService {
 
     pub fn progress_subscription(&self) -> tokio::sync::watch::Receiver<f32> {
         self.engine.progress_subscription()
+    }
+}
+
+impl SearchProvider for SearchService {
+    fn search_blocking(&self, query: &str, scope: SearchScope) -> Result<Vec<SearchResult>> {
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| handle.block_on(self.search(query.to_string(), scope)))
     }
 }

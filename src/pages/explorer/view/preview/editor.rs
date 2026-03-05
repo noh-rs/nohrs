@@ -13,7 +13,7 @@ impl PreviewEditor {
                 .code_editor("plain")
                 .searchable(true)
                 .line_number(true)
-                .soft_wrap(false) // Enable horizontal scrolling
+                .soft_wrap(false)
         });
         Self { editor_state }
     }
@@ -36,21 +36,22 @@ impl PreviewEditor {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        // TODO: Implement custom highlighting matching ranges to InputState's highlighting mechanism
-        // InputState uses tree-sitter based highlighting usually, or DiagnosticSet for errors.
-        // For search results, we might need a different approach or see if `search` functionality covers it.
+        // TODO: gpui-component InputState does not expose highlight API
     }
 
-    pub fn scroll_to(&mut self, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.editor_state.update(cx, |state, cx| {
-            state.scroll_to(offset, cx);
-        });
+    pub fn scroll_to(&mut self, _offset: usize, _window: &mut Window, _cx: &mut Context<Self>) {
+        // TODO: gpui-component InputState::scroll_to is pub(crate), not accessible
+        // scroll_to will be a no-op until the API is exposed
     }
 
-    pub fn set_search_query(&mut self, query: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.editor_state.update(cx, |state, cx| {
-            state.set_search_query(query, window, cx);
-        });
+    pub fn set_search_query(
+        &mut self,
+        _query: String,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        // TODO: gpui-component InputState does not expose set_search_query API
+        // This will be a no-op until the API is exposed
     }
 }
 
@@ -59,7 +60,7 @@ impl Render for PreviewEditor {
         TextInput::new(&self.editor_state)
             .size_full()
             .h_full()
-            .focus_bordered(false) // Remove black focus border
-            .appearance(false) // Remove default border/background for cleaner look
+            .focus_bordered(false)
+            .appearance(false)
     }
 }
