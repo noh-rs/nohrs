@@ -3,12 +3,7 @@ use crate::ui::theme::theme;
 use gpui::prelude::*;
 use gpui::*;
 
-/// Calculate the maximum line width in characters for horizontal scroll sizing
-fn calculate_max_line_width(lines: &[String]) -> usize {
-    lines.iter().map(|l| l.chars().count()).max().unwrap_or(80)
-}
-
-pub fn render(page: &mut ExplorerPage, window: &mut Window) -> impl IntoElement {
+pub fn render(page: &mut ExplorerPage, _window: &mut Window) -> impl IntoElement {
     let title = page
         .preview_path
         .as_ref()

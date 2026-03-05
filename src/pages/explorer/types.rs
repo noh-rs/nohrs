@@ -2,7 +2,7 @@ use gpui::{Pixels, Point};
 use std::time::Instant;
 
 // GUI 非依存の型は core から再エクスポート
-pub use crate::core::types::{SearchFileResult, SearchMatch, SearchType, SortKey};
+pub use crate::core::types::{SearchFileResult, SearchType, SortKey};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewMode {

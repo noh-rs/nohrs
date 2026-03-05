@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod engine;
 pub mod indexer;
+mod indexer_search;
 pub mod ripgrep;
 pub mod watcher;
 

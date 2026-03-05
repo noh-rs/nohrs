@@ -33,12 +33,14 @@ impl SyntaxService {
         };
 
         let theme_name = "base16-ocean.dark";
-        let theme = self
+        let Some(theme) = self
             .theme_set
             .themes
             .get(theme_name)
             .or_else(|| self.theme_set.themes.values().next())
-            .unwrap();
+        else {
+            return Vec::new();
+        };
 
         let mut highlighter = HighlightLines::new(syntax, theme);
         let mut result = Vec::new();

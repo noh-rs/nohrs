@@ -34,7 +34,7 @@ pub async fn list_dir(params: ListParams<'_>) -> Result<ListResult> {
 
     task::spawn_blocking(move || list_dir_impl(&path, limit, cursor.as_deref()))
         .await
-        .unwrap()
+        .map_err(|e| crate::core::errors::Error::Other(e.to_string()))?
 }
 
 /// Synchronous variant for UI contexts where an async runtime is not available.
