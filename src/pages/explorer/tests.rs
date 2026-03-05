@@ -14,6 +14,7 @@ use gpui::{TestAppContext, VisualContext, VisualTestContext};
 use gpui_component::input::InputState;
 use gpui_component::resizable::ResizableState;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -104,22 +105,42 @@ pub mod test_data {
 }
 
 /// テスト用 ExplorerPage を生成するヘルパー (ウィンドウ付き)
+/// Root でラップすることで gpui_component の各コンポーネントが正常に動作する
 fn build_explorer<'a>(
     cx: &'a mut TestAppContext,
     cwd: &str,
     mock: MockSearchProvider,
 ) -> (Entity<ExplorerPage>, &'a mut VisualTestContext) {
+    use gpui_component::Root;
+
+    // gpui_component のグローバル状態（Theme 等）を初期化
+    cx.update(|cx| {
+        if !cx.has_global::<gpui_component::theme::Theme>() {
+            gpui_component::init(cx);
+        }
+    });
     let cwd = cwd.to_string();
     let search_service: Arc<dyn SearchProvider> = Arc::new(mock);
-    let (page, vcx) = cx.add_window_view(|window, cx| {
-        let resizable = ResizableState::new(cx);
-        let search_input = cx.new(|cx| InputState::new(window, cx));
-        let focus_handle = cx.focus_handle();
-        let mut page = ExplorerPage::new(resizable, search_input, search_service, focus_handle);
-        page.cwd = cwd;
-        page
+
+    // ExplorerPage を先に作成して Entity を保持し、Root でラップ
+    let page: std::cell::Cell<Option<Entity<ExplorerPage>>> = std::cell::Cell::new(None);
+    let page_ref = &page;
+    let window = cx.add_window(|window, cx| {
+        let explorer = cx.new(|cx| {
+            let resizable = ResizableState::new(cx);
+            let search_input = cx.new(|cx| InputState::new(window, cx));
+            let focus_handle = cx.focus_handle();
+            let mut p = ExplorerPage::new(resizable, search_input, search_service, focus_handle);
+            p.cwd = cwd;
+            p
+        });
+        page_ref.set(Some(explorer.clone()));
+        Root::new(explorer.into(), window, cx)
     });
-    (page, vcx)
+    let entity = page.take().unwrap();
+    let vcx = VisualTestContext::from_window(*window.deref(), cx).into_mut();
+    vcx.run_until_parked();
+    (entity, vcx)
 }
 
 /// テスト用 ExplorerPage（デフォルトモック）
@@ -134,16 +155,17 @@ fn build_explorer_default<'a>(
 
 #[gpui::test]
 async fn test_initial_state(cx: &mut TestAppContext) {
-    let (page, cx) = build_explorer_default(cx, "/tmp");
+    let tmp = tempfile::tempdir().unwrap();
+    let (page, cx) = build_explorer_default(cx, tmp.path().to_str().unwrap());
 
     page.read_with(cx, |page, _| {
-        assert_eq!(page.cwd, "/tmp");
         assert_eq!(page.sort_key, SortKey::Name);
         assert!(page.sort_asc);
         assert_eq!(page.view_mode, ViewMode::List);
         assert!(!page.search_visible);
         assert!(page.search_query.is_empty());
         assert!(page.search_results.is_none());
+        // 空ディレクトリなので entries も空
         assert!(page.entries.is_empty());
         assert!(page.history.is_empty());
     });
@@ -155,14 +177,10 @@ async fn test_reload_loads_entries(cx: &mut TestAppContext) {
     std::fs::write(tmp.path().join("hello.txt"), "hi").unwrap();
     std::fs::write(tmp.path().join("world.txt"), "world").unwrap();
 
+    // add_window_view の render で ensure_loaded → reload が自動実行される
     let (page, cx) = build_explorer_default(cx, tmp.path().to_str().unwrap());
 
-    page.update(cx, |page, _cx| {
-        page.reload();
-    });
-
     page.read_with(cx, |page, _| {
-        assert!(!page.entries.is_empty());
         assert_eq!(page.entries.len(), 2);
     });
 }

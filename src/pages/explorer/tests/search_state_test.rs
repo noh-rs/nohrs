@@ -5,40 +5,26 @@ async fn test_search_state_lifecycle(cx: &mut TestAppContext) {
     let mock = MockSearchProvider::new().with_results("test", test_data::single_match());
     let (page, cx) = build_explorer(cx, "/tmp", mock);
 
-    // 初期状態
-    page.read_with(cx, |page, _| {
+    // 全ライフサイクルを1つの update_window_entity 内で検証
+    cx.update_window_entity(&page, |page, window, cx| {
+        // 初期状態
         assert!(!page.search_visible);
         assert!(page.search_results.is_none());
         assert!(page.search_query.is_empty());
-    });
 
-    // 検索バー表示
-    cx.update_window_entity(&page, |page, window, cx| {
+        // 検索バー表示
         page.open_search(window, cx);
-    });
-
-    page.read_with(cx, |page, _| {
         assert!(page.search_visible);
         assert!(page.search_results.is_none());
-    });
 
-    // 検索実行
-    cx.update_window_entity(&page, |page, window, cx| {
+        // 検索実行
         page.search_query = "test".to_string();
         page.trigger_search(window, cx);
-    });
-
-    page.read_with(cx, |page, _| {
         assert!(page.search_results.is_some());
         assert!(!page.is_performing_search);
-    });
 
-    // 検索クローズ → 初期状態に復帰
-    cx.update_window_entity(&page, |page, window, cx| {
+        // 検索クローズ → 初期状態に復帰
         page.close_search(window, cx);
-    });
-
-    page.read_with(cx, |page, _| {
         assert!(!page.search_visible);
         assert!(page.search_results.is_none());
         assert!(page.search_query.is_empty());
@@ -55,29 +41,17 @@ async fn test_dir_change_clears_search(cx: &mut TestAppContext) {
     let mock = MockSearchProvider::new().with_results("query", test_data::single_match());
     let (page, cx) = build_explorer(cx, tmp.path().to_str().unwrap(), mock);
 
-    page.update(cx, |page, _cx| {
-        page.reload();
-    });
-
-    // 検索実行
     cx.update_window_entity(&page, |page, window, cx| {
+        // 検索実行
         page.open_search(window, cx);
         page.search_query = "query".to_string();
         page.trigger_search(window, cx);
-    });
-
-    page.read_with(cx, |page, _| {
         assert!(page.search_visible);
         assert!(page.search_results.is_some());
-    });
 
-    // ディレクトリ移動 → 検索クリア
-    let sub_str = sub.to_str().unwrap().to_string();
-    cx.update_window_entity(&page, |page, window, cx| {
+        // ディレクトリ移動 → 検索クリア
+        let sub_str = sub.to_str().unwrap().to_string();
         page.change_dir(sub_str, window, cx);
-    });
-
-    page.read_with(cx, |page, _| {
         assert!(!page.search_visible);
         assert!(page.search_results.is_none());
         assert!(page.search_query.is_empty());
@@ -92,8 +66,8 @@ async fn test_search_expanded_files_state(cx: &mut TestAppContext) {
         MockSearchProvider::new().with_results("search", test_data::multi_match_same_file());
     let (page, cx) = build_explorer(cx, "/tmp", mock);
 
-    // 検索実行
     cx.update_window_entity(&page, |page, window, cx| {
+        // 検索実行
         page.search_query = "search".to_string();
         page.trigger_search(window, cx);
     });
@@ -109,8 +83,7 @@ async fn test_search_expanded_files_state(cx: &mut TestAppContext) {
 
     // ファイル折りたたみ
     page.update(cx, |page, _cx| {
-        page.expanded_search_files
-            .remove("/tmp/test/lib.rs");
+        page.expanded_search_files.remove("/tmp/test/lib.rs");
         page.update_item_sizes();
     });
 
