@@ -2,7 +2,7 @@ use super::backend::SearchBackend;
 use super::SearchResult;
 use anyhow::{Context, Result};
 use grep::regex::RegexMatcher;
-use grep::searcher::{Searcher, Sink, SinkMatch};
+use grep::searcher::{BinaryDetection, SearcherBuilder, Searcher, Sink, SinkMatch};
 use ignore::WalkBuilder;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -88,7 +88,10 @@ impl SearchBackend for RipgrepBackend {
                             max_results: MAX_RESULTS,
                         };
 
-                        let mut searcher = Searcher::new();
+                        let mut searcher = SearcherBuilder::new()
+                            .binary_detection(BinaryDetection::quit(b'\x00'))
+                            .line_number(true)
+                            .build();
                         if let Err(e) = searcher.search_path(&matcher, &path, sink) {
                             // Ignore search errors (e.g. binary file) similar to ripgrep
                             tracing::debug!("Search error for {:?}: {}", path, e);

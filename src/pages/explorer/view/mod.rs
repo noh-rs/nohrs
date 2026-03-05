@@ -99,92 +99,32 @@ pub fn render(
         )
 }
 
+/// マッチ範囲に HighlightStyle を付与する薄いラッパー
+/// ロジック本体は crate::core::text::find_query_match_ranges
 pub fn find_query_highlights(
     text: &str,
     query: &str,
 ) -> Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> {
-    let mut highlights = Vec::new();
-    if query.is_empty() {
-        return highlights;
-    }
+    use crate::core::text::find_query_match_ranges;
 
-    let query_lower: Vec<char> = query.to_lowercase().chars().collect();
-    let text_chars: Vec<(usize, char)> = text.char_indices().collect();
+    let highlight_style = gpui::HighlightStyle {
+        background_color: Some(gpui::Hsla::from(gpui::Rgba {
+            r: 1.0,
+            g: 0.9,
+            b: 0.0,
+            a: 0.5,
+        })),
+        color: Some(gpui::Hsla::from(gpui::Rgba {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        })),
+        ..Default::default()
+    };
 
-    let mut i = 0;
-    while i < text_chars.len() {
-        let mut match_found = true;
-        let mut q_idx = 0;
-
-        let mut current_t_offset = 0;
-
-        while q_idx < query_lower.len() {
-            if i + current_t_offset >= text_chars.len() {
-                match_found = false;
-                break;
-            }
-
-            let (_, t_char) = text_chars[i + current_t_offset];
-            let t_lower = t_char.to_lowercase();
-
-            for tc in t_lower {
-                if q_idx >= query_lower.len() || query_lower[q_idx] != tc {
-                    match_found = false;
-                    break;
-                }
-                q_idx += 1;
-            }
-
-            if !match_found {
-                break;
-            }
-            current_t_offset += 1;
-        }
-
-        if match_found && q_idx == query_lower.len() {
-            let start_byte = text_chars[i].0;
-            let end_byte = if i + current_t_offset < text_chars.len() {
-                text_chars[i + current_t_offset].0
-            } else {
-                text.len()
-            };
-
-            highlights.push((
-                start_byte..end_byte,
-                gpui::HighlightStyle {
-                    background_color: Some(gpui::Hsla::from(gpui::Rgba {
-                        r: 1.0,
-                        g: 0.9,
-                        b: 0.0,
-                        a: 0.5,
-                    })),
-                    color: Some(gpui::Hsla::from(gpui::Rgba {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 1.0,
-                    })),
-                    ..Default::default()
-                },
-            ));
-
-            i += current_t_offset;
-        } else {
-            i += 1;
-        }
-    }
-
-    highlights.retain(|(range, _)| {
-        let start_ok = text.is_char_boundary(range.start);
-        let end_ok = text.is_char_boundary(range.end);
-        if !start_ok || !end_ok {
-            if std::env::var("NOHR_DEBUG").is_ok() {
-                tracing::error!("[CRITICAL] find_query_highlights: Removing invalid highlight: {:?} (start_ok={}, end_ok={}) in text len {}", range, start_ok, end_ok, text.len());
-            }
-            return false;
-        }
-        true
-    });
-
-    highlights
+    find_query_match_ranges(text, query)
+        .into_iter()
+        .map(|range| (range, highlight_style))
+        .collect()
 }

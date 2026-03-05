@@ -1,5 +1,5 @@
 use crate::services::fs::listing::{list_dir_sync, FileEntryDto, ListParams};
-use crate::services::search::{SearchScope, SearchService};
+use crate::services::search::{SearchProvider, SearchScope, SearchService};
 use crate::ui::components::file_list::FileListDelegate;
 
 use crate::services::syntax::SyntaxService;
@@ -17,11 +17,10 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::runtime::Handle;
-use tokio::task;
-
 mod entries;
 mod search;
+#[cfg(test)]
+mod tests;
 mod types;
 pub mod view;
 use types::*;
@@ -60,7 +59,7 @@ pub struct ExplorerPage {
     pub view_mode: ViewMode,
 
     // Search
-    pub search_service: Arc<SearchService>,
+    pub search_service: Arc<dyn SearchProvider>,
     pub search_scope: SearchScope,
     pub search_type: SearchType,
     pub match_case: bool,
@@ -90,7 +89,7 @@ impl ExplorerPage {
     pub fn new(
         resizable: Entity<ResizableState>,
         search_input: Entity<InputState>,
-        search_service: Arc<SearchService>,
+        search_service: Arc<dyn SearchProvider>,
         focus_handle: FocusHandle,
     ) -> Self {
         Self {
@@ -154,12 +153,9 @@ impl ExplorerPage {
         self.is_performing_search = true;
         cx.notify();
 
-        let service = self.search_service.clone();
-        let query = self.search_query.clone();
-        let scope = self.search_scope;
-
-        let handle = Handle::current();
-        let results = task::block_in_place(move || handle.block_on(service.search(query, scope)));
+        let results = self
+            .search_service
+            .search_blocking(&self.search_query, self.search_scope);
 
         match results {
             Ok(res) => {
@@ -172,7 +168,7 @@ impl ExplorerPage {
             Err(e) => {
                 tracing::error!("Search failed: {}", e);
                 self.search_results = Some(Vec::new());
-                self.filtered_entries = Vec::new(); // Clear filtered entries on search error
+                self.filtered_entries = Vec::new();
             }
         }
         self.is_performing_search = false;
@@ -315,31 +311,16 @@ impl ExplorerPage {
     }
 
     fn apply_filter(&mut self) {
-        if self.search_query.is_empty() {
-            self.filtered_entries = self.entries.clone();
-        } else {
-            let query = self.search_query.to_lowercase();
-            self.filtered_entries = self
-                .entries
-                .iter()
-                .filter(|e| e.name.to_lowercase().contains(&query))
-                .cloned()
-                .collect();
-        }
-        self.update_item_sizes();
+        // 検索結果表示中は filtered_entries を触らない
         if self.search_results.is_some() {
+            self.update_item_sizes();
             return;
         }
 
-        if self.entries.is_empty() {
-            self.filtered_entries = Vec::new();
-            return;
-        }
-
+        // 通常モード: entries をコピーしてソート適用
         self.filtered_entries = self.entries.clone();
-
-        // Apply sorting
         entries::sort_entries(&mut self.filtered_entries, self.sort_key, self.sort_asc);
+        self.update_item_sizes();
     }
 
     fn set_sort_key(&mut self, key: SortKey) {
@@ -522,7 +503,6 @@ impl ExplorerPage {
         self.search_visible = false;
         self.search_results = None;
         self.search_query.clear();
-        self.apply_filter();
         self.apply_filter();
         self.update_editor_search(window, cx);
         cx.notify();
