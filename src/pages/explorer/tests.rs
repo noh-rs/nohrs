@@ -1,7 +1,9 @@
 // Phase 3: ExplorerPage エンティティテスト
 // Phase 4: 検索 UI 結合テスト
 
+mod debounce_test;
 mod navigation_test;
+mod pagination_test;
 mod search_flow_test;
 mod search_scope_test;
 mod search_state_test;

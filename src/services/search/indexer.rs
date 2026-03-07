@@ -1,3 +1,4 @@
+use crate::core::config::AppConfig;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,26 +10,32 @@ use tantivy::{Index, IndexWriter};
 pub struct IndexManager {
     index: Index,
     _index_path: PathBuf,
-    content_root: PathBuf,
+    content_roots: Vec<PathBuf>,
+    max_file_size: u64,
+    exclude_patterns: Vec<String>,
     writer: Arc<Mutex<IndexWriter>>,
 }
 
 impl IndexManager {
     pub fn new() -> Result<Self> {
+        let config = AppConfig::load().unwrap_or_default();
         let home_dir = dirs::home_dir().context("Could not determine home directory")?;
-        let nohrs_dir = home_dir.join(".nohrs");
-        let index_path = nohrs_dir.join("index");
+        let index_path = home_dir.join(".nohrs").join("index");
+        let content_roots = config.resolved_index_directories();
 
-        let documents_dir = home_dir.join("Documents");
-        Self::new_internal(index_path, documents_dir)
+        Self::new_internal(index_path, content_roots, &config)
     }
 
     /// Internal constructor for testing or custom paths
     pub fn new_with_path(index_path: PathBuf, content_root: PathBuf) -> Result<Self> {
-        Self::new_internal(index_path, content_root)
+        Self::new_internal(index_path, vec![content_root], &AppConfig::default())
     }
 
-    fn new_internal(index_path: PathBuf, content_root: PathBuf) -> Result<Self> {
+    fn new_internal(
+        index_path: PathBuf,
+        content_roots: Vec<PathBuf>,
+        config: &AppConfig,
+    ) -> Result<Self> {
         fs::create_dir_all(&index_path)?;
 
         let schema = Self::create_schema();
@@ -64,7 +71,9 @@ impl IndexManager {
         Ok(Self {
             index,
             _index_path: index_path,
-            content_root,
+            content_roots,
+            max_file_size: config.index.max_file_size,
+            exclude_patterns: config.index.exclude_patterns.clone(),
             writer: Arc::new(Mutex::new(writer)),
         })
     }
@@ -111,12 +120,23 @@ impl IndexManager {
             .get_field("is_directory")
             .context("Schema error: is_directory field missing")?;
 
-        // 単一パスで走査＋インデックス（二重走査を排除: 4.2.7）
-        // プログレスは処理件数ベースで概算通知
-        let walker = ignore::WalkBuilder::new(&self.content_root)
-            .hidden(false)
-            .git_ignore(true)
-            .build();
+        // 複数ディレクトリ対応: config の directories を順に走査
+        if self.content_roots.is_empty() {
+            tracing::warn!("No index directories configured");
+            if let Some(tx) = &progress_tx {
+                let _ = tx.send(1.0);
+            }
+            writer_guard.commit()?;
+            return Ok(());
+        }
+
+        let first_root = &self.content_roots[0];
+        let mut walker_builder = ignore::WalkBuilder::new(first_root);
+        for root in self.content_roots.iter().skip(1) {
+            walker_builder.add(root);
+        }
+        walker_builder.hidden(false).git_ignore(true);
+        let walker = walker_builder.build();
 
         if let Some(tx) = &progress_tx {
             let _ = tx.send(0.0);
@@ -127,6 +147,10 @@ impl IndexManager {
             match result {
                 Ok(entry) => {
                     let path = entry.path();
+                    // 除外パターンに一致するパスをスキップ
+                    if self.should_exclude(path) {
+                        continue;
+                    }
                     if path.is_file() {
                         if let Err(e) = self.index_single_file(
                             path,
@@ -204,8 +228,7 @@ impl IndexManager {
         is_directory_field: Field,
     ) -> Result<()> {
         let metadata = fs::metadata(path)?;
-        if metadata.len() > 10 * 1024 * 1024 {
-            // Skip files larger than 10MB
+        if metadata.len() > self.max_file_size {
             tracing::debug!("Skipping large file: {:?}", path);
             return Ok(());
         }
@@ -315,6 +338,37 @@ impl IndexManager {
 
     pub fn update_file(&self, path: &Path) -> Result<()> {
         self.process_changes(&[path.to_path_buf()])
+    }
+
+    /// 除外パターンに一致するかチェック
+    fn should_exclude(&self, path: &Path) -> bool {
+        let path_str = path.to_string_lossy();
+        self.exclude_patterns.iter().any(|pattern| {
+            // コンポーネント名にマッチ (e.g. "node_modules", ".git")
+            path.components().any(|c| {
+                c.as_os_str()
+                    .to_string_lossy()
+                    .eq(pattern.as_str())
+            })
+            // glob 風マッチ (e.g. "*.log")
+            || (pattern.contains('*') && glob_match(pattern, &path_str))
+        })
+    }
+
+    /// インデックス対象ディレクトリ一覧を返す
+    pub fn content_roots(&self) -> &[PathBuf] {
+        &self.content_roots
+    }
+}
+
+/// シンプルな glob マッチ (*.ext パターンのみ対応)
+fn glob_match(pattern: &str, text: &str) -> bool {
+    if let Some(ext) = pattern.strip_prefix("*.") {
+        text.ends_with(&format!(".{}", ext))
+    } else if let Some(prefix) = pattern.strip_suffix("*") {
+        text.starts_with(prefix)
+    } else {
+        text.contains(pattern)
     }
 }
 

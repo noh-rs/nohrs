@@ -24,9 +24,15 @@ impl SearchEngine {
         // Channel for watcher events
         let (tx, mut rx) = mpsc::channel(100);
 
-        let home_dir = dirs::home_dir().expect("Home dir not found");
         use std::time::Duration;
-        let watcher = FileWatcher::new(home_dir, tx, Duration::from_secs(2))?;
+        // content_roots の親ディレクトリ（重複排除）を監視
+        let roots = index_manager.content_roots().to_vec();
+        let watch_dir = if roots.is_empty() {
+            dirs::home_dir().expect("Home dir not found")
+        } else {
+            roots[0].clone()
+        };
+        let watcher = FileWatcher::new(watch_dir, tx, Duration::from_secs(2))?;
 
         // Spawn event handler task
         let manager_clone = index_manager.clone();

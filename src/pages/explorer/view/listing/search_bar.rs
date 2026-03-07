@@ -7,23 +7,42 @@ use gpui::*;
 use gpui_component::input::TextInput;
 use gpui_component::{Icon, IconName, ListItem};
 
-pub fn render(page: &mut ExplorerPage, cx: &mut Context<ExplorerPage>) -> impl IntoElement {
-    // 副作用を render から排除 (4.2.2, 4.3.6)
-    // InputState の変更検知はイベントハンドラ (on_key_down) で行う
+pub fn render(
+    page: &mut ExplorerPage,
+    window: &mut Window,
+    cx: &mut Context<ExplorerPage>,
+) -> impl IntoElement {
+    // InputState の変更検知→デバウンス付きオートサーチ
     let current_text = page.search_input.read(cx).text().to_string();
     if current_text != page.search_query {
-        page.on_search_input_changed(current_text);
+        page.on_search_input_changed(current_text, window, cx);
     }
 
+    let is_searching = page.is_performing_search;
     let is_empty = page.search_query.is_empty();
-    let match_count = if let Some(results) = &page.search_results {
+    let match_count: usize = if let Some(results) = &page.search_results {
         results.iter().map(|r| r.matches.len()).sum()
     } else {
         page.filtered_entries.len()
     };
     let is_full_search = page.search_results.is_some();
-    let status_text = if is_full_search {
-        format!("{} matches in content", match_count)
+    let total_pages = page.search_total_pages();
+    let current_page = page.search_page;
+    let has_pagination = total_pages > 1;
+
+    let status_text = if is_searching {
+        "Searching...".to_string()
+    } else if is_full_search {
+        if has_pagination {
+            format!(
+                "{} matches ({}/{})",
+                match_count,
+                current_page + 1,
+                total_pages
+            )
+        } else {
+            format!("{} matches in content", match_count)
+        }
     } else if !is_empty {
         format!("{} files filtered", match_count)
     } else {
@@ -174,12 +193,42 @@ pub fn render(page: &mut ExplorerPage, cx: &mut Context<ExplorerPage>) -> impl I
                                 ),
                         )
                         .child(
-                            div().h(px(18.0)).child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(theme::FG_SECONDARY))
-                                    .when(!status_text.is_empty(), |this| this.child(status_text)),
-                            ),
+                            div()
+                                .h(px(18.0))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(if is_searching {
+                                            rgb(theme::ACCENT)
+                                        } else {
+                                            rgb(theme::FG_SECONDARY)
+                                        })
+                                        .when(!status_text.is_empty(), |this| {
+                                            this.child(status_text)
+                                        }),
+                                )
+                                .when(has_pagination && !is_searching, |this| {
+                                    this.child(div().flex_1()).child(
+                                        div()
+                                            .flex()
+                                            .gap_1()
+                                            .child(render_page_button(
+                                                "\u{25C0}",
+                                                current_page > 0,
+                                                |this, cx| this.search_prev_page(cx),
+                                                cx,
+                                            ))
+                                            .child(render_page_button(
+                                                "\u{25B6}",
+                                                current_page + 1 < total_pages,
+                                                |this, cx| this.search_next_page(cx),
+                                                cx,
+                                            )),
+                                    )
+                                }),
                         ),
                 )
                 .child(
@@ -251,6 +300,34 @@ fn render_type_button(
                 cx.notify();
             }),
         )
+        .child(label.to_string())
+}
+
+fn render_page_button(
+    label: &str,
+    enabled: bool,
+    on_click: impl Fn(&mut ExplorerPage, &mut Context<ExplorerPage>) + 'static + Copy,
+    cx: &mut Context<ExplorerPage>,
+) -> impl IntoElement {
+    div()
+        .when(enabled, |this| this.cursor_pointer())
+        .px(px(4.0))
+        .rounded(px(4.0))
+        .text_xs()
+        .text_color(if enabled {
+            rgb(theme::FG_SECONDARY)
+        } else {
+            rgb(theme::MUTED)
+        })
+        .when(enabled, |this| {
+            this.hover(|s| s.bg(rgb(theme::BG_HOVER)))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        on_click(this, cx);
+                    }),
+                )
+        })
         .child(label.to_string())
 }
 

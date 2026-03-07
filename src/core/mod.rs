@@ -1,3 +1,4 @@
+pub mod config;
 pub mod errors;
 pub mod search_utils;
 pub mod sort;

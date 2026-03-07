@@ -1,3 +1,4 @@
+use crate::core::config::AppConfig;
 use crate::core::types::SearchQuery;
 use crate::services::fs::listing::{list_dir_sync, FileEntryDto, ListParams};
 use crate::services::search::{SearchProvider, SearchScope};
@@ -69,6 +70,16 @@ pub struct ExplorerPage {
     pub(super) preview_image_path: Option<String>,
     pub(super) preview_message: Option<String>,
     pub(super) preview_editor: Option<Entity<PreviewEditor>>,
+    /// デバウンスタイマーの世代番号（キー入力ごとにインクリメント）
+    pub(super) debounce_generation: usize,
+    /// デバウンス待機時間 (ms)
+    pub(super) debounce_ms: u64,
+    /// 検索結果の現在のページ (0-indexed)
+    pub(super) search_page: usize,
+    /// 1ページあたりの最大結果数
+    pub(super) search_results_per_page: usize,
+    /// 検索結果の総件数（ページネーション前）
+    pub(super) search_total_results: usize,
 }
 
 impl Focusable for ExplorerPage {
@@ -84,6 +95,7 @@ impl ExplorerPage {
         search_service: Arc<dyn SearchProvider>,
         focus_handle: FocusHandle,
     ) -> Self {
+        let config = AppConfig::load().unwrap_or_default();
         Self {
             cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
@@ -129,63 +141,29 @@ impl ExplorerPage {
             preview_editor: None,
             preview_image_path: None,
             preview_message: None,
+            debounce_generation: 0,
+            debounce_ms: config.search.debounce_ms,
+            search_page: 0,
+            search_results_per_page: config.search.max_results_per_page,
+            search_total_results: 0,
         }
     }
 
     /// 検索を非同期で実行 (4.1.1: UI スレッドブロックを解消)
-    fn trigger_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn trigger_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.search_query.is_empty() {
             self.search_results = None;
             self.search_results_map.clear();
+            self.search_total_results = 0;
+            self.search_page = 0;
             self.apply_filter();
             cx.notify();
             return;
         }
 
-        self.is_performing_search = true;
-        cx.notify();
-
-        // SearchQuery を構築して全オプションを渡す (4.1.2)
-        let query = SearchQuery {
-            query: self.search_query.clone(),
-            search_type: self.search_type,
-            match_case: self.match_case,
-            match_whole_word: self.match_whole_word,
-            use_regex: self.use_regex,
-        };
-        let scope = self.search_scope;
-        let service = self.search_service.clone();
-
-        // background_executor で非同期実行 (4.1.1)
-        cx.spawn_in(window, async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncWindowContext| {
-            let results = cx
-                .background_executor()
-                .spawn(async move { service.search_blocking(&query, scope) })
-                .await;
-
-            this.update(cx, |this: &mut Self, cx: &mut gpui::Context<Self>| {
-                match results {
-                    Ok(res) => {
-                        let grouped = search::group_results(res);
-                        let entries = search::results_to_entries(&grouped);
-                        this.rebuild_search_results_map(&grouped);
-                        this.filtered_entries = entries;
-                        this.search_results = Some(grouped);
-                    }
-                    Err(e) => {
-                        tracing::error!("Search failed: {}", e);
-                        this.search_results = Some(Vec::new());
-                        this.search_results_map.clear();
-                        this.filtered_entries = Vec::new();
-                    }
-                }
-                this.is_performing_search = false;
-                this.update_item_sizes();
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        // デバウンスをキャンセルして即座に検索実行
+        self.debounce_generation = self.debounce_generation.wrapping_add(1);
+        self.trigger_search_internal(cx);
     }
 
     /// search_results から HashMap を構築 (4.2.5)
@@ -377,6 +355,9 @@ impl ExplorerPage {
         self.search_results = None;
         self.search_results_map.clear();
         self.search_query.clear();
+        self.search_page = 0;
+        self.search_total_results = 0;
+        self.debounce_generation = self.debounce_generation.wrapping_add(1);
         self.apply_filter();
         self.update_editor_search(window, cx);
         cx.notify();
@@ -391,13 +372,141 @@ impl ExplorerPage {
     }
 
     /// 検索バーの入力値が変わったときに呼ばれるハンドラ (4.2.2, 4.3.6)
-    fn on_search_input_changed(&mut self, new_text: String) {
+    /// デバウンス付きオートサーチを発火する
+    fn on_search_input_changed(
+        &mut self,
+        new_text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if new_text != self.search_query {
-            self.search_query = new_text;
+            self.search_query = new_text.clone();
             self.search_results = None;
             self.search_results_map.clear();
+            self.search_page = 0;
             self.apply_filter();
+
+            // デバウンスタイマーを発火
+            if !new_text.is_empty() {
+                self.debounce_generation = self.debounce_generation.wrapping_add(1);
+                let generation = self.debounce_generation;
+                let debounce_ms = self.debounce_ms;
+                cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(debounce_ms))
+                        .await;
+                    this.update(cx, |this, cx| {
+                        // 世代番号が変わっていなければ検索実行
+                        if this.debounce_generation == generation {
+                            // window が必要なので trigger_search_internal を使う
+                            this.trigger_search_internal(cx);
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
         }
+    }
+
+    /// デバウンスから呼ばれる内部検索 (Window 不要版)
+    fn trigger_search_internal(&mut self, cx: &mut Context<Self>) {
+        if self.search_query.is_empty() {
+            return;
+        }
+        self.is_performing_search = true;
+        self.search_page = 0;
+        cx.notify();
+
+        let query = SearchQuery {
+            query: self.search_query.clone(),
+            search_type: self.search_type,
+            match_case: self.match_case,
+            match_whole_word: self.match_whole_word,
+            use_regex: self.use_regex,
+        };
+        let scope = self.search_scope;
+        let service = self.search_service.clone();
+        let per_page = self.search_results_per_page;
+
+        cx.spawn(async move |this, cx| {
+            let results = cx
+                .background_executor()
+                .spawn(async move { service.search_blocking(&query, scope) })
+                .await;
+
+            this.update(cx, |this, cx| {
+                match results {
+                    Ok(res) => {
+                        let grouped = search::group_results(res);
+                        this.search_total_results = grouped.len();
+                        // ページネーション適用
+                        let paged: Vec<_> = grouped
+                            .iter()
+                            .skip(this.search_page * per_page)
+                            .take(per_page)
+                            .cloned()
+                            .collect();
+                        let entries = search::results_to_entries(&paged);
+                        this.rebuild_search_results_map(&paged);
+                        this.filtered_entries = entries;
+                        // 全結果を保持（ページ切替用）
+                        this.search_results = Some(grouped);
+                    }
+                    Err(e) => {
+                        tracing::error!("Search failed: {}", e);
+                        this.search_results = Some(Vec::new());
+                        this.search_results_map.clear();
+                        this.filtered_entries = Vec::new();
+                        this.search_total_results = 0;
+                    }
+                }
+                this.is_performing_search = false;
+                this.update_item_sizes();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// 検索結果のページを切り替える
+    fn set_search_page(&mut self, page: usize) {
+        if let Some(results) = &self.search_results {
+            let max_page = results.len().saturating_sub(1) / self.search_results_per_page;
+            let page = page.min(max_page);
+            if page != self.search_page {
+                self.search_page = page;
+                let paged: Vec<_> = results
+                    .iter()
+                    .skip(page * self.search_results_per_page)
+                    .take(self.search_results_per_page)
+                    .cloned()
+                    .collect();
+                let entries = search::results_to_entries(&paged);
+                self.rebuild_search_results_map(&paged);
+                self.filtered_entries = entries;
+                self.update_item_sizes();
+            }
+        }
+    }
+
+    fn search_next_page(&mut self, cx: &mut Context<Self>) {
+        self.set_search_page(self.search_page + 1);
+        cx.notify();
+    }
+
+    fn search_prev_page(&mut self, cx: &mut Context<Self>) {
+        self.set_search_page(self.search_page.saturating_sub(1));
+        cx.notify();
+    }
+
+    fn search_total_pages(&self) -> usize {
+        if self.search_total_results == 0 {
+            return 0;
+        }
+        (self.search_total_results + self.search_results_per_page - 1)
+            / self.search_results_per_page
     }
 }
 

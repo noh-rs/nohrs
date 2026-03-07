@@ -24,7 +24,7 @@ pub fn render(
             .size_full()
             .flex()
             .flex_col()
-            .child(search_bar::render(page, cx))
+            .child(search_bar::render(page, window, cx))
             .child(file_list)
             .into_any_element()
     } else {
