@@ -5,12 +5,12 @@ use crate::ui::theme::theme;
 use gpui::{div, px, rgb, ParentElement, Styled, Window};
 use gpui_component::list::{List, ListDelegate, ListItem};
 use gpui_component::{Icon, IconName, IndexPath};
+use std::rc::Rc;
 
 pub struct FileListDelegate {
     pub items: Vec<FileEntryDto>,
     pub selected: Option<IndexPath>,
-    // Callback hooks
-    pub on_confirm: Option<Box<dyn Fn(&FileEntryDto) + 'static>>,
+    pub on_confirm: Option<Rc<dyn Fn(&FileEntryDto) + 'static>>,
 }
 
 impl FileListDelegate {
@@ -150,16 +150,11 @@ impl ListDelegate for FileListDelegate {
                     ),
             );
 
-        // enable click to confirm
-        let item_clone = item.clone();
-        if self.on_confirm.is_some() {
-            let cb = self.on_confirm.as_ref().unwrap();
-            // We cannot capture trait object by move directly; wrap call inside closure
-            let ptr = cb as *const _;
-            row = row.on_click(move |_, _, _| unsafe {
-                // SAFETY: lifetime tied to delegate existence within app
-                let f: &Box<dyn Fn(&FileEntryDto)> = &*ptr;
-                (f)(&item_clone);
+        if let Some(cb) = &self.on_confirm {
+            let cb = cb.clone();
+            let item_clone = item.clone();
+            row = row.on_click(move |_, _, _| {
+                (cb)(&item_clone);
             });
         }
         Some(row)
