@@ -4085,6 +4085,7 @@ dependencies = [
  "image",
  "notify 6.1.1",
  "notify-debouncer-mini",
+ "regex",
  "rust-embed",
  "serde",
  "serde_json",

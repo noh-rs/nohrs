@@ -26,6 +26,7 @@ impl ExplorerPage {
         if let Some(text) = &self.preview_text {
             let mut current_off = 0;
             let mut found_offset = None;
+            // 1-based → 0-based 変換
             let target_idx = line.saturating_sub(1);
 
             for (i, line_str) in text.lines().enumerate() {
@@ -56,6 +57,7 @@ impl ExplorerPage {
         }
     }
 
+    /// ファイルプレビューを非同期で開く (4.3.5)
     pub(super) fn open_preview(
         &mut self,
         path: String,
@@ -66,31 +68,60 @@ impl ExplorerPage {
         self.preview_image_path = None;
         self.preview_message = None;
         self.preview_text = None;
-        self.preview_path = None;
+        self.preview_path = Some(path.clone());
 
-        if let Ok(md) = std::fs::metadata(&path) {
-            if md.is_file() {
-                if md.len() > 1024 * 1024 * 2 {
-                    self.preview_path = Some(path);
-                    self.preview_message = Some("(File too large to preview)".to_string());
-                    return;
-                }
-
-                if let Ok(bytes) = std::fs::read(&path) {
-                    if let Ok(text) = String::from_utf8(bytes) {
-                        self.open_text_preview(path, text, window, cx);
-                        return;
-                    } else {
-                        if self.try_open_image_preview(&path) {
-                            return;
-                        }
-                    }
-                }
-            }
+        // 画像拡張子の場合は同期で即返す（I/O なし）
+        if self.try_open_image_preview(&path) {
+            return;
         }
 
-        self.preview_path = Some(path);
-        self.preview_message = Some("(Preview not available for this file)".to_string());
+        let path_clone = path.clone();
+        cx.spawn_in(window, async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncWindowContext| {
+            // background_executor でファイル I/O を実行 (4.3.5)
+            let file_data = cx
+                .background_executor()
+                .spawn(async move {
+                    let md = match std::fs::metadata(&path_clone) {
+                        Ok(md) => md,
+                        Err(_) => return Err("metadata error"),
+                    };
+                    if !md.is_file() {
+                        return Err("not a file");
+                    }
+                    if md.len() > 1024 * 1024 * 2 {
+                        return Err("too large");
+                    }
+                    match std::fs::read(&path_clone) {
+                        Ok(bytes) => Ok(bytes),
+                        Err(_) => Err("read error"),
+                    }
+                })
+                .await;
+
+            this.update_in(cx, |this: &mut Self, window: &mut Window, cx: &mut gpui::Context<Self>| {
+                match file_data {
+                    Ok(bytes) => {
+                        if let Ok(text) = String::from_utf8(bytes) {
+                            this.open_text_preview(path, text, window, cx);
+                        } else {
+                            this.preview_message =
+                                Some("(Preview not available for this file)".to_string());
+                        }
+                    }
+                    Err("too large") => {
+                        this.preview_message =
+                            Some("(File too large to preview)".to_string());
+                    }
+                    Err(_) => {
+                        this.preview_message =
+                            Some("(Preview not available for this file)".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn open_text_preview(
@@ -147,10 +178,8 @@ impl ExplorerPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(results) = &self.search_results else {
-            return;
-        };
-        let Some(file_result) = results.iter().find(|r| r.path == path) else {
+        // O(1) HashMap ルックアップ
+        let Some(file_result) = self.get_search_result(path) else {
             return;
         };
         let Some(first_match) = file_result.matches.first() else {
@@ -158,7 +187,8 @@ impl ExplorerPage {
         };
 
         let mut current_off = 0;
-        let target_line = first_match.line_number;
+        // 1-based → 0-based 変換 (4.4.1: off-by-one 修正)
+        let target_line = first_match.line_number.saturating_sub(1);
         let mut found_offset = None;
 
         for (i, line) in text.lines().enumerate() {

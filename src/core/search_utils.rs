@@ -35,8 +35,8 @@ pub fn group_results(results: Vec<SearchResult>) -> Vec<SearchFileResult> {
             entry.matches.push(SearchMatch {
                 line_number: res.line_number,
                 line_content: res.line_content,
-                match_start: 0,
-                match_end: 0,
+                match_start: res.match_start,
+                match_end: res.match_end,
             });
         }
     }
@@ -47,6 +47,8 @@ pub fn group_results(results: Vec<SearchResult>) -> Vec<SearchFileResult> {
     sorted_results
 }
 
+/// 検索結果をファイル一覧エントリに変換する
+/// name フィールドはファイル名のみを使う (4.4.2: フルパスの重複を避ける)
 pub fn results_to_entries(results: &[SearchFileResult]) -> Vec<FileEntryDto> {
     results
         .iter()
@@ -61,11 +63,7 @@ pub fn results_to_entries(results: &[SearchFileResult]) -> Vec<FileEntryDto> {
                 .unwrap_or(0);
             let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
             FileEntryDto {
-                name: if res.folder.is_empty() {
-                    res.filename.clone()
-                } else {
-                    format!("{}/{}", res.folder, res.filename)
-                },
+                name: res.filename.clone(),
                 path: res.path.clone(),
                 kind: if is_dir {
                     "dir".to_string()

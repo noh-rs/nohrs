@@ -1,5 +1,6 @@
 use crate::common::search::test_index_manager;
 use anyhow::Result;
+use nohrs::core::types::SearchQuery;
 use nohrs::services::search::SearchBackend;
 use std::fs;
 use tempfile::tempdir;
@@ -14,7 +15,7 @@ fn test_index_create_and_filename_search() -> Result<()> {
     let (manager, _index_dir) = test_index_manager(&content_root);
     manager.index_home(None)?;
 
-    let results = manager.search("hello")?;
+    let results = manager.search(&SearchQuery::new("hello".into()))?;
     assert!(!results.is_empty(), "Should find 'hello' via filename");
     Ok(())
 }
@@ -29,7 +30,7 @@ fn test_index_create_and_content_search() -> Result<()> {
     let (manager, _index_dir) = test_index_manager(&content_root);
     manager.index_home(None)?;
 
-    let results = manager.search("world")?;
+    let results = manager.search(&SearchQuery::new("world".into()))?;
     assert!(!results.is_empty(), "Should find 'world' in file content");
 
     // line_number と line_content の検証
@@ -56,10 +57,10 @@ fn test_update_file_reindexes() -> Result<()> {
     fs::write(&file_path, "Updated content here")?;
     manager.update_file(&file_path)?;
 
-    let results_new = manager.search("Updated")?;
+    let results_new = manager.search(&SearchQuery::new("Updated".into()))?;
     assert!(!results_new.is_empty(), "Should find 'Updated' after update");
 
-    let results_old = manager.search("Hello")?;
+    let results_old = manager.search(&SearchQuery::new("Hello".into()))?;
     // Hello should not be found in content anymore (though it may still be in path)
     let content_matches: Vec<_> = results_old
         .iter()
@@ -83,12 +84,12 @@ fn test_remove_file() -> Result<()> {
     let (manager, _index_dir) = test_index_manager(&content_root);
     manager.index_home(None)?;
 
-    let before = manager.search("removeme")?;
+    let before = manager.search(&SearchQuery::new("removeme".into()))?;
     assert!(!before.is_empty(), "File should be found before removal");
 
     manager.remove_file(&file_path)?;
 
-    let after = manager.search("removeme")?;
+    let after = manager.search(&SearchQuery::new("removeme".into()))?;
     assert!(after.is_empty(), "File should not be found after removal");
     Ok(())
 }
@@ -104,7 +105,7 @@ fn test_index_japanese_content() -> Result<()> {
     manager.index_home(None)?;
 
     // ファイル名検索
-    let results = manager.search("日本語")?;
+    let results = manager.search(&SearchQuery::new("日本語".into()))?;
     assert!(
         !results.is_empty(),
         "Should find file with Japanese filename"

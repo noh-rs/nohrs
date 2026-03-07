@@ -111,31 +111,18 @@ impl IndexManager {
             .get_field("is_directory")
             .context("Schema error: is_directory field missing")?;
 
-        // 1. Count files if progress tracking is enabled
-        let mut total_files = 0;
-        if let Some(tx) = &progress_tx {
-            let _ = tx.send(0.0);
-            let walker = ignore::WalkBuilder::new(&self.content_root)
-                .hidden(false)
-                .git_ignore(true)
-                .build();
-            for result in walker {
-                if let Ok(entry) = result {
-                    // Count both files and directories
-                    if entry.path().is_file() || entry.path().is_dir() {
-                        total_files += 1;
-                    }
-                }
-            }
-        }
-
-        // 2. Index files
+        // 単一パスで走査＋インデックス（二重走査を排除: 4.2.7）
+        // プログレスは処理件数ベースで概算通知
         let walker = ignore::WalkBuilder::new(&self.content_root)
             .hidden(false)
             .git_ignore(true)
             .build();
 
-        let mut processed = 0;
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(0.0);
+        }
+
+        let mut processed: u64 = 0;
         for result in walker {
             match result {
                 Ok(entry) => {
@@ -164,11 +151,11 @@ impl IndexManager {
                         }
                     }
 
-                    // Update progress
                     processed += 1;
                     if let Some(tx) = &progress_tx {
-                        if total_files > 0 && processed % 100 == 0 {
-                            let _ = tx.send(processed as f32 / total_files as f32);
+                        if processed % 100 == 0 {
+                            // 概算: 件数ベースで進捗通知（最大 0.99 でクランプ）
+                            let _ = tx.send((processed as f32 / (processed as f32 + 100.0)).min(0.99));
                         }
                     }
                 }
@@ -289,15 +276,29 @@ impl IndexManager {
 
         for path in paths {
             if path.exists() {
-                if let Err(e) = self.index_single_file(
-                    path,
-                    &mut *writer_guard,
-                    path_field,
-                    filename_field,
-                    content_field,
-                    is_directory_field,
-                ) {
-                    tracing::warn!("Failed to update index for {:?}: {}", path, e);
+                // ファイルとディレクトリの両方を処理 (4.3.7)
+                if path.is_dir() {
+                    if let Err(e) = self.index_single_directory(
+                        path,
+                        &mut *writer_guard,
+                        path_field,
+                        filename_field,
+                        content_field,
+                        is_directory_field,
+                    ) {
+                        tracing::warn!("Failed to update index for directory {:?}: {}", path, e);
+                    }
+                } else {
+                    if let Err(e) = self.index_single_file(
+                        path,
+                        &mut *writer_guard,
+                        path_field,
+                        filename_field,
+                        content_field,
+                        is_directory_field,
+                    ) {
+                        tracing::warn!("Failed to update index for {:?}: {}", path, e);
+                    }
                 }
             } else {
                 let path_str = path.to_string_lossy();

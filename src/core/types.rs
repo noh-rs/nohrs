@@ -16,6 +16,28 @@ pub enum SearchType {
     All,
 }
 
+/// 検索オプションを一括で渡すための構造体
+#[derive(Clone, Debug)]
+pub struct SearchQuery {
+    pub query: String,
+    pub search_type: SearchType,
+    pub match_case: bool,
+    pub match_whole_word: bool,
+    pub use_regex: bool,
+}
+
+impl SearchQuery {
+    pub fn new(query: String) -> Self {
+        Self {
+            query,
+            search_type: SearchType::All,
+            match_case: false,
+            match_whole_word: false,
+            use_regex: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SearchMatch {
     pub line_number: usize,

@@ -8,14 +8,11 @@ use gpui_component::input::TextInput;
 use gpui_component::{Icon, IconName, ListItem};
 
 pub fn render(page: &mut ExplorerPage, cx: &mut Context<ExplorerPage>) -> impl IntoElement {
+    // 副作用を render から排除 (4.2.2, 4.3.6)
+    // InputState の変更検知はイベントハンドラ (on_key_down) で行う
     let current_text = page.search_input.read(cx).text().to_string();
     if current_text != page.search_query {
-        page.search_query = current_text;
-        // If query changed, revert to file list filter until user explicitly triggers search?
-        // Or we could auto-search? Auto-search is expensive for full content.
-        // So default to file filter.
-        page.search_results = None;
-        page.apply_filter();
+        page.on_search_input_changed(current_text);
     }
 
     let is_empty = page.search_query.is_empty();

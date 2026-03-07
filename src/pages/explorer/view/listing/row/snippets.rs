@@ -11,16 +11,14 @@ pub(super) fn collect_snippets(
     has_content_matches: bool,
 ) -> Vec<(usize, String)> {
     if is_expanded && has_content_matches {
-        page.search_results
-            .as_ref()
-            .and_then(|results| {
-                results.iter().find(|r| r.path == item.path).map(|r| {
-                    r.matches
-                        .iter()
-                        .take(10)
-                        .map(|m| (m.line_number, m.line_content.clone()))
-                        .collect()
-                })
+        // O(1) HashMap ルックアップ (4.2.6)
+        page.get_search_result(&item.path)
+            .map(|r| {
+                r.matches
+                    .iter()
+                    .take(10)
+                    .map(|m| (m.line_number, m.line_content.clone()))
+                    .collect()
             })
             .unwrap_or_default()
     } else {

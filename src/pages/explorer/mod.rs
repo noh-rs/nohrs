@@ -1,3 +1,4 @@
+use crate::core::types::SearchQuery;
 use crate::services::fs::listing::{list_dir_sync, FileEntryDto, ListParams};
 use crate::services::search::{SearchProvider, SearchScope};
 use crate::ui::components::file_list::FileListDelegate;
@@ -10,6 +11,7 @@ use gpui_component::input::InputState;
 use gpui_component::list::List;
 use gpui_component::resizable::ResizableState;
 use gpui_component::VirtualListScrollHandle;
+use std::collections::HashMap;
 use std::{rc::Rc, sync::Arc};
 mod entries;
 mod event;
@@ -59,6 +61,8 @@ pub struct ExplorerPage {
     pub(super) match_whole_word: bool,
     pub(super) use_regex: bool,
     pub(super) search_results: Option<Vec<SearchFileResult>>,
+    /// O(1) パス → SearchFileResult インデックス参照用マップ (4.2.5)
+    pub(super) search_results_map: HashMap<String, usize>,
     pub(super) is_performing_search: bool,
     pub(super) expanded_search_files: std::collections::HashSet<String>,
     pub(super) syntax_service: Arc<SyntaxService>,
@@ -118,6 +122,7 @@ impl ExplorerPage {
             match_whole_word: false,
             use_regex: false,
             search_results: None,
+            search_results_map: HashMap::new(),
             is_performing_search: false,
             expanded_search_files: std::collections::HashSet::new(),
             syntax_service: Arc::new(SyntaxService::new()),
@@ -127,9 +132,11 @@ impl ExplorerPage {
         }
     }
 
+    /// 検索を非同期で実行 (4.1.1: UI スレッドブロックを解消)
     fn trigger_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.search_query.is_empty() {
             self.search_results = None;
+            self.search_results_map.clear();
             self.apply_filter();
             cx.notify();
             return;
@@ -138,27 +145,62 @@ impl ExplorerPage {
         self.is_performing_search = true;
         cx.notify();
 
-        let results = self
-            .search_service
-            .search_blocking(&self.search_query, self.search_scope);
+        // SearchQuery を構築して全オプションを渡す (4.1.2)
+        let query = SearchQuery {
+            query: self.search_query.clone(),
+            search_type: self.search_type,
+            match_case: self.match_case,
+            match_whole_word: self.match_whole_word,
+            use_regex: self.use_regex,
+        };
+        let scope = self.search_scope;
+        let service = self.search_service.clone();
 
-        match results {
-            Ok(res) => {
-                let grouped = search::group_results(res);
-                let entries = search::results_to_entries(&grouped);
-                self.filtered_entries = entries;
-                self.search_results = Some(grouped);
-            }
-            Err(e) => {
-                tracing::error!("Search failed: {}", e);
-                self.search_results = Some(Vec::new());
-                self.filtered_entries = Vec::new();
-            }
+        // background_executor で非同期実行 (4.1.1)
+        cx.spawn_in(window, async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncWindowContext| {
+            let results = cx
+                .background_executor()
+                .spawn(async move { service.search_blocking(&query, scope) })
+                .await;
+
+            this.update(cx, |this: &mut Self, cx: &mut gpui::Context<Self>| {
+                match results {
+                    Ok(res) => {
+                        let grouped = search::group_results(res);
+                        let entries = search::results_to_entries(&grouped);
+                        this.rebuild_search_results_map(&grouped);
+                        this.filtered_entries = entries;
+                        this.search_results = Some(grouped);
+                    }
+                    Err(e) => {
+                        tracing::error!("Search failed: {}", e);
+                        this.search_results = Some(Vec::new());
+                        this.search_results_map.clear();
+                        this.filtered_entries = Vec::new();
+                    }
+                }
+                this.is_performing_search = false;
+                this.update_item_sizes();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// search_results から HashMap を構築 (4.2.5)
+    fn rebuild_search_results_map(&mut self, results: &[SearchFileResult]) {
+        self.search_results_map.clear();
+        for (i, r) in results.iter().enumerate() {
+            self.search_results_map.insert(r.path.clone(), i);
         }
-        self.is_performing_search = false;
-        self.update_item_sizes();
-        self.update_editor_search(window, cx);
-        cx.notify();
+    }
+
+    /// パスから SearchFileResult を O(1) で取得
+    pub(super) fn get_search_result(&self, path: &str) -> Option<&SearchFileResult> {
+        let results = self.search_results.as_ref()?;
+        let &idx = self.search_results_map.get(path)?;
+        results.get(idx)
     }
 
     fn set_search_scope(&mut self, scope: SearchScope, cx: &mut Context<Self>) {
@@ -220,14 +262,9 @@ impl ExplorerPage {
             .map(|entry| {
                 let is_expanded = self.expanded_search_files.contains(&entry.path);
                 let snippet_count = if is_expanded {
-                    self.search_results
-                        .as_ref()
-                        .and_then(|results| {
-                            results
-                                .iter()
-                                .find(|r| r.path == entry.path)
-                                .map(|r| r.matches.len().min(max_snippets))
-                        })
+                    // O(1) HashMap ルックアップ (4.2.5)
+                    self.get_search_result(&entry.path)
+                        .map(|r| r.matches.len().min(max_snippets))
                         .unwrap_or(0)
                 } else {
                     0
@@ -338,6 +375,7 @@ impl ExplorerPage {
         }
         self.search_visible = false;
         self.search_results = None;
+        self.search_results_map.clear();
         self.search_query.clear();
         self.apply_filter();
         self.update_editor_search(window, cx);
@@ -349,6 +387,16 @@ impl ExplorerPage {
             self.close_search(window, cx);
         } else {
             self.open_search(window, cx);
+        }
+    }
+
+    /// 検索バーの入力値が変わったときに呼ばれるハンドラ (4.2.2, 4.3.6)
+    fn on_search_input_changed(&mut self, new_text: String) {
+        if new_text != self.search_query {
+            self.search_query = new_text;
+            self.search_results = None;
+            self.search_results_map.clear();
+            self.apply_filter();
         }
     }
 }

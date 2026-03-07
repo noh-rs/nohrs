@@ -41,14 +41,10 @@ pub fn render(
     let query_lower = page.search_query.to_lowercase();
     let has_filename_match =
         !page.search_query.is_empty() && item.name.to_lowercase().contains(&query_lower);
+    // O(1) HashMap ルックアップ (4.2.6)
     let has_content_matches = page
-        .search_results
-        .as_ref()
-        .map(|results| {
-            results
-                .iter()
-                .any(|r| r.path == item.path && !r.matches.is_empty())
-        })
+        .get_search_result(&item.path)
+        .map(|r| !r.matches.is_empty())
         .unwrap_or(false);
 
     let is_expanded = page.expanded_search_files.contains(&item.path);

@@ -1,5 +1,6 @@
 use crate::common::search::test_index_manager;
 use anyhow::Result;
+use nohrs::core::types::SearchQuery;
 use nohrs::services::search::SearchBackend;
 use std::fs;
 use tempfile::tempdir;
@@ -15,7 +16,7 @@ fn test_index_manager_home_scope_uses_index() -> Result<()> {
     manager.index_home(None)?;
 
     // SearchBackend::search on IndexManager = Home scope behavior
-    let results = manager.search("findme")?;
+    let results = manager.search(&SearchQuery::new("findme".into()))?;
     assert!(!results.is_empty(), "Home scope search via index should work");
     Ok(())
 }
@@ -28,7 +29,7 @@ fn test_ripgrep_root_scope_search() -> Result<()> {
     fs::write(tmp.path().join("rootfile.txt"), "root search content")?;
 
     let backend = RipgrepBackend::new(tmp.path().to_path_buf());
-    let results = backend.search("root")?;
+    let results = backend.search(&SearchQuery::new("root".into()))?;
     assert!(!results.is_empty(), "Root scope search via ripgrep should work");
     Ok(())
 }

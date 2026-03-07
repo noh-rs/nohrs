@@ -2,6 +2,7 @@ use super::indexer::IndexManager;
 use super::ripgrep::RipgrepBackend;
 use super::watcher::FileWatcher;
 use super::{SearchBackend, SearchResult, SearchScope};
+use crate::core::types::SearchQuery;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -101,11 +102,11 @@ impl SearchEngine {
         self.index_manager.clone()
     }
 
-    pub async fn search(&self, query: String, scope: SearchScope) -> Result<Vec<SearchResult>> {
-        // Dispatches search to appropriate backend.
-        // Doing this async to not block UI (though underlying backend is sync mostly, we can spawn_blocking if needed).
-        // Since both backends have synchronous search methods currently, we should wrap in spawn_blocking.
-
+    pub async fn search(
+        &self,
+        query: SearchQuery,
+        scope: SearchScope,
+    ) -> Result<Vec<SearchResult>> {
         let index_manager = self.index_manager.clone();
         let ripgrep_backend = self.ripgrep_backend.clone();
 

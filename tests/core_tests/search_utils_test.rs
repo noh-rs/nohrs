@@ -8,6 +8,8 @@ fn make_result(path: &str, line_number: usize, line_content: &str) -> SearchResu
         path: PathBuf::from(path),
         line_number,
         line_content: line_content.to_string(),
+        match_start: 0,
+        match_end: 0,
     }
 }
 

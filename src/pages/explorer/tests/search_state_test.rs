@@ -5,25 +5,33 @@ async fn test_search_state_lifecycle(cx: &mut TestAppContext) {
     let mock = MockSearchProvider::new().with_results("test", test_data::single_match());
     let (page, cx) = build_explorer(cx, "/tmp", mock);
 
-    // 全ライフサイクルを1つの update_window_entity 内で検証
-    cx.update_window_entity(&page, |page, window, cx| {
-        // 初期状態
+    // 初期状態
+    page.read_with(cx, |page, _| {
         assert!(!page.search_visible);
         assert!(page.search_results.is_none());
         assert!(page.search_query.is_empty());
+    });
 
-        // 検索バー表示
+    // 検索バー表示 + 検索実行
+    cx.update_window_entity(&page, |page, window, cx| {
         page.open_search(window, cx);
         assert!(page.search_visible);
         assert!(page.search_results.is_none());
 
-        // 検索実行
         page.search_query = "test".to_string();
         page.trigger_search(window, cx);
+    });
+
+    // 非同期検索の完了を待つ
+    cx.run_until_parked();
+
+    page.read_with(cx, |page, _| {
         assert!(page.search_results.is_some());
         assert!(!page.is_performing_search);
+    });
 
-        // 検索クローズ → 初期状態に復帰
+    // 検索クローズ → 初期状態に復帰
+    cx.update_window_entity(&page, |page, window, cx| {
         page.close_search(window, cx);
         assert!(!page.search_visible);
         assert!(page.search_results.is_none());
@@ -41,15 +49,22 @@ async fn test_dir_change_clears_search(cx: &mut TestAppContext) {
     let mock = MockSearchProvider::new().with_results("query", test_data::single_match());
     let (page, cx) = build_explorer(cx, tmp.path().to_str().unwrap(), mock);
 
+    // 検索実行
     cx.update_window_entity(&page, |page, window, cx| {
-        // 検索実行
         page.open_search(window, cx);
         page.search_query = "query".to_string();
         page.trigger_search(window, cx);
+    });
+
+    cx.run_until_parked();
+
+    page.read_with(cx, |page, _| {
         assert!(page.search_visible);
         assert!(page.search_results.is_some());
+    });
 
-        // ディレクトリ移動 → 検索クリア
+    // ディレクトリ移動 → 検索クリア
+    cx.update_window_entity(&page, |page, window, cx| {
         let sub_str = sub.to_str().unwrap().to_string();
         page.change_dir(sub_str, window, cx);
         assert!(!page.search_visible);
@@ -67,10 +82,12 @@ async fn test_search_expanded_files_state(cx: &mut TestAppContext) {
     let (page, cx) = build_explorer(cx, "/tmp", mock);
 
     cx.update_window_entity(&page, |page, window, cx| {
-        // 検索実行
         page.search_query = "search".to_string();
         page.trigger_search(window, cx);
     });
+
+    // 非同期検索の完了を待つ
+    cx.run_until_parked();
 
     // ファイル展開
     page.update(cx, |page, _cx| {

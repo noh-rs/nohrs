@@ -18,16 +18,23 @@ pub struct SearchResult {
     pub path: PathBuf,
     pub line_number: usize,
     pub line_content: String,
+    pub match_start: usize,
+    pub match_end: usize,
 }
 
 pub use backend::SearchBackend;
 
+use crate::core::types::SearchQuery;
 use anyhow::Result;
 use std::sync::Arc;
 
 /// 検索プロバイダートレイト: テスト時にモック差し替え可能
 pub trait SearchProvider: Send + Sync {
-    fn search_blocking(&self, query: &str, scope: SearchScope) -> Result<Vec<SearchResult>>;
+    fn search_blocking(
+        &self,
+        query: &SearchQuery,
+        scope: SearchScope,
+    ) -> Result<Vec<SearchResult>>;
 }
 
 pub struct SearchService {
@@ -40,7 +47,11 @@ impl SearchService {
         Ok(Self { engine })
     }
 
-    pub async fn search(&self, query: String, scope: SearchScope) -> Result<Vec<SearchResult>> {
+    pub async fn search(
+        &self,
+        query: SearchQuery,
+        scope: SearchScope,
+    ) -> Result<Vec<SearchResult>> {
         self.engine.search(query, scope).await
     }
 
@@ -50,8 +61,12 @@ impl SearchService {
 }
 
 impl SearchProvider for SearchService {
-    fn search_blocking(&self, query: &str, scope: SearchScope) -> Result<Vec<SearchResult>> {
+    fn search_blocking(
+        &self,
+        query: &SearchQuery,
+        scope: SearchScope,
+    ) -> Result<Vec<SearchResult>> {
         let handle = tokio::runtime::Handle::current();
-        tokio::task::block_in_place(|| handle.block_on(self.search(query.to_string(), scope)))
+        tokio::task::block_in_place(|| handle.block_on(self.search(query.clone(), scope)))
     }
 }

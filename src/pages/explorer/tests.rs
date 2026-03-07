@@ -8,9 +8,10 @@ mod search_state_test;
 mod sort_test;
 
 use super::*;
+use crate::core::types::SearchQuery;
 use crate::services::search::{SearchProvider, SearchResult, SearchScope};
 use anyhow::Result;
-use gpui::{TestAppContext, VisualContext, VisualTestContext};
+use gpui::{AppContext, TestAppContext, VisualContext, VisualTestContext};
 use gpui_component::input::InputState;
 use gpui_component::resizable::ResizableState;
 use std::collections::HashMap;
@@ -46,12 +47,16 @@ impl MockSearchProvider {
 }
 
 impl SearchProvider for MockSearchProvider {
-    fn search_blocking(&self, query: &str, _scope: SearchScope) -> Result<Vec<SearchResult>> {
+    fn search_blocking(
+        &self,
+        query: &SearchQuery,
+        _scope: SearchScope,
+    ) -> Result<Vec<SearchResult>> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
         if self.error_mode {
             return Err(anyhow::anyhow!("Mock search error"));
         }
-        Ok(self.results.get(query).cloned().unwrap_or_default())
+        Ok(self.results.get(&query.query).cloned().unwrap_or_default())
     }
 }
 
@@ -65,6 +70,8 @@ pub mod test_data {
             path: PathBuf::from("/tmp/test/hello.rs"),
             line_number: 5,
             line_content: "fn hello() { println!(\"hello\"); }".to_string(),
+            match_start: 3,
+            match_end: 8,
         }]
     }
 
@@ -74,11 +81,15 @@ pub mod test_data {
                 path: PathBuf::from("/tmp/test/lib.rs"),
                 line_number: 1,
                 line_content: "use std::collections::HashMap;".to_string(),
+                match_start: 0,
+                match_end: 0,
             },
             SearchResult {
                 path: PathBuf::from("/tmp/test/lib.rs"),
                 line_number: 10,
                 line_content: "let map = HashMap::new();".to_string(),
+                match_start: 0,
+                match_end: 0,
             },
         ]
     }
@@ -89,16 +100,22 @@ pub mod test_data {
                 path: PathBuf::from("/tmp/test/a.rs"),
                 line_number: 3,
                 line_content: "fn search() {}".to_string(),
+                match_start: 3,
+                match_end: 9,
             },
             SearchResult {
                 path: PathBuf::from("/tmp/test/b.rs"),
                 line_number: 7,
                 line_content: "fn search_inner() {}".to_string(),
+                match_start: 3,
+                match_end: 9,
             },
             SearchResult {
                 path: PathBuf::from("/tmp/test/c/d.rs"),
                 line_number: 1,
                 line_content: "mod search;".to_string(),
+                match_start: 4,
+                match_end: 10,
             },
         ]
     }

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use nohrs::core::types::SearchQuery;
 use nohrs::services::search::SearchBackend;
 use nohrs::services::search::ripgrep::RipgrepBackend;
 use std::fs;
@@ -10,7 +11,7 @@ fn test_ripgrep_basic_search() -> Result<()> {
     fs::write(tmp.path().join("test.txt"), "Hello world")?;
 
     let backend = RipgrepBackend::new(tmp.path().to_path_buf());
-    let results = backend.search("Hello")?;
+    let results = backend.search(&SearchQuery::new("Hello".into()))?;
 
     assert!(!results.is_empty(), "Should find 'Hello'");
     assert!(results[0].line_content.contains("Hello"));
@@ -24,15 +25,17 @@ fn test_ripgrep_case_sensitive() -> Result<()> {
 
     let backend = RipgrepBackend::new(tmp.path().to_path_buf());
 
-    // ripgrep regex is case-sensitive by default
-    let results_upper = backend.search("Hello")?;
-    assert!(!results_upper.is_empty(), "Should find 'Hello' (case match)");
+    // Default is case-insensitive (match_case=false)
+    let results_upper = backend.search(&SearchQuery::new("Hello".into()))?;
+    assert!(!results_upper.is_empty(), "Should find 'Hello' (case-insensitive default)");
 
-    // lowercase should not match since regex is case-sensitive
-    let results_lower = backend.search("hello")?;
+    // Case-sensitive mode
+    let mut query_cs = SearchQuery::new("hello".into());
+    query_cs.match_case = true;
+    let results_lower = backend.search(&query_cs)?;
     assert!(
         results_lower.is_empty(),
-        "Should NOT find 'hello' (case-sensitive)"
+        "Should NOT find 'hello' when match_case=true (original is 'Hello')"
     );
     Ok(())
 }
@@ -46,7 +49,7 @@ fn test_ripgrep_binary_skipped() -> Result<()> {
     fs::write(tmp.path().join("text.txt"), "Hello world")?;
 
     let backend = RipgrepBackend::new(tmp.path().to_path_buf());
-    let results = backend.search("Hello")?;
+    let results = backend.search(&SearchQuery::new("Hello".into()))?;
 
     // Only the text file should match
     let text_matches: Vec<_> = results
@@ -78,7 +81,7 @@ fn test_ripgrep_line_number_and_content() -> Result<()> {
     )?;
 
     let backend = RipgrepBackend::new(tmp.path().to_path_buf());
-    let results = backend.search("target")?;
+    let results = backend.search(&SearchQuery::new("target".into()))?;
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].line_number, 2);
@@ -98,7 +101,7 @@ fn test_ripgrep_gitignore_respected() -> Result<()> {
     fs::write(tmp.path().join("visible.txt"), "visible content")?;
 
     let backend = RipgrepBackend::new(tmp.path().to_path_buf());
-    let results = backend.search("content")?;
+    let results = backend.search(&SearchQuery::new("content".into()))?;
 
     let visible: Vec<_> = results
         .iter()
