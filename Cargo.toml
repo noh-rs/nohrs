@@ -38,3 +38,4 @@ notify = "6"
 trash = "5"
 time = { version = "0.3", features = ["formatting", "macros"] }
 walkdir = "2"
+open = "5.3.4"

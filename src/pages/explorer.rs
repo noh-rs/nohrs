@@ -15,6 +15,7 @@ use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
+use open::that;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -329,7 +330,7 @@ impl ExplorerPage {
         if item.kind == "dir" {
             self.change_dir(item.path, window, cx);
         } else {
-            self.open_preview(item.path);
+            self.open_file(item.path);
         }
     }
 
@@ -425,6 +426,12 @@ impl ExplorerPage {
         }
         self.preview_path = Some(path);
         self.preview_text = Some("(Preview not available for this file)".into());
+    }
+
+    fn open_file(&mut self,path:String){
+        if that(&path).is_err(){
+            self.open_preview(path);
+        }
     }
 
     fn shortcuts(&self) -> Vec<(String, String)> {
