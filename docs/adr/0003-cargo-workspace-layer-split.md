@@ -21,7 +21,7 @@ v0.1.0 時点の nohrs は **単一 crate** (`nohrs`) で約 5000 行、`src/` �
 
 P1 開始時の 6 crate:
 
-```
+```text
 crates/nohrs/            # main binary
 crates/nohrs-core/       # errors, config, telemetry
 crates/nohrs-models/     # FileEntry など pure data types

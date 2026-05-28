@@ -24,7 +24,7 @@ nohrs は P1 で web (`nohrs.app` + `noh.rs`) の MVP を立ち上げる。web �
 
 **Monorepo を採用する。`web/` を nohrs リポジトリ直下に配置し、Cargo workspace から `exclude` する**。
 
-```
+```text
 nohrs/
 ├── Cargo.toml         # workspace members = [...]; exclude = ["web"]
 ├── crates/...

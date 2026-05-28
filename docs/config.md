@@ -19,7 +19,7 @@
 | **plugin インストール先** | `$XDG_DATA_HOME/nohrs/plugins/<plugin-id>/` |
 | **window position など高頻度更新** | SQLite `key_value` テーブル (config.toml ではない) |
 
-Rust crate `dirs` (`dirs = "5.0"`) で `config_dir()` / `data_dir()` / `cache_dir()` を取得して上記を組み立てる。
+XDG 環境変数 `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME` / `$XDG_CACHE_HOME` を直接解決し、未設定時は `~/.config` / `~/.local/share` / `~/.cache` にフォールバックして上記を組み立てる。`dirs::config_dir()` / `data_dir()` / `cache_dir()` は **使わない**: macOS では `~/Library/Application Support` 等の OS ネイティブパスを返してしまい、本プロジェクトが全プラットフォームで意図する XDG スタイルの dotfile パス (`~/.config` など) と矛盾するため。
 
 ---
 

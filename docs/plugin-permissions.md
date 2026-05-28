@@ -21,11 +21,11 @@ network     = ["api.github.com", "*.example.com"]
 process     = ["rg", "git"]
 # クリップボード
 clipboard    = "read-write"   # "none" | "read" | "write" | "read-write"
-# 通知
-notification = true
-# ホスト API
-host_apis    = ["kv", "cache", "metadata", "launcher.contribute", "explorer.decorate"]
+# ホスト API (暗黙許可の API は記述不要 — §1.4 参照)
+host_apis    = ["launcher.contribute", "explorer.decorate"]
 ```
+
+> `logging` / `kv` / `cache` / `metadata` / `notification` は暗黙許可 (§1.4) のため manifest に書く必要はありません。書いても無視されます。
 
 ### 1.1 パス指定
 
@@ -80,7 +80,7 @@ manifest に未知 key があれば:
 
 ### 2.2 プロンプト UI (例)
 
-```
+```text
 ┌──────────────────────────────────────────────────────────┐
 │ Install Plugin: syuya2036/nohrs-plugin-example v0.1.0    │
 ├──────────────────────────────────────────────────────────┤
@@ -106,8 +106,8 @@ manifest に未知 key があれば:
 
 | 操作 | 動作 |
 |------|------|
-| **Customize** | 各 permission を個別 toggle 可。uncheck したまま install すると、その API は plugin から呼ぶと `NotPermitted` |
-| 既定値 | 危険度低 (read_paths, notification, clipboard read) は default checked、`write_paths` / `process` / `network` は default unchecked (明示 opt-in) |
+| **Customize** | 各 permission を個別 toggle 可。uncheck したまま install すると、その API は plugin から呼ぶと `NotPermitted`。暗黙許可 (§1.4: logging / kv / cache / metadata / notification) は consent の対象外で、toggle にも現れない |
+| 既定値 | 危険度低 (read_paths, clipboard read) は default checked、`write_paths` / `process` / `network` は default unchecked (明示 opt-in) |
 | 危険度の表示 | アイコン色分け (🔒 グレー / ⚠️ オレンジ / 🚨 赤) |
 | repo metadata 表示 | stars / last update / license / verified GitHub も同時表示 (transparency) |
 
@@ -130,7 +130,7 @@ manifest に未知 key があれば:
 |------|------|
 | メモリ分離 | wasmtime engine が物理メモリを分離 (plugin は host メモリを直接読めない) |
 | WASI Capability | `WasiCtxBuilder` で **何も渡さない** (デフォルトで全閉)、必要な capability のみ明示的に渡す |
-| File capability | `wasi:filesystem/preopened-dirs` で `read_paths` / `write_paths` をマウント |
+| File capability | `wasi:filesystem/preopens` で `read_paths` / `write_paths` をマウント |
 | Network capability | `wasi:sockets/...` は使わず、host import `network.http-fetch` 経由のみ |
 
 ### 3.2 層 2: capability filter (host functions)

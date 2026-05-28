@@ -14,7 +14,7 @@
 | 操作 | 動作 |
 |------|------|
 | Delete キー (または右クリック → Delete) | **trash に移動** (既存 `trash` crate を使用) |
-| `Shift+Delete` (または右クリック → Delete Permanently) | **直接削除**、確認ダイアログ表示 |
+| 永久削除 (Shift+Delete / macOS: Cmd+Shift+Delete、正準は §6 参照) (または右クリック → Delete Permanently) | **直接削除**、確認ダイアログ表示 |
 
 理由: Finder / Windows Explorer の慣例に沿う。学習コストゼロ。
 
@@ -106,7 +106,7 @@
 
 **tab はペイン単位** (各ペインが独自の tab bar を持つ)。
 
-```
+```text
 ┌──────────────────────────────────────────┐
 │ [tab1][tab2][+]   │ [tabA][tabB][+]      │  ← tab bar (pane-local)
 ├──────────────────┼──────────────────────┤

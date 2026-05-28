@@ -9,7 +9,7 @@
 
 ## 1. 全体アーキテクチャ
 
-```
+```text
                     ┌────────────────────────────────┐
                     │       nohrs (host process)      │
                     │                                 │
@@ -175,7 +175,7 @@ preview      = []
 
 | 種類 | 例 |
 |------|------|
-| **host imports** (plugin → host) | `logging`, `kv`, `cache`, `metadata`, `fs`, `network`, `process`, `clipboard`, `notification`, `launcher`, `explorer` |
+| **host imports** (plugin → host) | `logging`, `kv`, `cache`, `metadata`, `fs`, `network`, `process`, `clipboard`, `notification`, `launcher`, `explorer`, `search` (`read_paths` 範囲内のファイル/全文検索) |
 | **plugin exports** (host → plugin) | `commands`, `decorations`, `previews`, `events` |
 | **UI モデル** | "データを返させて、描画はホストが行う" 原則。構造化リスト + markdown のハイブリッド |
 

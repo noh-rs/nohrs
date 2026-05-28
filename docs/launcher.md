@@ -108,7 +108,7 @@ inventory::collect!(&'static dyn Command);
 
 ### レイアウト
 
-```
+```text
 ┌────────────────────────────────────────────────────┐
 │ 🔍  [icon]  Title text             [kind]   ⌘K    │
 │             Subtitle text                          │

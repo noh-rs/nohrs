@@ -11,16 +11,20 @@
 
 | ソース | 例 | 解析 |
 |--------|-----|------|
-| **GitHub `user/repo`** | `syuya2036/nohrs-plugin-example` | デフォルトで `git clone https://github.com/user/repo` |
-| **任意 URL (git)** | `https://gitlab.com/.../.git` | URL を直接 `git clone` |
-| **任意 URL (zip/tar.gz)** | `https://example.com/plugin.zip` | download → checksum 検証 → 解凍 |
+| **GitHub `user/repo`** | `syuya2036/nohrs-plugin-example` | デフォルトで `git clone https://github.com/user/repo` (常に HTTPS に解決) |
+| **任意 URL (git)** | `https://gitlab.com/.../.git` | **`https://` 必須**。URL を直接 `git clone` |
+| **任意 URL (zip/tar.gz)** | `https://example.com/plugin.zip` | **`https://` 必須**。download → SHA-256 checksum 検証 → 解凍 |
 | **ローカルパス** | `file:///Users/.../my-plugin` | `[plugins.dev_paths]` に追加、symlink (dev mode) |
+
+- リモート取得 (git / zip / tar.gz) は **`https://` のみ許可**。平文 `http://` は MITM の余地があるため拒否し、install を fail-fast させる。
+- 上記 HTTPS 必須はリモートソースのみに適用。ローカル / 開発フロー (`[plugins.dev_paths]`、「ローカルパス」) は例外で、`file://` と dev symlink を許可する。
+- ダウンロードしたアーカイブ (zip / tar.gz) は展開前に `plugin.toml` の `[verify] sha256` と SHA-256 を照合し、不一致なら install を中止する (§4 参照)。
 
 ---
 
 ## 2. プラグインリポジトリの構造
 
-```
+```text
 nohrs-plugin-example/
 ├── plugin.toml                 # manifest (required)
 ├── README.md
@@ -43,7 +47,7 @@ nohrs-plugin-example/
 
 ## 3. インストールパイプライン
 
-```
+```text
 1. 起動: ユーザー操作 (nohrs CLI / Plugin Store ボタン / `nohrs://install?source=user/repo`)
 2. config.toml に追加 or memory state 更新
 3. nohrs-plugin-host が install task を起動:

@@ -23,7 +23,7 @@
 
 各テンプレは **別リポジトリ** として `noh-rs` org 配下:
 
-```
+```text
 noh-rs/
 ├── nohrs/                            # 本体
 ├── plugin-template-rust/
@@ -36,16 +36,16 @@ noh-rs/
 
 ## 3. テンプレ repo の中身
 
-```
+```text
 plugin-template-rust/
 ├── plugin.toml                       # manifest テンプレ (TODO コメント付き)
 ├── README.md                         # quick start
 ├── LICENSE
-├── Cargo.toml                        # wit-bindgen, wasm32-unknown-unknown target
+├── Cargo.toml                        # wit-bindgen, wasm32-wasip2 target
 ├── src/
 │   └── lib.rs                        # commands trait の最小実装
 ├── wit/
-│   └── world.wit                     # nohrs:plugin/0.1 import
+│   └── world.wit                     # nohrs:plugin@0.1.0 import
 ├── .gitignore
 ├── justfile                          # `just build` で component.wasm
 ├── .github/
@@ -117,11 +117,11 @@ P4 で各 template に **30 分以内で動かせる** サンプルを同梱:
 
 ### 6.1 各テンプレ内に同梱するもの
 
-```
+```text
 .factory/skills/
 ├── plugin-dev/SKILL.md          # plugin 開発の基本フロー (build, install, debug)
 ├── wit-types/SKILL.md           # WIT 型と各言語表現のマッピング表
-├── nohrs-api/SKILL.md           # nohrs:plugin/0.1 の全 import/export の用例集
+├── nohrs-api/SKILL.md           # nohrs:plugin@0.1.0 の全 import/export の用例集
 └── debug/SKILL.md               # plugin が動かない時の切り分けフロー (permission, version, ...)
 
 .claude/commands/

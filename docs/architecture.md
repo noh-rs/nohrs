@@ -9,7 +9,7 @@
 
 ## 1. Workspace Layout
 
-```
+```text
 nohrs/
 ├── Cargo.toml                # workspace root (見出しのみ、main package なし)
 ├── rust-toolchain.toml
@@ -76,7 +76,7 @@ time              = { version = "0.3", features = ["formatting", "macros"] }
 
 [workspace.lints.rust]
 unsafe_code  = "deny"
-missing_docs = "warn"     # P7 で deny に格上げ
+missing_docs = "warn"     # P6 で deny に格上げ
 
 [workspace.lints.clippy]
 unwrap_used  = "warn"
@@ -89,7 +89,7 @@ expect_used  = "warn"
 
 ## 2. レイヤーと責務
 
-```
+```text
                  ┌──────────────┐
                  │  nohrs (bin) │   GUI エントリポイント + CLI
                  └──────┬───────┘
@@ -106,14 +106,14 @@ expect_used  = "warn"
         ┌──────────┐   ┌──────────┐
         │    ui    │   │ services │   描画 / ビジネスロジック
         └────┬─────┘   └────┬─────┘
-             │              │
-             └──────┬───────┘
+             │              ▼
+             │        ┌──────────┐
+             │        │  store   │   永続化 (P2)
+             │        │   (P2)   │
+             │        └────┬─────┘
+             │             │
+             └──────┬──────┘
                     ▼
-              ┌──────────┐
-              │  store   │   永続化 (P2)
-              │   (P2)   │
-              └────┬─────┘
-                   ▼
               ┌──────────┐
               │  models  │   pure data
               └────┬─────┘
@@ -148,7 +148,7 @@ expect_used  = "warn"
 
 ### 3.1 explorer のファイル listing
 
-```
+```text
 User clicks folder
   ↓
 ExplorerPage::on_navigate (pages)
@@ -164,7 +164,7 @@ ExplorerView render (ui)
 
 ### 3.2 検索 (P3 V2 以降)
 
-```
+```text
 User types in launcher
   ↓
 Launcher::on_query_change (launcher)
@@ -182,7 +182,7 @@ LauncherView render (ui)
 
 ### 3.3 plugin command 実行 (P4)
 
-```
+```text
 User selects plugin command in launcher
   ↓
 Launcher::dispatch(command_id, args) (launcher)

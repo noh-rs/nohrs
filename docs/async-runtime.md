@@ -92,7 +92,7 @@ let res = cx.background_spawn(async {
 |-------|------|
 | **P1** | <ul><li>`axum` を削除 (未使用)</li><li>`#[tokio::main]` → GPUI main 化</li><li>`tokio::task::spawn_blocking` を `cx.background_spawn` に置換 (旧 QUALITY_IMPROVEMENT_PLAN P1.3 と統合)</li></ul> |
 | **P2** | <ul><li>残りの `tokio::sync::*` を `postage` / `async-channel` / `futures::channel::oneshot` に置換</li><li>`tokio::spawn` を `cx.background_spawn` に統一</li><li>`Cargo.toml` から `tokio` を削除</li><li>HTTP は `ureq` に置換</li></ul> |
-| **検証** | `cargo tree | grep -E '^tokio'` が **空**であることを CI でチェック (`cargo-deny` の `[bans] deny = ["tokio"]`) |
+| **検証** | `cargo tree \| grep -E '^tokio'` が **空**であることを CI でチェック (`cargo-deny` の `[bans] deny = ["tokio"]`) |
 
 ---
 

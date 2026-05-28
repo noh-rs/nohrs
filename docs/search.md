@@ -11,7 +11,7 @@
 
 ## 1. アーキテクチャ概観
 
-```
+```text
                   ┌───────────────────────────────┐
                   │    SearchService (services)   │
                   └───┬───────────────────────┬───┘
@@ -151,7 +151,7 @@ PC のリソースを過度に消費しないよう、適応的に throttle し�
 | 電源状態 | `battery` crate (`battery::State`) + macOS は `IOPSGetTimeRemainingEstimate` |
 | LowPowerMode 検出 | macOS: `NSProcessInfo.isLowPowerModeEnabled`、Linux: GNOME `org.freedesktop.PowerProfiles` D-Bus |
 | Idle 時間 | macOS: `CGEventSourceSecondsSinceLastEventType` |
-| Thread QoS | macOS: `pthread_set_qos_class_self_np`、Linux: `nix::sys::resource::setrlimit` + `nice` |
+| Thread QoS | macOS: `pthread_set_qos_class_self_np` (QoS class)、Linux: `setpriority`/`nice` (スケジューリング優先度)、必要なら `ioprio_set` で IO 優先度。§7.1 の thread priority 列に対応 |
 | アプリ前面状態 | GPUI の `window.is_active()` |
 
 `crates/nohrs-core/src/resource_policy.rs` に `ResourcePolicy::current() -> ResourcePolicy` を提供、cfg で OS 別実装。

@@ -109,13 +109,14 @@ interface metadata {
 
 ```wit
 interface fs {
-  read-file:    func(path: string) -> list<u8>;
-  read-text:    func(path: string) -> string;
-  read-dir:     func(path: string) -> list<string>;
+  variant fs-error { not-permitted, not-found, io-error(string) }
+  read-file:    func(path: string) -> result<list<u8>, fs-error>;
+  read-text:    func(path: string) -> result<string, fs-error>;
+  read-dir:     func(path: string) -> result<list<string>, fs-error>;
   // write 系は write_paths permission 必須
-  write-file:   func(path: string, content: list<u8>);
-  delete-file:  func(path: string);
-  create-dir:   func(path: string);
+  write-file:   func(path: string, content: list<u8>) -> result<_, fs-error>;
+  delete-file:  func(path: string) -> result<_, fs-error>;
+  create-dir:   func(path: string) -> result<_, fs-error>;
 }
 ```
 
@@ -377,6 +378,28 @@ record form-field {
   placeholder:  option<string>,
 }
 enum form-field-kind { text, password, number, path, choice, multiline }
+
+record empty-view {
+  title: string,
+  hint:  option<string>,
+  icon:  option<string>,        // icon id (§6 参照)
+}
+
+record loading-view {
+  message: option<string>,
+}
+
+record section-info {
+  id:       string,
+  title:    string,
+  subtitle: option<string>,
+}
+
+record badge {
+  label: string,
+  color: option<u32>,           // 0xAARRGGBB (§6 参照)
+  kind:  option<string>,        // 任意の意味づけ (例: "status")
+}
 ```
 
 ### 4.1 採用範囲
@@ -413,7 +436,7 @@ enum form-field-kind { text, password, number, path, choice, multiline }
 
 ## 7. WIT 配置
 
-```
+```text
 crates/nohrs-plugin-host/wit/
 ├── world.wit
 ├── deps/

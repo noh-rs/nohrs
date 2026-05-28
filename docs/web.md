@@ -46,7 +46,7 @@ R2 は他用途でも使用:
 
 ## 3. ディレクトリ構成
 
-```
+```text
 web/
 ├── package.json
 ├── vite.config.ts
@@ -182,11 +182,11 @@ export default {
     // 短縮スキームの展開
     if (url.pathname.startsWith("/p/")) {
       const id = url.pathname.slice(3);
-      return Response.redirect(`https://nohrs.app/plugins/${id}`, 301);
+      return Response.redirect(`https://nohrs.app/plugins/${id}${url.search}`, 301);
     }
     if (url.pathname.startsWith("/r/")) {
       const tag = url.pathname.slice(3);
-      return Response.redirect(`https://nohrs.app/releases/${tag}`, 301);
+      return Response.redirect(`https://nohrs.app/releases/${tag}${url.search}`, 301);
     }
 
     // path 保持リダイレクト

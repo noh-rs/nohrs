@@ -40,7 +40,7 @@ Nohrs は、macOS の Finder を起点に「Launcher × Explorer」を高速・�
 | **P2** | `v0.3.0` | Explorer Essentials | DnD・ファイル操作・スプリットビュー・タブ・SQLite/MetadataStore・tokio 撤去 |
 | **P3** | `v0.4.0` | Launcher & Search | Raycast 風ランチャー・SQLite FTS5 (V2) 全文検索 |
 | **P4** | `v0.5.0` | Plugin Host | WIT API・WASM Component Model ホスト・3 言語テンプレ・AI agent 開発支援 |
-| **P5** | `v0.6.0` | Ecosystem | Plugin Store ページ・コミュニティプラグイン・Tantivy (V3) 統合 |
+| **P5** | `v0.6.0` | Ecosystem | Plugin Store ページ・コミュニティプラグイン |
 | **P6** | `v0.7.0` | Stabilization | 多 OS 戦略決定・パフォーマンス・ドキュメント完成 |
 | Future | `v1.0.0` | TBD | UI i18n・Linux/Windows 完全対応・AI agent 統合・クラウド機能 等 |
 
@@ -204,7 +204,7 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
 
 ### Plugin Templates (別リポジトリ)
 
-- **`noh-rs/plugin-template-rust`** (wit-bindgen + cargo + wasm32-unknown-unknown)
+- **`noh-rs/plugin-template-rust`** (wit-bindgen + cargo + wasm32-wasip2)
 - **`noh-rs/plugin-template-typescript`** (jco / componentize-js)
 - **`noh-rs/plugin-template-python`** (componentize-py)
 - 各テンプレに最小 sample (Hello command + Decoration)、`.factory/skills/` + `CLAUDE.md` / `AGENTS.md` + `.claude/commands/` を同梱
@@ -289,9 +289,9 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
 
 ---
 
-## Future Work (v1.0.0 以降 / 未確定)
+## Future Work
 
-これらはコミットしないアイデアの一時置き場です。状況の変化で削除・昇格・統合の可能性があります。
+> v1.0.0 以降 / 未確定。これらはコミットしないアイデアの一時置き場です。状況の変化で削除・昇格・統合の可能性があります。
 
 - **アプリ UI の i18n** (P6 で再検討、`fluent-rs` ベース想定)
 - **Linux / Windows 完全サポート** (P6 の戦略決定次第)

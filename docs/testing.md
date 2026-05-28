@@ -27,7 +27,7 @@ CLAUDE.md のルール (重要):
 async fn test_my_view(cx: &mut TestAppContext) {
     let entity = cx.new(|cx| MyView::new(cx));
     // 必ず GPUI executor の timer を使う
-    cx.background_executor().timer(Duration::from_millis(50)).await;
+    cx.background_executor.timer(Duration::from_millis(50)).await;
     cx.run_until_parked();
     entity.read_with(cx, |this, _cx| {
         assert_eq!(this.something, expected);
@@ -120,9 +120,9 @@ GitHub の native PR coverage 機能 (2026-05 public preview) と R2 への HTML
 
 ```toml
 disallowed-methods = [
-  { path = "std::fs::read", reason = "use services::fs or spawn_blocking" },
-  { path = "std::fs::write", reason = "use services::fs or spawn_blocking" },
-  { path = "std::fs::read_to_string", reason = "use services::fs or spawn_blocking" },
+  { path = "std::fs::read", reason = "use services::fs or cx.background_spawn" },
+  { path = "std::fs::write", reason = "use services::fs or cx.background_spawn" },
+  { path = "std::fs::read_to_string", reason = "use services::fs or cx.background_spawn" },
 ]
 ```
 

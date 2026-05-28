@@ -73,7 +73,7 @@ cargo run --features gui --bin nohrs
 
 **前提**: Linux host (host の X server を流用)。macOS / Windows host は非推奨。
 
-```
+```text
 docker/dev/
 ├── Dockerfile             # Rust toolchain + gpui 依存をプリインストール
 └── docker-compose.yml     # X11 mount, source mount
@@ -99,7 +99,7 @@ cargo run --features gui --bin nohrs
 
 CI / AI agent / 自動スクリーンショット用。
 
-```
+```text
 docker/ci/
 ├── Dockerfile             # Xvfb + Rust toolchain + nohrs ビルド依存
 └── docker-compose.yml
