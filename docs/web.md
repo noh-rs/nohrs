@@ -103,39 +103,36 @@ R2 は他用途でも使用:
 
 ## 3. ディレクトリ構成
 
+TanStack Start のスキャフォルドに合わせ、ソースは `app/` ではなく **`src/`** に置く (CLI 既定)。M1 で実装済の骨格は次の通り:
+
 ```text
 web/
 ├── package.json
 ├── vite.config.ts
-├── app/                       # TanStack Start app
+├── wrangler.jsonc             # Cloudflare (nohrs.app 本体)
+├── src/                       # TanStack Start app
 │   ├── routes/
-│   │   ├── __root.tsx
-│   │   ├── $lang.tsx          # /en/... or /ja/...
-│   │   ├── $lang/index.tsx    # landing
-│   │   ├── $lang/about.tsx    # プロジェクトの物語 + values + メーカーズノート
-│   │   ├── $lang/download.tsx # ダウンロード専用導線
-│   │   ├── $lang/roadmap.tsx  # ROADMAP.md の web 化 (P1–P6 進捗)
-│   │   ├── $lang/blog/...
-│   │   ├── $lang/docs/...
-│   │   ├── $lang/releases/...
-│   │   └── $lang/plugins/...
-│   ├── components/
-│   ├── lib/
-│   │   ├── content.ts         # mdx loader
-│   │   ├── github.ts          # GitHub API client (build-time)
-│   │   └── i18n.ts
-│   └── styles/
-├── content/
-│   ├── en/
-│   │   ├── blog/
-│   │   ├── docs/
-│   │   └── pages/
-│   ├── ja/
+│   │   ├── __root.tsx         # document shell・ベース SEO・テーマ初期化
+│   │   ├── index.tsx          # / → Accept-Language で /{locale} へ redirect
+│   │   └── $lang/
+│   │       ├── route.tsx      # locale レイアウト (lang 検証 + header/footer)
+│   │       ├── index.tsx      # landing
+│   │       ├── about.tsx      # プロジェクトの物語 + values + メーカーズノート
+│   │       ├── download.tsx   # ダウンロード専用導線
+│   │       ├── roadmap.tsx    # (M2+) ROADMAP.md の web 化
+│   │       ├── blog/...       # (M2+)
+│   │       ├── docs/...       # (M2+)
+│   │       ├── releases/...   # (M3+)
+│   │       └── plugins/...    # (M3+ Preview)
+│   ├── components/            # ui/ (Radix 再スキン)・header・footer 等
+│   ├── lib/                   # i18n.ts・seo.ts・links.ts・locale-context.tsx
+│   └── styles.css             # Tailwind v4 + デザイントークン
+├── content/                   # (M2+) MDX
+│   ├── en/ │ ja/
 │   └── plugins/               # Plugin Store エントリ (PR ベース登録)
-│       └── <plugin-id>.toml
 ├── public/
 └── workers/
-    └── noh-rs-redirect.ts     # noh.rs リダイレクト Worker
+    └── noh-rs-redirect.ts     # noh.rs リダイレクト Worker (別デプロイ)
 ```
 
 ---
@@ -255,11 +252,12 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 
 ## 7. ビルド・デプロイ
 
-### CI (GitHub Actions)
+### CI / 品質ゲート
 
-- PR open → Cloudflare Pages の preview デプロイが自動で立つ
-- `main` への merge → 本番デプロイ
-- `paths` filter で `web/**` と `docs/**` 変更時のみ web ビルドを走らせる
+- 本リポジトリは `.github` を `.gitignore` で除外しており、クラシックな GitHub Actions は使わない (PR ゲートは CodeRabbit / cubic + ローカルチェック)
+- web のビルド/型/lint ゲートは `web/` でローカル実行する: `pnpm lint` → `pnpm exec tsc --noEmit` → `pnpm build` (+ `pnpm check` で prettier)
+- デプロイは Cloudflare Pages の git 連携が担当: PR open → preview (`<branch>.nohrs-web.pages.dev`)、`main` への merge → 本番。ビルドコマンド `pnpm build`、出力 `dist/`
+- Cloudflare プロジェクト接続と secrets 設定はダッシュボードでの一度きりの ops 作業
 
 ### 環境変数 (Cloudflare Pages secrets)
 

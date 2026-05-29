@@ -1,0 +1,133 @@
+@import 'tailwindcss';
+
+/* Self-hosted fonts (no Google Fonts direct link — ADR 0008 / web.md §2.5).
+   Latin: Geist (grotesque sans) + Geist Mono. JP: Zen Kaku Gothic New. */
+@import '@fontsource-variable/geist/index.css';
+@import '@fontsource-variable/geist-mono/index.css';
+@import '@fontsource/zen-kaku-gothic-new/400.css';
+@import '@fontsource/zen-kaku-gothic-new/500.css';
+@import '@fontsource/zen-kaku-gothic-new/700.css';
+
+@plugin "@tailwindcss/typography";
+
+/* Class-based dark mode: `.dark` on <html> toggles the dark token set. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---- Design tokens -------------------------------------------------------
+   Light is primary, dark is the toggle (web.md §2.5). Neutrals are warm
+   (not pure gray) to harmonize with the tan accent. Brand is Rust tan
+   #DEA584 (matches src/ui/theme.rs ACCENT and the Rust language color).
+   `--brand` is for fills/borders; `--brand-emphasis` is the AA-contrast
+   shade used for text/links on the current surface. */
+:root {
+  --background: #fbfaf8;
+  --foreground: #1b1815;
+  --card: #ffffff;
+  --card-foreground: #1b1815;
+  --popover: #ffffff;
+  --popover-foreground: #1b1815;
+  --muted: #f2efea;
+  --muted-foreground: #6e665c;
+  --border: #e7e1d8;
+  --input: #e7e1d8;
+  --brand: #dea584;
+  --brand-foreground: #2a1b0f;
+  --brand-emphasis: #9c5a2c;
+  --ring: #dea584;
+  --radius: 0.625rem;
+}
+
+.dark {
+  --background: #17140f;
+  --foreground: #ece7df;
+  --card: #201b15;
+  --card-foreground: #ece7df;
+  --popover: #201b15;
+  --popover-foreground: #ece7df;
+  --muted: #262019;
+  --muted-foreground: #a79e90;
+  --border: #322a21;
+  --input: #322a21;
+  --brand: #dea584;
+  --brand-foreground: #2a1b0f;
+  --brand-emphasis: #e8b892;
+  --ring: #dea584;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-emphasis: var(--brand-emphasis);
+  --color-ring: var(--ring);
+
+  --font-sans:
+    'Geist Variable', 'Zen Kaku Gothic New', ui-sans-serif, system-ui,
+    sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, 'JetBrains Mono', monospace;
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    border-color: var(--color-border);
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  html,
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-brand) 35%, transparent);
+  }
+
+  /* Visible, consistent keyboard focus (WCAG AA). */
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* Honor reduced-motion globally; components also opt out in JS. */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
