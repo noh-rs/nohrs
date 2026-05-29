@@ -21,6 +21,13 @@ const en = {
     name: 'nohrs',
     tagline: 'A keyboard-first launcher and file explorer, built in Rust.',
   },
+  kickers: {
+    why: 'Why',
+    features: 'Product',
+    craft: 'Engineering',
+    social: 'Open source',
+    roadmap: 'Roadmap',
+  },
   nav: {
     features: 'Features',
     docs: 'Docs',
@@ -88,6 +95,7 @@ const en = {
       'The Explorer ships today. The rest are in active development — shown here honestly as previews.',
     available: 'Available',
     coming: 'Coming in v0.x',
+    launcherPlaceholder: 'Open file, app, or action…',
     items: [
       {
         name: 'Explorer',
@@ -246,6 +254,13 @@ const ja: Messages = {
     name: 'nohrs',
     tagline: 'Rust 製の、キーボード中心のランチャー兼ファイルエクスプローラ。',
   },
+  kickers: {
+    why: 'なぜ',
+    features: 'プロダクト',
+    craft: 'エンジニアリング',
+    social: 'オープンソース',
+    roadmap: 'ロードマップ',
+  },
   nav: {
     features: '機能',
     docs: 'ドキュメント',
@@ -313,6 +328,7 @@ const ja: Messages = {
       'Explorer は今すぐ使えます。残りは活発に開発中で、ここでは正直にプレビューとして示します。',
     available: '利用可能',
     coming: 'v0.x で登場予定',
+    launcherPlaceholder: 'ファイル・アプリ・アクションを開く…',
     items: [
       {
         name: 'Explorer',

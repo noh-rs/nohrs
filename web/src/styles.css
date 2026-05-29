@@ -22,6 +22,7 @@
 :root {
   --background: #fbfaf8;
   --foreground: #1b1815;
+  --ink: #100d0a;
   --card: #ffffff;
   --card-foreground: #1b1815;
   --popover: #ffffff;
@@ -38,13 +39,14 @@
 }
 
 .dark {
-  --background: #17140f;
+  --background: #151109;
   --foreground: #ece7df;
-  --card: #201b15;
+  --ink: #fbf8f2;
+  --card: #1d1810;
   --card-foreground: #ece7df;
-  --popover: #201b15;
+  --popover: #1d1810;
   --popover-foreground: #ece7df;
-  --muted: #262019;
+  --muted: #241e16;
   --muted-foreground: #a79e90;
   --border: #322a21;
   --input: #322a21;
@@ -57,6 +59,7 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-ink: var(--ink);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
@@ -128,6 +131,130 @@
       animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
+    }
+  }
+
+  /* Fine grain overlay (~2.5%) for texture (web.md §2.5 tasteful tech FX). */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    pointer-events: none;
+    opacity: 0.025;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+}
+
+/* ---- Tasteful tech FX (token-driven; decorative, low-opacity) ------------ */
+@layer components {
+  /* Faint dot grid, edge-masked so the structure fades into whitespace. */
+  .bg-grid {
+    background-image: radial-gradient(
+      circle at center,
+      color-mix(in oklab, var(--color-foreground) 9%, transparent) 1px,
+      transparent 1.5px
+    );
+    background-size: 28px 28px;
+    -webkit-mask-image: radial-gradient(
+      ellipse 75% 60% at 50% 38%,
+      #000 30%,
+      transparent 78%
+    );
+    mask-image: radial-gradient(
+      ellipse 75% 60% at 50% 38%,
+      #000 30%,
+      transparent 78%
+    );
+  }
+
+  /* Soft tan glow — drop into an absolutely-positioned, aria-hidden div. */
+  .glow-brand {
+    background: radial-gradient(
+      closest-side,
+      color-mix(in oklab, var(--color-brand) 40%, transparent),
+      transparent
+    );
+    filter: blur(44px);
+  }
+
+  /* 1px gradient hairline via padding-box/border-box compositing. */
+  .border-gradient {
+    border: 1px solid transparent;
+    background:
+      linear-gradient(var(--color-card), var(--color-card)) padding-box,
+      linear-gradient(
+          140deg,
+          color-mix(in oklab, var(--color-brand) 55%, var(--color-border)),
+          var(--color-border) 42%
+        )
+        border-box;
+  }
+
+  /* Mono eyebrow with a tan rule; pair with a section number. */
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-brand-emphasis);
+  }
+
+  /* Keyboard chip (⌘K motifs). */
+  .kbd {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.125rem;
+    border: 1px solid var(--color-border);
+    border-bottom-width: 2px;
+    border-radius: 0.375rem;
+    background: var(--color-muted);
+    padding: 0.05rem 0.4rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: var(--color-muted-foreground);
+  }
+
+  /* Pointer-follow spotlight (set --mx/--my in JS). Off on touch + reduced
+     motion. Content sits above the glow via the stacking context. */
+  .spotlight {
+    position: relative;
+    isolation: isolate;
+  }
+  .spotlight > * {
+    position: relative;
+    z-index: 1;
+  }
+  .spotlight::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 200ms ease;
+    background: radial-gradient(
+      220px circle at var(--mx, 50%) var(--my, 50%),
+      color-mix(in oklab, var(--color-brand) 18%, transparent),
+      transparent 60%
+    );
+  }
+  .spotlight:hover::after {
+    opacity: 1;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spotlight::after {
+      transition: none;
+    }
+  }
+  @media (hover: none) {
+    .spotlight::after {
+      display: none;
     }
   }
 }
