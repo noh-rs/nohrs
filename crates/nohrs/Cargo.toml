@@ -26,6 +26,7 @@ gpui = "0.2"
 gpui-component = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing.workspace = true
+clap = { version = "4", features = ["derive"] }
 
 [lints]
 workspace = true

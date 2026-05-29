@@ -27,6 +27,10 @@ pub struct ExplorerPage {
     pub loaded: bool,
     pub sort_key: SortKey,
     pub sort_asc: bool,
+    // Whether dotfiles are listed; driven by `ui.show_hidden` (config.md §5).
+    pub show_hidden: bool,
+    // Identifier of the active icon pack; driven by `ui.icon_pack`.
+    pub icon_pack: String,
     pub search_query: String,
     pub search_visible: bool,
     pub search_input: Entity<InputState>,
@@ -98,6 +102,8 @@ impl ExplorerPage {
             loaded: false,
             sort_key: SortKey::Name,
             sort_asc: true,
+            show_hidden: false,
+            icon_pack: "default".to_string(),
             search_query: String::new(),
             search_visible: false,
             search_input,
@@ -242,13 +248,17 @@ impl ExplorerPage {
             return;
         }
 
+        let show_hidden = self.show_hidden;
+        let visible = self
+            .entries
+            .iter()
+            .filter(move |entry| show_hidden || !is_hidden(&entry.name));
+
         if self.search_query.is_empty() {
-            self.filtered_entries = self.entries.clone();
+            self.filtered_entries = visible.cloned().collect();
         } else {
             let query = self.search_query.to_lowercase();
-            self.filtered_entries = self
-                .entries
-                .iter()
+            self.filtered_entries = visible
                 .filter(|e| e.name.to_lowercase().contains(&query))
                 .cloned()
                 .collect();
@@ -256,6 +266,53 @@ impl ExplorerPage {
 
         entries::sort_entries(&mut self.filtered_entries, self.sort_key, self.sort_asc);
         self.update_item_sizes();
+    }
+
+    /// Apply the `[ui]` config section to this open view, re-sorting and
+    /// re-filtering when anything changed. Used both at startup and on hot
+    /// reload (config.md §5). Note: `icon_pack` is stored for the row renderer to
+    /// consult; there is no icon cache to invalidate yet.
+    pub fn apply_config_ui(&mut self, ui: &config::Ui, cx: &mut Context<Self>) {
+        let sort_key = sort_key_from_config(ui.default_sort);
+        let mut changed = false;
+        if self.sort_key != sort_key {
+            self.sort_key = sort_key;
+            self.sort_asc = true;
+            changed = true;
+        }
+        if self.show_hidden != ui.show_hidden {
+            self.show_hidden = ui.show_hidden;
+            changed = true;
+        }
+        if self.icon_pack != ui.icon_pack {
+            self.icon_pack = ui.icon_pack.clone();
+            changed = true;
+        }
+        if changed {
+            entries::sort_entries(&mut self.entries, self.sort_key, self.sort_asc);
+            self.apply_filter();
+            cx.notify();
+        }
+    }
+
+    /// Surface (or clear) a configuration error in the footer status bar. Only a
+    /// previously-set config error is cleared on `None`, so unrelated status
+    /// messages are left intact (config.md §6).
+    pub fn set_config_status(&mut self, error: Option<String>, cx: &mut Context<Self>) {
+        const PREFIX: &str = "config: ";
+        match error {
+            Some(message) => self.set_status(StatusLevel::Error, format!("{PREFIX}{message}")),
+            None => {
+                if self
+                    .status_message
+                    .as_ref()
+                    .is_some_and(|status| status.text.starts_with(PREFIX))
+                {
+                    self.clear_status();
+                }
+            }
+        }
+        cx.notify();
     }
 
     pub(crate) fn set_sort_key(&mut self, key: SortKey) {
@@ -268,4 +325,17 @@ impl ExplorerPage {
         entries::sort_entries(&mut self.entries, self.sort_key, self.sort_asc);
         self.apply_filter();
     }
+}
+
+fn sort_key_from_config(order: config::SortOrder) -> SortKey {
+    match order {
+        config::SortOrder::Name => SortKey::Name,
+        config::SortOrder::Modified => SortKey::Modified,
+        config::SortOrder::Size => SortKey::Size,
+        config::SortOrder::Kind => SortKey::Type,
+    }
+}
+
+fn is_hidden(name: &str) -> bool {
+    name.starts_with('.')
 }

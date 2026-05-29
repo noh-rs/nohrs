@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "SortOrder": {
+      "enum": [
+        "name",
+        "modified",
+        "size",
+        "kind"
+      ],
+      "type": "string"
+    },
+    "Theme": {
+      "description": "Appearance settings.",
+      "properties": {
+        "accent": {
+          "description": "Accent colour, given as a named colour or a hex string. Full\ncustomization lands in P5; P1 stores the value and applies the mode.",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/ThemeMode",
+          "description": "Light/dark selection, or following the OS."
+        }
+      },
+      "required": [
+        "mode",
+        "accent"
+      ],
+      "type": "object"
+    },
+    "ThemeMode": {
+      "enum": [
+        "system",
+        "light",
+        "dark"
+      ],
+      "type": "string"
+    },
+    "Ui": {
+      "description": "Explorer / view settings.",
+      "properties": {
+        "default_sort": {
+          "$ref": "#/$defs/SortOrder",
+          "description": "Column the listing is sorted by on load."
+        },
+        "icon_pack": {
+          "description": "Identifier of the icon pack used to render entries.",
+          "type": "string"
+        },
+        "show_hidden": {
+          "description": "Whether dotfiles are shown in listings.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "default_sort",
+        "show_hidden",
+        "icon_pack"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The fully merged, validated configuration.\n\nOnly the P1 surface (`theme` / `ui`) is modelled here. `[keybindings]` and\n`[plugins]` are recognised as reserved sections (see [`is_reserved_section`])\nbut intentionally not deserialized yet, so their future shapes can be added\nwithout breaking older files.",
+  "properties": {
+    "schema_version": {
+      "description": "On-disk schema version. Must be [`CURRENT_SCHEMA_VERSION`] for this build.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "theme": {
+      "$ref": "#/$defs/Theme"
+    },
+    "ui": {
+      "$ref": "#/$defs/Ui"
+    }
+  },
+  "required": [
+    "schema_version",
+    "theme",
+    "ui"
+  ],
+  "title": "Config",
+  "type": "object"
+}

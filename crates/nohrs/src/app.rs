@@ -6,10 +6,11 @@
 //! window hosting `nohrs_pages::RootView`. The launcher window (`nohrs-launcher`,
 //! P3) will be opened from here too, as a symmetric second pillar.
 
+use crate::cli::Cli;
 use gpui::{px, size, App, AppContext, Application, Bounds};
 use gpui_component::resizable::ResizableState;
 use gpui_component::Root;
-use nohrs_core::config;
+use nohrs_core::config::{self, ConfigOverride};
 use nohrs_core::telemetry::logging::init_logging;
 use nohrs_pages::RootView;
 use nohrs_services::search::SearchService;
@@ -23,10 +24,25 @@ use tokio::task;
 pub struct NohrsApp;
 
 impl NohrsApp {
-    pub fn run() {
+    pub fn run(cli: &Cli) {
         init_logging();
 
-        Application::new().with_assets(Assets).run(|app: &mut App| {
+        // Load configuration before opening the window: defaults < file < env <
+        // CLI (config.md §3). A missing file is created with defaults so users
+        // have something to edit and the watcher has a target. Parse failures are
+        // non-fatal — we fall back to defaults and surface the error in the UI.
+        let config_path = config::paths::config_file();
+        if let Err(error) = config::ensure_exists(&config_path) {
+            tracing::warn!("could not create {}: {error}", config_path.display());
+        }
+        let (mut config, diagnostics) = config::load_from_path(&config_path);
+        let config_overrides = vec![ConfigOverride::from_env(), cli.overrides()];
+        for over in &config_overrides {
+            config.apply_override(over);
+        }
+        let config_error = config::report_diagnostics(&diagnostics);
+
+        Application::new().with_assets(Assets).run(move |app: &mut App| {
             gpui_component::init(app);
             let resizable = ResizableState::new(app);
             let bounds = Bounds::centered(
@@ -37,25 +53,41 @@ impl NohrsApp {
             let traffic_lights = TrafficLightsHook::new().center_vertically(UNIFIED_TOOLBAR_HEIGHT);
             let window_options = window::unified_window_options(bounds, &traffic_lights);
 
-            let opened = app.open_window(window_options, |window, cx| {
-                // Initialize SearchService. Failure is non-fatal: the app starts
-                // with full-text search disabled rather than crashing.
-                let handle = Handle::current();
-                let search_service: Option<Arc<SearchService>> =
-                    task::block_in_place(move || match handle.block_on(SearchService::new()) {
-                        Ok(service) => Some(Arc::new(service)),
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to initialize search service; starting with search disabled: {}",
-                                e
-                            );
-                            None
-                        }
-                    });
+            let opened = app.open_window(window_options, {
+                let config = config.clone();
+                let config_path = config_path.clone();
+                let config_overrides = config_overrides.clone();
+                let config_error = config_error.clone();
+                move |window, cx| {
+                    // Initialize SearchService. Failure is non-fatal: the app starts
+                    // with full-text search disabled rather than crashing.
+                    let handle = Handle::current();
+                    let search_service: Option<Arc<SearchService>> =
+                        task::block_in_place(move || match handle.block_on(SearchService::new()) {
+                            Ok(service) => Some(Arc::new(service)),
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to initialize search service; starting with search disabled: {}",
+                                    e
+                                );
+                                None
+                            }
+                        });
 
-                let view =
-                    cx.new(|cx| RootView::new(resizable.clone(), search_service, window, cx));
-                cx.new(|cx| Root::new(view.into(), window, cx))
+                    let view = cx.new(|cx| {
+                        RootView::new(
+                            resizable.clone(),
+                            search_service,
+                            config,
+                            config_path,
+                            config_overrides,
+                            config_error,
+                            window,
+                            cx,
+                        )
+                    });
+                    cx.new(|cx| Root::new(view.into(), window, cx))
+                }
             });
             if let Err(error) = opened {
                 tracing::error!("failed to open main window: {error}");

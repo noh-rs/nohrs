@@ -1,10 +1,27 @@
-//! Centralized configuration constants shared across the application.
+//! Centralized configuration shared across the application.
 //!
-//! Values live here (rather than inline literals) so behaviour can be tuned in
-//! one place and so the upcoming `nohrs-core` extraction (#48) has a single home
-//! for tunables.
+//! Two distinct things live under `config`:
+//!
+//! * The compile-time UI layout constants below (window/table sizing), kept
+//!   here so behaviour can be tuned in one place.
+//! * The user-facing `config.toml` system in the [`settings`], [`paths`],
+//!   [`loader`], and [`watcher`] submodules: schema, XDG paths, the
+//!   4-layer override merge, lenient validation, hot-reload watching, and the
+//!   on-disk lifecycle (see `docs/config.md`).
 
 use std::time::Duration;
+
+pub mod loader;
+pub mod paths;
+pub mod settings;
+pub mod watcher;
+
+pub use loader::{backup, ensure_exists, needs_migration, reset, write_default};
+pub use settings::{
+    json_schema_string, load_from_path, report_diagnostics, Config, ConfigOverride, Diagnostic,
+    DiagnosticLevel, SortOrder, Theme, ThemeMode, Ui, CURRENT_SCHEMA_VERSION, SCHEMA_URL,
+};
+pub use watcher::ConfigWatcher;
 
 /// Default window dimensions on first launch (logical pixels).
 pub const WINDOW_WIDTH: f32 = 1280.0;
