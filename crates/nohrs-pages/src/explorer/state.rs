@@ -295,26 +295,6 @@ impl ExplorerPage {
         }
     }
 
-    /// Surface (or clear) a configuration error in the footer status bar. Only a
-    /// previously-set config error is cleared on `None`, so unrelated status
-    /// messages are left intact (config.md §6).
-    pub fn set_config_status(&mut self, error: Option<String>, cx: &mut Context<Self>) {
-        const PREFIX: &str = "config: ";
-        match error {
-            Some(message) => self.set_status(StatusLevel::Error, format!("{PREFIX}{message}")),
-            None => {
-                if self
-                    .status_message
-                    .as_ref()
-                    .is_some_and(|status| status.text.starts_with(PREFIX))
-                {
-                    self.clear_status();
-                }
-            }
-        }
-        cx.notify();
-    }
-
     pub(crate) fn set_sort_key(&mut self, key: SortKey) {
         if self.sort_key == key {
             self.sort_asc = !self.sort_asc;

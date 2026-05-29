@@ -48,6 +48,10 @@ pub struct RootView {
     config: Config,
     config_path: PathBuf,
     config_overrides: Vec<ConfigOverride>,
+    // Latest config load error, surfaced in the footer. Held here (not in the
+    // explorer's transient status) so it is not cleared by an explorer
+    // directory reload and survives across pages.
+    config_status: Option<String>,
     // Kept alive for the window's lifetime so the OS watch is not dropped.
     _config_watcher: Option<ConfigWatcher>,
 }
@@ -99,6 +103,7 @@ impl RootView {
             config: Config::default(),
             config_path,
             config_overrides,
+            config_status: None,
             _config_watcher: None,
         };
         view.start_progress_loop(window, cx);
@@ -127,11 +132,16 @@ impl RootView {
             Theme::change(mode, Some(window), cx);
         }
 
-        let ui = config.ui.clone();
-        self.explorer.update(cx, |page, cx| {
-            page.apply_config_ui(&ui, cx);
-            page.set_config_status(config_error, cx);
+        // Condense the (possibly multi-line) diagnostic to a single line plus the
+        // file path for the one-line status bar; full detail is in the logs.
+        self.config_status = config_error.as_ref().map(|error| {
+            let summary = error.lines().next().unwrap_or(error.as_str());
+            format!("config: {summary} ({})", self.config_path.display())
         });
+
+        let ui = config.ui.clone();
+        self.explorer
+            .update(cx, |page, cx| page.apply_config_ui(&ui, cx));
 
         self.config = config;
         cx.notify();
@@ -284,11 +294,15 @@ impl Render for RootView {
             .child(
                 // Footer status bar
                 {
-                    let (status_message, status_is_error) =
-                        match self.explorer.read(cx).status_for_footer() {
+                    // A config load error takes precedence over the explorer's
+                    // transient status and is always shown as an error.
+                    let (status_message, status_is_error) = match &self.config_status {
+                        Some(message) => (Some(message.clone()), true),
+                        None => match self.explorer.read(cx).status_for_footer() {
                             Some((text, is_error)) => (Some(text), is_error),
                             None => (None, false),
-                        };
+                        },
+                    };
                     let props = FooterProps {
                         indexing_progress: self.indexing_progress,
                         status_message,

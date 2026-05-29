@@ -113,7 +113,16 @@ pub fn footer<V: gpui::Render>(props: FooterProps, cx: &mut Context<V>) -> impl 
                             .items_center()
                             .gap_1()
                             .child(Icon::new(IconName::Info).size_3().text_color(rgb(color)))
-                            .child(div().text_xs().text_color(rgb(color)).child(message)),
+                            .child(
+                                // Keep the status on one line so a long or
+                                // multi-line message can't overflow the footer.
+                                div()
+                                    .text_xs()
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_color(rgb(color))
+                                    .child(message),
+                            ),
                     )
                 }),
         )
