@@ -8,12 +8,14 @@ export default {
   fetch(request: Request): Response {
     const url = new URL(request.url)
 
-    if (url.pathname.startsWith('/p/')) {
-      const id = url.pathname.slice(3)
+    // Only expand the short scheme when a non-empty id/tag follows; otherwise
+    // fall through to the plain path-preserving redirect.
+    const id = url.pathname.startsWith('/p/') ? url.pathname.slice(3) : ''
+    if (id) {
       return Response.redirect(`${TARGET}/plugins/${id}${url.search}`, 301)
     }
-    if (url.pathname.startsWith('/r/')) {
-      const tag = url.pathname.slice(3)
+    const tag = url.pathname.startsWith('/r/') ? url.pathname.slice(3) : ''
+    if (tag) {
       return Response.redirect(`${TARGET}/releases/${tag}${url.search}`, 301)
     }
 

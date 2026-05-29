@@ -68,12 +68,14 @@ function Section({
   )
 }
 
-const featureIcons = {
+// Typed so an unmatched name yields `undefined` (keeps the `?? Puzzle`
+// fallback honest and avoids rendering an undefined component).
+const featureIcons: Record<string, typeof Puzzle | undefined> = {
   Explorer: FolderTree,
   Launcher: Command,
   Plugins: Puzzle,
   Search: Search,
-} as const
+}
 
 function Landing() {
   const { locale, t } = useLocale()
@@ -175,7 +177,7 @@ function Landing() {
         </Reveal>
         <div className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {t.features.items.map((item, i) => {
-            const Icon = featureIcons[item.name as keyof typeof featureIcons]
+            const Icon = featureIcons[item.name] ?? Puzzle
             const available = item.status === 'available'
             return (
               <Reveal

@@ -6,9 +6,12 @@ import { defaultLocale, isLocale } from '#/lib/i18n'
 import type { Locale } from '#/lib/i18n'
 
 export const Route = createFileRoute('/$lang')({
-  beforeLoad: ({ params }) => {
+  beforeLoad: ({ params, location }) => {
     if (!isLocale(params.lang)) {
-      throw redirect({ to: '/$lang', params: { lang: defaultLocale } })
+      // Swap only the (invalid) locale segment, keeping the rest of the
+      // path, search, and hash (e.g. /fr/download?x=1 -> /en/download?x=1).
+      const href = location.href.replace(/^\/[^/?#]+/, `/${defaultLocale}`)
+      throw redirect({ href })
     }
   },
   component: LangLayout,

@@ -46,6 +46,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       </head>
       <body>
         {children}
+        {/* The @tanstack/devtools-vite plugin strips this block from
+            production builds, so no manual env guard is needed (and a guard
+            would break that plugin's AST removal). */}
         <TanStackDevtools
           config={{ position: 'bottom-right' }}
           plugins={[
