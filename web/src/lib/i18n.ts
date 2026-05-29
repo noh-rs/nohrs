@@ -136,6 +136,11 @@ const en = {
     activity: 'Recent activity',
     contributors: 'Contributors',
     viewGithub: 'Follow along on GitHub',
+    proof: [
+      { value: 'MIT', label: 'Open-source license' },
+      { value: 'Rust', label: 'Built end to end' },
+      { value: 'Public', label: 'Roadmap & issues' },
+    ],
     makersNoteHeading: "Why we're building nohrs",
     makersNote:
       "Every launcher we tried treated the keyboard as an afterthought and the file system as someone else's problem. We wanted one tool that takes both seriously — fast enough to disappear, open enough to trust, and built on a foundation that lasts. So we're building it in the open, in Rust. This is early, and honest about being early.",
@@ -369,6 +374,11 @@ const ja: Messages = {
     activity: '最近の活動',
     contributors: 'コントリビュータ',
     viewGithub: 'GitHub でフォロー',
+    proof: [
+      { value: 'MIT', label: 'オープンソースライセンス' },
+      { value: 'Rust', label: '隅々まで Rust 製' },
+      { value: 'Public', label: 'ロードマップと課題' },
+    ],
     makersNoteHeading: 'なぜ nohrs を作るのか',
     makersNote:
       '試したランチャーはどれもキーボードを後回しにし、ファイルシステムを他人事のように扱っていました。私たちは、その両方を本気で扱うひとつの道具が欲しかった。消えるほど速く、信頼できるほどオープンで、長持ちする土台の上に。だから Rust で、オープンに作っています。まだ初期です。そして、初期であることに正直です。',

@@ -106,34 +106,75 @@ const featureIcons: Record<string, typeof Puzzle | undefined> = {
   Search: Search,
 }
 
-/** Abstract CSS sketch of the Explorer (sidebar / list / preview). */
+/** A small but realistic CSS mock of the Explorer: window bar, sidebar with a
+    selected folder, a file list with one active row, and a preview pane. */
 function ExplorerSketch() {
   return (
     <div
       aria-hidden
-      className="mt-6 grid grid-cols-[64px_1fr_72px] gap-2 rounded-lg border border-border bg-background/70 p-2.5"
+      className="surface mt-6 overflow-hidden rounded-lg border border-border bg-background"
     >
-      <div className="space-y-1.5">
-        {[12, 9, 11, 8].map((w, i) => (
-          <div
-            key={i}
-            className="h-2 rounded-full bg-foreground/10"
-            style={{ width: `${w * 4}px` }}
-          />
-        ))}
+      <div className="flex items-center gap-1.5 border-b border-border bg-muted/50 px-3 py-2">
+        <span className="size-2 rounded-full bg-foreground/20" />
+        <span className="size-2 rounded-full bg-foreground/20" />
+        <span className="size-2 rounded-full bg-foreground/20" />
+        <span className="ml-2 font-mono text-[10px] text-muted-foreground">
+          ~/projects
+        </span>
       </div>
-      <div className="space-y-1.5">
-        {[0, 1, 2, 3, 4].map((i) => (
-          <div
-            key={i}
-            className={cn(
-              'h-2.5 rounded',
-              i === 1 ? 'bg-brand/30' : 'bg-foreground/8',
-            )}
-          />
-        ))}
+      <div className="grid grid-cols-[92px_1fr_96px]">
+        <div className="space-y-1 border-r border-border p-2.5">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <span
+                className={cn(
+                  'size-2.5 rounded-sm',
+                  i === 1 ? 'bg-brand' : 'bg-foreground/15',
+                )}
+              />
+              <span
+                className={cn(
+                  'h-1.5 rounded-full',
+                  i === 1 ? 'bg-foreground/30' : 'bg-foreground/12',
+                )}
+                style={{ width: `${[40, 52, 34, 46][i]}px` }}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="space-y-1 p-2.5">
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <div
+              key={i}
+              className={cn(
+                'flex items-center gap-2 rounded px-1.5 py-1',
+                i === 2 && 'bg-brand/15 ring-1 ring-brand/30',
+              )}
+            >
+              <span
+                className={cn(
+                  'size-2 rounded-[3px]',
+                  i === 2 ? 'bg-brand-emphasis' : 'bg-foreground/20',
+                )}
+              />
+              <span
+                className="h-1.5 rounded-full bg-foreground/15"
+                style={{ width: `${[64, 84, 72, 56, 92, 70][i]}px` }}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="space-y-1.5 border-l border-border p-2.5">
+          <div className="mb-2 h-8 rounded bg-foreground/8" />
+          {[100, 80, 90, 60].map((w, i) => (
+            <div
+              key={i}
+              className="h-1.5 rounded-full bg-foreground/12"
+              style={{ width: `${w}%` }}
+            />
+          ))}
+        </div>
       </div>
-      <div className="rounded bg-foreground/5" />
     </div>
   )
 }
@@ -182,8 +223,13 @@ function Landing() {
           </div>
         </Reveal>
 
-        {/* Frameless product shot: the real Explorer, placed simply. */}
-        <Reveal delay={0.1} className="mt-16">
+        {/* Frameless product shot: the real Explorer, placed simply, lifted
+            off the page with a soft directional shadow + glow. */}
+        <Reveal delay={0.08} className="relative mt-14 sm:mt-16">
+          <div
+            aria-hidden
+            className="glow-brand absolute left-1/2 top-6 -z-10 h-64 w-[760px] max-w-full -translate-x-1/2"
+          />
           <figure className="mx-auto max-w-4xl">
             <img
               src="/screenshot-explorer.jpeg"
@@ -191,9 +237,9 @@ function Landing() {
               width={1280}
               height={800}
               loading="eager"
-              className="mx-auto w-full rounded-xl ring-1 ring-border shadow-2xl shadow-brand/10"
+              className="mx-auto w-full rounded-xl ring-1 ring-border/80 shadow-[0_40px_90px_-32px_color-mix(in_oklab,#2a1b0f_38%,transparent)]"
             />
-            <figcaption className="mt-4 text-sm text-muted-foreground">
+            <figcaption className="mt-5 text-sm text-muted-foreground">
               {t.hero.screenshotCaption}
             </figcaption>
           </figure>
@@ -329,35 +375,43 @@ function Landing() {
           title={t.social.heading}
           subtitle={t.social.subheading}
         />
-        <div className="mt-12 grid gap-4 lg:grid-cols-3">
-          <Reveal>
-            <SpotlightCard className="flex h-full flex-col p-6">
-              <Star className="size-6 text-brand-emphasis" />
-              <p className="mt-4 font-mono text-sm text-muted-foreground">
-                {t.social.stars}
-              </p>
-              <a
-                href={GITHUB_REPO}
-                target="_blank"
-                rel="noreferrer noopener"
-                className="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-brand-emphasis hover:underline"
-              >
-                {t.social.viewGithub}
-                <ArrowRight className="size-4" />
-              </a>
-            </SpotlightCard>
-          </Reveal>
-          <Reveal delay={0.05} className="lg:col-span-2">
-            <div className="border-gradient h-full rounded-xl bg-card p-6">
-              <h3 className="font-semibold text-ink">
-                {t.social.makersNoteHeading}
-              </h3>
-              <p className="mt-3 text-pretty text-muted-foreground">
-                {t.social.makersNote}
-              </p>
-            </div>
-          </Reveal>
+        <div className="mt-12 grid gap-4 sm:grid-cols-3">
+          {t.social.proof.map((stat, i) => (
+            <Reveal key={stat.label} delay={i * 0.05}>
+              <SpotlightCard className="h-full p-6">
+                <div className="font-mono text-3xl font-semibold tracking-tight text-ink">
+                  {stat.value}
+                </div>
+                <p className="mt-1.5 text-sm text-muted-foreground">
+                  {stat.label}
+                </p>
+              </SpotlightCard>
+            </Reveal>
+          ))}
         </div>
+        <Reveal className="mt-4">
+          <div className="border-gradient surface relative overflow-hidden rounded-xl bg-card p-6 sm:p-8">
+            <Star
+              aria-hidden
+              className="absolute -right-4 -top-4 size-24 text-brand/10"
+            />
+            <h3 className="relative font-semibold text-ink">
+              {t.social.makersNoteHeading}
+            </h3>
+            <p className="relative mt-3 max-w-3xl text-pretty leading-relaxed text-muted-foreground">
+              {t.social.makersNote}
+            </p>
+            <a
+              href={GITHUB_REPO}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="relative mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-brand-emphasis hover:underline"
+            >
+              {t.social.viewGithub}
+              <ArrowRight className="size-4" />
+            </a>
+          </div>
+        </Reveal>
       </Section>
 
       {/* 6. Roadmap — timeline */}
@@ -368,30 +422,52 @@ function Landing() {
           title={t.roadmap.heading}
           subtitle={t.roadmap.subheading}
         />
-        <ol className="mt-12 ml-1.5 border-l border-border">
+        <ol className="mt-12">
           {t.roadmap.phases.map((phase, i) => {
             const current = i === 0
+            const last = i === t.roadmap.phases.length - 1
             return (
               <Reveal
                 as="li"
                 key={phase.id}
                 delay={i * 0.04}
-                className="relative pb-8 pl-8 last:pb-0"
+                className="flex gap-5"
               >
-                <span
-                  aria-hidden
-                  className={cn(
-                    'absolute -left-[7px] top-1 size-3.5 rounded-full border-2 border-background',
-                    current ? 'bg-brand' : 'bg-muted-foreground/40',
-                  )}
-                />
-                <span className="font-mono text-sm font-semibold text-brand-emphasis">
-                  {phase.id}
-                </span>
-                <h3 className="mt-1 font-semibold text-ink">{phase.name}</h3>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {phase.body}
-                </p>
+                <div className="relative flex w-4 flex-col items-center">
+                  <span
+                    aria-hidden
+                    className={cn(
+                      'mt-1 size-4 shrink-0 rounded-full border-2',
+                      current
+                        ? 'border-brand bg-brand shadow-[0_0_0_4px_color-mix(in_oklab,var(--color-brand)_22%,transparent)]'
+                        : 'border-border bg-card',
+                    )}
+                  />
+                  {!last ? (
+                    <span
+                      aria-hidden
+                      className="w-px flex-1 bg-gradient-to-b from-border to-border/30"
+                    />
+                  ) : null}
+                </div>
+                <div className={cn('pb-9', last && 'pb-0')}>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-sm font-semibold text-brand-emphasis">
+                      {phase.id}
+                    </span>
+                    {current ? (
+                      <span className="rounded-full bg-brand/15 px-2 py-0.5 font-mono text-[0.62rem] uppercase tracking-wide text-brand-emphasis ring-1 ring-brand/25">
+                        {t.features.available}
+                      </span>
+                    ) : null}
+                  </div>
+                  <h3 className="mt-1.5 font-semibold text-ink">
+                    {phase.name}
+                  </h3>
+                  <p className="mt-1 max-w-xl text-sm text-muted-foreground">
+                    {phase.body}
+                  </p>
+                </div>
               </Reveal>
             )
           })}

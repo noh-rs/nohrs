@@ -20,8 +20,9 @@ export function SpotlightCard({
     <div
       onMouseMove={handleMove}
       className={cn(
-        'spotlight border-gradient rounded-xl bg-card',
-        'transition-shadow duration-200 hover:shadow-lg',
+        'spotlight border-gradient surface rounded-xl bg-card',
+        'transition-[box-shadow,transform] duration-200',
+        'hover:-translate-y-0.5 hover:shadow-xl hover:shadow-brand/5',
         className,
       )}
       {...props}

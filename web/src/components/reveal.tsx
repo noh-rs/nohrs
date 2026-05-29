@@ -1,8 +1,13 @@
 import * as React from 'react'
-import { motion, useReducedMotion } from 'motion/react'
 
-/* Subtle scroll-into-view reveal (web.md §2.5: "controlled, meaningful
-   motion only"). Collapses to no animation under prefers-reduced-motion. */
+/* Scroll-into-view reveal (web.md §2.5: "controlled, meaningful motion only").
+
+   Built on a native IntersectionObserver rather than framer's `whileInView`
+   so the reveal can NEVER leave content stuck invisible: under
+   prefers-reduced-motion, when IntersectionObserver is unavailable, or if the
+   observer never fires, the element falls back to fully visible. The hidden
+   start state is only ever applied on the client, after we've confirmed motion
+   is allowed — SSR/no-JS render visible. */
 export function Reveal({
   children,
   delay = 0,
@@ -14,21 +19,52 @@ export function Reveal({
   className?: string
   as?: 'div' | 'section' | 'li'
 }) {
-  const reduced = useReducedMotion()
-  const Component = motion[as]
+  const Component = as
+  const ref = React.useRef<HTMLElement | null>(null)
+  // `armed` flips to true only on a client that can + should animate. Until
+  // then (SSR, reduced-motion, missing APIs) the element renders visible.
+  const [armed, setArmed] = React.useState(false)
+  const [shown, setShown] = React.useState(false)
 
-  if (reduced) {
-    const Static = as
-    return <Static className={className}>{children}</Static>
-  }
+  React.useEffect(() => {
+    const node = ref.current
+    if (!node) return
+    const reduced = window.matchMedia(
+      '(prefers-reduced-motion: reduce)',
+    ).matches
+    if (reduced || typeof IntersectionObserver === 'undefined') return
+
+    setArmed(true)
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setShown(true)
+            observer.disconnect()
+            break
+          }
+        }
+      },
+      { rootMargin: '0px 0px -80px 0px' },
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
+  const hidden = armed && !shown
 
   return (
     <Component
+      ref={ref as React.Ref<never>}
       className={className}
-      initial={{ opacity: 0, y: 16 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true, margin: '-80px' }}
-      transition={{ duration: 0.5, delay, ease: [0.22, 1, 0.36, 1] }}
+      style={{
+        opacity: hidden ? 0 : 1,
+        transform: hidden ? 'translateY(16px)' : 'none',
+        transition: armed
+          ? `opacity 0.5s cubic-bezier(0.22,1,0.36,1) ${delay}s, transform 0.5s cubic-bezier(0.22,1,0.36,1) ${delay}s`
+          : undefined,
+        willChange: armed ? 'opacity, transform' : undefined,
+      }}
     >
       {children}
     </Component>
