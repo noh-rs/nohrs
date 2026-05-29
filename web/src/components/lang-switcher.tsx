@@ -8,9 +8,10 @@ import {
 } from '#/components/ui/dropdown-menu'
 import { useLocale } from '#/lib/locale-context'
 import { localizePath, locales } from '#/lib/i18n'
+import type { Locale } from '#/lib/i18n'
 import { cn } from '#/lib/utils'
 
-const labels: Record<string, string> = { en: 'English', ja: '日本語' }
+const labels: Record<Locale, string> = { en: 'English', ja: '日本語' }
 
 export function LangSwitcher() {
   const { locale, t } = useLocale()
