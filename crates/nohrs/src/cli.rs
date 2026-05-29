@@ -149,8 +149,15 @@ fn edit_config(path: &std::path::Path) -> i32 {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".to_string());
-    match ProcessCommand::new(&editor).arg(path).status() {
-        Ok(status) => status.code().unwrap_or(0),
+    // `$EDITOR` often carries arguments (e.g. `code --wait`), so split on
+    // whitespace rather than treating the whole string as a program path.
+    let mut parts = editor.split_whitespace();
+    let program = parts.next().unwrap_or("vi");
+    match ProcessCommand::new(program).args(parts).arg(path).status() {
+        // A signal-terminated child reports no exit code; surface that as a
+        // failure rather than masking it as success.
+        Ok(status) if status.success() => 0,
+        Ok(status) => status.code().unwrap_or(1),
         Err(error) => {
             eprintln!("failed to launch editor {editor:?}: {error}");
             1

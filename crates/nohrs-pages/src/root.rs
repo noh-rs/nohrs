@@ -163,8 +163,21 @@ impl RootView {
                             .timer(Duration::from_millis(400))
                             .await;
                         let mut changed = false;
-                        while receiver.try_recv().is_ok() {
-                            changed = true;
+                        let mut disconnected = false;
+                        loop {
+                            match receiver.try_recv() {
+                                Ok(()) => changed = true,
+                                Err(mpsc::TryRecvError::Empty) => break,
+                                // The watcher was dropped; stop polling rather
+                                // than spinning every 400ms forever.
+                                Err(mpsc::TryRecvError::Disconnected) => {
+                                    disconnected = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if disconnected {
+                            break;
                         }
                         if !changed {
                             continue;

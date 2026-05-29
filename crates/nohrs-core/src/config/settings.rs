@@ -418,31 +418,49 @@ fn warn_unknown_keys(
 /// Generate the JSON Schema for [`Config`] as pretty JSON. Backs both
 /// `nohrs config schema` and the committed `docs/config.schema.json`.
 ///
-/// Object keys are sorted so the output is byte-for-byte stable regardless of
-/// whether `serde_json`'s `preserve_order` feature happens to be enabled in the
-/// build (it is in the GUI binary but not in a `nohrs-core`-only build, via
-/// Cargo feature unification). Without this the committed file and
-/// `nohrs config schema` would disagree on key order. Array element order
-/// (enum variants, `required`) is left untouched.
+/// The schema is normalized so the output is portable and byte-for-byte stable:
+///
+/// * Object keys are sorted, so the result does not depend on whether
+///   `serde_json`'s `preserve_order` feature is enabled (it is in the GUI binary
+///   but not in a `nohrs-core`-only build, via Cargo feature unification);
+///   otherwise the committed file and `nohrs config schema` would disagree.
+/// * Schemars' Rust-specific integer `format`s (e.g. `uint64`) are dropped:
+///   they are not standard JSON Schema draft 2020-12 formats, and `type` +
+///   `minimum` already capture the constraint. Standard string formats are kept.
+///
+/// Array element order (enum variants, `required`) is left untouched.
 pub fn json_schema_string() -> serde_json::Result<String> {
     let schema = schemars::schema_for!(Config);
     let value = serde_json::to_value(&schema)?;
-    serde_json::to_string_pretty(&sort_json_keys(value))
+    serde_json::to_string_pretty(&normalize_schema(value))
 }
 
-fn sort_json_keys(value: serde_json::Value) -> serde_json::Value {
+/// Rust integer `format` values schemars emits that are not standard JSON Schema.
+const RUST_INT_FORMATS: &[&str] = &[
+    "uint", "uint8", "uint16", "uint32", "uint64", "uint128", "int", "int8", "int16", "int32",
+    "int64", "int128",
+];
+
+fn normalize_schema(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
             let mut entries: Vec<_> = map.into_iter().collect();
             entries.sort_by(|(left, _), (right, _)| left.cmp(right));
-            let mut sorted = serde_json::Map::new();
+            let mut normalized = serde_json::Map::new();
             for (key, child) in entries {
-                sorted.insert(key, sort_json_keys(child));
+                if key == "format"
+                    && child
+                        .as_str()
+                        .is_some_and(|format| RUST_INT_FORMATS.contains(&format))
+                {
+                    continue;
+                }
+                normalized.insert(key, normalize_schema(child));
             }
-            serde_json::Value::Object(sorted)
+            serde_json::Value::Object(normalized)
         }
         serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.into_iter().map(sort_json_keys).collect())
+            serde_json::Value::Array(items.into_iter().map(normalize_schema).collect())
         }
         other => other,
     }

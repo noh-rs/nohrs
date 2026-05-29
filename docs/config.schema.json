@@ -64,7 +64,6 @@
   "properties": {
     "schema_version": {
       "description": "On-disk schema version. Must be [`CURRENT_SCHEMA_VERSION`] for this build.",
-      "format": "uint64",
       "minimum": 0,
       "type": "integer"
     },
