@@ -7,6 +7,7 @@ import { cn } from '#/lib/utils'
 export function SpotlightCard({
   className,
   children,
+  onMouseMove,
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) {
   function handleMove(event: React.MouseEvent<HTMLDivElement>) {
@@ -14,6 +15,7 @@ export function SpotlightCard({
     const rect = el.getBoundingClientRect()
     el.style.setProperty('--mx', `${event.clientX - rect.left}px`)
     el.style.setProperty('--my', `${event.clientY - rect.top}px`)
+    onMouseMove?.(event)
   }
 
   return (
