@@ -169,6 +169,9 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+          # Check out the PR head (not the synthetic merge commit) so coverage
+          # line mapping matches GitHub's native diff annotations.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
