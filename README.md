@@ -93,7 +93,7 @@ Full details, vision, and design docs live in [`docs/ROADMAP.md`](docs/ROADMAP.m
 ## Community
 
 - **Discord**: https://discord.gg/dZM7fUtE94
-- **X (Twitter)**: https://x.com/nohrsdotapp
+- **X (Twitter)**: https://x.com/nohdotrs
 - **GitHub**: https://github.com/noh-rs/nohrs
 
 Contributions are welcome — open an issue or a pull request.
