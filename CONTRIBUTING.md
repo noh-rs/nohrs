@@ -108,8 +108,9 @@ open target/llvm-cov/html/index.html   # xdg-open on Linux
 
 CI feeds a Cobertura XML report into GitHub's native code coverage (inline PR
 diff coverage) and uploads the HTML report as a downloadable `coverage-html`
-artifact on each run. Coverage is informational during P1–P5 (target: core 80%
-/ overall 50%) and does not block merge.
+artifact, linked from a PR comment alongside the overall line coverage. Coverage
+is informational during P1–P5 (target: core 80% / overall 50%) and does not
+block merge.
 
 ## License
 

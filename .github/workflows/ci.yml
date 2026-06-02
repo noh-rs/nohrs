@@ -164,6 +164,7 @@ jobs:
     permissions:
       contents: read
       code-quality: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -208,7 +209,43 @@ jobs:
 
       # Browsable line-by-line report. Download the artifact and open index.html.
       - name: Upload HTML report artifact
+        id: html
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-html
           path: target/llvm-cov/html
+
+      # Post (or update) a PR comment with the line coverage and a link to
+      # download the HTML report artifact. Skipped for fork PRs (read-only token).
+      - name: Comment coverage summary on PR
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ARTIFACT_URL: ${{ steps.html.outputs.artifact-url }}
+        with:
+          script: |
+            const fs = require('fs');
+            const xml = fs.readFileSync('cobertura.xml', 'utf8');
+            const match = xml.match(/line-rate="([0-9.]+)"/);
+            const pct = match ? (parseFloat(match[1]) * 100).toFixed(2) : 'n/a';
+            const marker = '<!-- coverage-report -->';
+            const body = `${marker}\n`
+              + `📊 **Coverage: ${pct}%** (line-rate, headless library subset)\n\n`
+              + `[⬇️ Download the HTML report](${process.env.ARTIFACT_URL}) — `
+              + `unzip and open \`index.html\` for the line-by-line view.\n\n`
+              + `> Informational during P1–P5 (target: core 80% / overall 50%). `
+              + `Does not block merge.`;
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: context.issue.number, body,
+              });
+            }
