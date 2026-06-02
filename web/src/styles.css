@@ -1,12 +1,10 @@
 @import 'tailwindcss';
 
 /* Self-hosted fonts (no Google Fonts direct link — ADR 0008 / web.md §2.5).
-   Latin: Geist (grotesque sans) + Geist Mono. JP: Zen Kaku Gothic New. */
+   Latin: Geist (grotesque sans) + Geist Mono. JP: Noto Sans JP. */
 @import '@fontsource-variable/geist/index.css';
 @import '@fontsource-variable/geist-mono/index.css';
-@import '@fontsource/zen-kaku-gothic-new/400.css';
-@import '@fontsource/zen-kaku-gothic-new/500.css';
-@import '@fontsource/zen-kaku-gothic-new/700.css';
+@import '@fontsource-variable/noto-sans-jp/index.css';
 
 @plugin "@tailwindcss/typography";
 
@@ -74,7 +72,7 @@
   --color-ring: var(--ring);
 
   --font-sans:
-    'Geist Variable', 'Zen Kaku Gothic New', ui-sans-serif, system-ui,
+    'Geist Variable', 'Noto Sans JP Variable', ui-sans-serif, system-ui,
     sans-serif;
   --font-mono: 'Geist Mono Variable', ui-monospace, 'JetBrains Mono', monospace;
 
@@ -276,5 +274,68 @@
     .spotlight::after {
       display: none;
     }
+  }
+
+  /* Edge-masked horizontal marquee (contributor/avatar rails — Zed-style OSS
+     band). Duplicate the track in markup so the -50% loop is seamless; the
+     reverse row simply plays the same keyframes backwards. Paused on hover and
+     fully stopped under reduced-motion. */
+  .marquee-mask {
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(
+      90deg,
+      transparent,
+      #000 8%,
+      #000 92%,
+      transparent
+    );
+    mask-image: linear-gradient(
+      90deg,
+      transparent,
+      #000 8%,
+      #000 92%,
+      transparent
+    );
+  }
+  .marquee {
+    display: flex;
+    width: max-content;
+    animation: marquee 42s linear infinite;
+  }
+  .marquee-reverse {
+    animation-direction: reverse;
+  }
+  .marquee-mask:hover .marquee {
+    animation-play-state: paused;
+  }
+  @keyframes marquee {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-50%);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .marquee {
+      animation: none;
+    }
+  }
+
+  /* Full-bleed drafting grid with no edge mask — fainter than .bg-grid, evoking
+     blueprint paper behind the open-source band. */
+  .blueprint {
+    background-image:
+      linear-gradient(
+        to right,
+        color-mix(in oklab, var(--color-foreground) 6%, transparent) 1px,
+        transparent 1px
+      ),
+      linear-gradient(
+        to bottom,
+        color-mix(in oklab, var(--color-foreground) 6%, transparent) 1px,
+        transparent 1px
+      );
+    background-size: 44px 44px;
   }
 }

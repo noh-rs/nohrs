@@ -7,20 +7,85 @@ import {
   MessagesSquare,
   Puzzle,
   Search,
-  Star,
 } from 'lucide-react'
 import { useLocale } from '#/lib/locale-context'
 import { Reveal } from '#/components/reveal'
 import { buttonClasses } from '#/components/ui/button'
-import { SpotlightCard } from '#/components/ui/card'
-import { CodeBlock, Comment, Prompt } from '#/components/ui/code-block'
 import { Kbd } from '#/components/ui/kbd'
+import {
+  AvatarMarquee,
+  EngineTabs,
+  ExplorerSketch,
+  IsoFigure,
+  LauncherMock,
+  PluginsMock,
+  SearchMock,
+} from '#/components/landing-visuals'
+import type { Contributor } from '#/components/landing-visuals'
 import { defaultLocale, getMessages, isLocale } from '#/lib/i18n'
 import { seoHead } from '#/lib/seo'
 import { GITHUB_DISCUSSIONS, GITHUB_REPO, SITE_URL } from '#/lib/links'
 import { cn } from '#/lib/utils'
 
+type OssStats = {
+  stars: number
+  forks: number
+  contributorCount: number
+  issues: number
+  contributors: Array<Contributor>
+} | null
+
+/* Live GitHub stats for the open-source band (SSR loader). Unauthenticated, so
+   it can be rate-limited in production — every field degrades gracefully and
+   the UI falls back to em-dashes / placeholder avatars when this returns null
+   rather than showing anything fabricated. */
+async function loadOssStats(): Promise<OssStats> {
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'nohrs-web',
+  }
+  try {
+    const [repoResponse, contributorsResponse] = await Promise.all([
+      fetch('https://api.github.com/repos/noh-rs/nohrs', { headers }),
+      fetch(
+        'https://api.github.com/repos/noh-rs/nohrs/contributors?per_page=100',
+        { headers },
+      ),
+    ])
+    if (!repoResponse.ok) return null
+    const repo = await repoResponse.json()
+    const rawContributors = contributorsResponse.ok
+      ? await contributorsResponse.json()
+      : []
+    const contributors: Array<Contributor> = Array.isArray(rawContributors)
+      ? rawContributors.slice(0, 40).map((person) => ({
+          login: String(person.login),
+          avatarUrl: String(person.avatar_url),
+          htmlUrl: String(person.html_url),
+        }))
+      : []
+    return {
+      stars: repo.stargazers_count ?? 0,
+      forks: repo.forks_count ?? 0,
+      issues: repo.open_issues_count ?? 0,
+      contributorCount: Array.isArray(rawContributors)
+        ? rawContributors.length
+        : 0,
+      contributors,
+    }
+  } catch {
+    return null
+  }
+}
+
+const compact = new Intl.NumberFormat('en', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+})
+
 export const Route = createFileRoute('/$lang/')({
+  loader: () => loadOssStats(),
+  staleTime: 5 * 60 * 1000,
   head: ({ params }) => {
     const locale = isLocale(params.lang) ? params.lang : defaultLocale
     const t = getMessages(locale)
@@ -71,6 +136,24 @@ function Section({
   )
 }
 
+function Eyebrow({
+  n,
+  children,
+  className,
+}: {
+  n: string
+  children: React.ReactNode
+  className?: string
+}) {
+  return (
+    <p className={cn('eyebrow', className)}>
+      {n ? <span className="text-muted-foreground">{n}</span> : null}
+      <span aria-hidden className="h-px w-6 bg-brand/60" />
+      {children}
+    </p>
+  )
+}
+
 function SectionHead({
   n,
   kicker,
@@ -84,12 +167,8 @@ function SectionHead({
 }) {
   return (
     <Reveal>
-      <p className="eyebrow">
-        <span className="text-muted-foreground">{n}</span>
-        <span aria-hidden className="h-px w-6 bg-brand/60" />
-        {kicker}
-      </p>
-      <h2 className="mt-4 text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
+      <Eyebrow n={n}>{kicker}</Eyebrow>
+      <h2 className="mt-4 max-w-3xl text-balance text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
         {title}
       </h2>
       {subtitle ? (
@@ -106,83 +185,27 @@ const featureIcons: Record<string, typeof Puzzle | undefined> = {
   Search: Search,
 }
 
-/** A small but realistic CSS mock of the Explorer: window bar, sidebar with a
-    selected folder, a file list with one active row, and a preview pane. */
-function ExplorerSketch() {
-  return (
-    <div
-      aria-hidden
-      className="surface mt-6 overflow-hidden rounded-lg border border-border bg-background"
-    >
-      <div className="flex items-center gap-1.5 border-b border-border bg-muted/50 px-3 py-2">
-        <span className="size-2 rounded-full bg-foreground/20" />
-        <span className="size-2 rounded-full bg-foreground/20" />
-        <span className="size-2 rounded-full bg-foreground/20" />
-        <span className="ml-2 font-mono text-[10px] text-muted-foreground">
-          ~/projects
-        </span>
-      </div>
-      <div className="grid grid-cols-[92px_1fr_96px]">
-        <div className="space-y-1 border-r border-border p-2.5">
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="flex items-center gap-1.5">
-              <span
-                className={cn(
-                  'size-2.5 rounded-sm',
-                  i === 1 ? 'bg-brand' : 'bg-foreground/15',
-                )}
-              />
-              <span
-                className={cn(
-                  'h-1.5 rounded-full',
-                  i === 1 ? 'bg-foreground/30' : 'bg-foreground/12',
-                )}
-                style={{ width: `${[40, 52, 34, 46][i]}px` }}
-              />
-            </div>
-          ))}
-        </div>
-        <div className="space-y-1 p-2.5">
-          {[0, 1, 2, 3, 4, 5].map((i) => (
-            <div
-              key={i}
-              className={cn(
-                'flex items-center gap-2 rounded px-1.5 py-1',
-                i === 2 && 'bg-brand/15 ring-1 ring-brand/30',
-              )}
-            >
-              <span
-                className={cn(
-                  'size-2 rounded-[3px]',
-                  i === 2 ? 'bg-brand-emphasis' : 'bg-foreground/20',
-                )}
-              />
-              <span
-                className="h-1.5 rounded-full bg-foreground/15"
-                style={{ width: `${[64, 84, 72, 56, 92, 70][i]}px` }}
-              />
-            </div>
-          ))}
-        </div>
-        <div className="space-y-1.5 border-l border-border p-2.5">
-          <div className="mb-2 h-8 rounded bg-foreground/8" />
-          {[100, 80, 90, 60].map((w, i) => (
-            <div
-              key={i}
-              className="h-1.5 rounded-full bg-foreground/12"
-              style={{ width: `${w}%` }}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
-  )
+const featureMocks: Record<string, (() => React.ReactNode) | undefined> = {
+  Explorer: ExplorerSketch,
+  Launcher: LauncherMock,
+  Plugins: PluginsMock,
+  Search: SearchMock,
 }
+
+const isoVariants = ['keys', 'sandbox', 'stack'] as const
 
 function Landing() {
   const { locale, t } = useLocale()
-  const explorer = t.features.items.find((i) => i.name === 'Explorer')
-  const rest = t.features.items.filter((i) => i.name !== 'Explorer')
+  const stats = Route.useLoaderData()
+
+  const statValues: Array<string> = stats
+    ? [
+        compact.format(stats.stars),
+        compact.format(stats.forks),
+        compact.format(stats.contributorCount),
+        compact.format(stats.issues),
+      ]
+    : t.opensource.stats.map((s) => s.value)
 
   return (
     <>
@@ -194,7 +217,8 @@ function Landing() {
           className="glow-brand absolute left-1/2 top-0 -z-10 h-[420px] w-[680px] max-w-full -translate-x-1/2"
         />
         <Reveal>
-          <span className="inline-flex items-center rounded-full border border-border bg-card/70 px-3 py-1 font-mono text-xs uppercase tracking-wide text-muted-foreground backdrop-blur">
+          <span className="inline-flex items-center gap-2 font-mono text-xs uppercase tracking-[0.12em] text-brand-emphasis">
+            <span aria-hidden className="size-1.5 rounded-full bg-brand" />
             {t.hero.badge}
           </span>
           <h1 className="mx-auto mt-6 max-w-3xl text-balance text-5xl font-semibold tracking-[-0.02em] text-ink sm:text-7xl">
@@ -215,7 +239,7 @@ function Landing() {
               href={GITHUB_REPO}
               target="_blank"
               rel="noreferrer noopener"
-              className={buttonClasses('outline', 'lg')}
+              className={buttonClasses('ghost', 'lg')}
             >
               <Github className="size-5" />
               {t.hero.viewGithub}
@@ -223,8 +247,7 @@ function Landing() {
           </div>
         </Reveal>
 
-        {/* Frameless product shot: the real Explorer, placed simply, lifted
-            off the page with a soft directional shadow + glow. */}
+        {/* Frameless product shot: the real Explorer, lifted off the page. */}
         <Reveal delay={0.08} className="relative mt-14 sm:mt-16">
           <div
             aria-hidden
@@ -237,7 +260,7 @@ function Landing() {
               width={1280}
               height={800}
               loading="eager"
-              className="mx-auto w-full rounded-xl ring-1 ring-border/80 shadow-[0_40px_90px_-32px_color-mix(in_oklab,#2a1b0f_38%,transparent)]"
+              className="mx-auto w-full rounded-xl ring-1 ring-border/70 shadow-[0_40px_90px_-32px_color-mix(in_oklab,#2a1b0f_38%,transparent)]"
             />
             <figcaption className="mt-5 text-sm text-muted-foreground">
               {t.hero.screenshotCaption}
@@ -246,7 +269,7 @@ function Landing() {
         </Reveal>
       </Section>
 
-      {/* 2. Why nohrs */}
+      {/* 2. Why nohrs — editorial index rows */}
       <Section id="features" className="scroll-mt-20 py-16 sm:py-24">
         <SectionHead
           n="01"
@@ -254,170 +277,230 @@ function Landing() {
           title={t.why.heading}
           subtitle={t.why.subheading}
         />
-        <div className="mt-12 grid gap-4 sm:grid-cols-2">
+        <div className="mt-12">
           {t.why.points.map((point, i) => (
-            <Reveal key={point.title} delay={i * 0.05}>
-              <SpotlightCard className="h-full p-8">
+            <Reveal key={point.title} delay={i * 0.04}>
+              <div className="grid items-baseline gap-x-8 gap-y-2 border-t border-border py-7 md:grid-cols-[6rem_minmax(0,18rem)_1fr]">
                 <span className="font-mono text-sm text-brand-emphasis">
                   {String(i + 1).padStart(2, '0')}
                 </span>
-                <h3 className="mt-3 text-lg font-semibold text-ink">
+                <h3 className="text-lg font-semibold text-ink">
                   {point.title}
                 </h3>
-                <p className="mt-2 text-muted-foreground">{point.body}</p>
-              </SpotlightCard>
+                <p className="text-pretty text-muted-foreground">
+                  {point.body}
+                </p>
+              </div>
             </Reveal>
           ))}
         </div>
       </Section>
 
-      {/* 3. Feature highlights — bento */}
+      {/* 3. Principles — three columns with isometric figures */}
+      <Section className="py-16 sm:py-24">
+        <Reveal>
+          <Eyebrow n="02">{t.kickers.identity}</Eyebrow>
+          <h2 className="mt-5 max-w-4xl text-balance text-3xl font-semibold leading-[1.18] tracking-tight sm:text-[2.6rem]">
+            <span className="text-ink">{t.principles.lead}</span>{' '}
+            <span className="text-muted-foreground">{t.principles.trail}</span>
+          </h2>
+        </Reveal>
+        <div className="mt-14 grid gap-x-8 gap-y-12 sm:grid-cols-3">
+          {t.principles.items.map((item, i) => (
+            <Reveal key={item.title} delay={i * 0.07}>
+              <div className="flex flex-col border-t border-border pt-5">
+                <span className="font-mono text-xs tracking-widest text-muted-foreground">
+                  {item.fig}
+                </span>
+                <IsoFigure variant={isoVariants[i] ?? 'stack'} />
+                <h3 className="mt-2 font-semibold text-ink">{item.title}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                  {item.body}
+                </p>
+              </div>
+            </Reveal>
+          ))}
+        </div>
+      </Section>
+
+      {/* 4. Feature highlights — alternating frameless showcase rows */}
       <Section className="py-16 sm:py-24">
         <SectionHead
-          n="02"
+          n="03"
           kicker={t.kickers.features}
           title={t.features.heading}
           subtitle={t.features.subheading}
         />
-        <div className="mt-12 grid gap-4 lg:grid-cols-3">
-          {/* Explorer — large tile with a mini UI sketch */}
-          {explorer ? (
-            <Reveal className="lg:col-span-2 lg:row-span-2">
-              <SpotlightCard className="flex h-full flex-col p-8">
-                <div className="flex items-center gap-2">
-                  <FolderTree className="size-6 text-brand-emphasis" />
-                  <h3 className="font-semibold text-ink">{explorer.name}</h3>
-                  <span className="rounded-full bg-brand px-2 py-0.5 font-mono text-[0.65rem] uppercase tracking-wide text-brand-foreground">
-                    {t.features.available}
-                  </span>
-                </div>
-                <p className="mt-2 max-w-md text-sm text-muted-foreground">
-                  {explorer.body}
-                </p>
-                <ExplorerSketch />
-              </SpotlightCard>
-            </Reveal>
-          ) : null}
-
-          {rest.map((item, i) => {
-            const Icon = featureIcons[item.name] ?? Puzzle
+        <div className="mt-8">
+          {t.features.items.map((item, i) => {
+            const available = item.status === 'available'
+            const mock = featureMocks[item.name]
+            const flipped = i % 2 === 1
             return (
-              <Reveal key={item.name} delay={i * 0.05}>
-                <SpotlightCard className="flex h-full flex-col p-6">
-                  <div className="flex items-center gap-2">
-                    <Icon className="size-5 text-brand-emphasis" />
-                    <h3 className="font-semibold text-ink">{item.name}</h3>
-                    <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[0.65rem] uppercase tracking-wide text-muted-foreground">
-                      {t.features.coming}
-                    </span>
+              <Reveal key={item.name} delay={0.04}>
+                <div className="grid items-center gap-8 border-t border-border py-12 lg:grid-cols-2 lg:gap-14">
+                  <div className={cn(flipped && 'lg:order-2')}>
+                    <FeatureHeader
+                      index={String(i + 1).padStart(2, '0')}
+                      name={item.name}
+                      badge={
+                        available ? t.features.available : t.features.coming
+                      }
+                      available={available}
+                    />
+                    <p className="mt-3 max-w-md text-pretty text-muted-foreground">
+                      {item.body}
+                    </p>
+                    {item.name === 'Launcher' ? (
+                      <p className="mt-4 inline-flex items-center gap-2 text-sm text-muted-foreground">
+                        {t.features.launcherPlaceholder}
+                        <Kbd>⌘K</Kbd>
+                      </p>
+                    ) : null}
                   </div>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    {item.body}
-                  </p>
-                  {item.name === 'Launcher' ? (
-                    <div className="mt-4 rounded-lg border border-border bg-background/70 p-2.5">
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <Search className="size-4" />
-                        <span className="truncate">
-                          {t.features.launcherPlaceholder}
-                        </span>
-                        <Kbd className="ml-auto">⌘K</Kbd>
-                      </div>
-                    </div>
-                  ) : null}
-                </SpotlightCard>
+                  <div className={cn(flipped && 'lg:order-1')}>{mock?.()}</div>
+                </div>
               </Reveal>
             )
           })}
         </div>
+
+        {/* Two-tone closing line. */}
+        <Reveal className="border-t border-border pt-10">
+          <p className="max-w-3xl text-pretty text-xl font-semibold tracking-tight text-ink sm:text-2xl">
+            {t.features.taglineStrong}{' '}
+            <span className="font-normal text-muted-foreground">
+              {t.features.tagline}
+            </span>
+          </p>
+        </Reveal>
       </Section>
 
-      {/* 4. Built in Rust */}
+      {/* 5. Built in Rust — tabbed code + command list (2-col) */}
       <Section className="py-16 sm:py-24">
-        <SectionHead n="03" kicker={t.kickers.craft} title={t.craft.heading} />
-        <div className="mt-10 grid gap-8 lg:grid-cols-2 lg:items-center">
-          <Reveal>
-            <p className="text-muted-foreground">{t.craft.body}</p>
-            <ul className="mt-6 flex flex-col gap-3">
-              {t.craft.points.map((point) => (
-                <li key={point} className="flex items-start gap-3">
+        <div className="grid gap-10 lg:grid-cols-[1fr_0.82fr] lg:items-start lg:gap-14">
+          <div>
+            <Reveal>
+              <Eyebrow n="04">{t.kickers.craft}</Eyebrow>
+              <h2 className="mt-4 max-w-xl text-balance text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
+                <span>{t.engine.headingStrong}</span>{' '}
+                <span className="text-muted-foreground">
+                  {t.engine.heading}
+                </span>
+              </h2>
+            </Reveal>
+            <Reveal delay={0.08} className="mt-7">
+              <EngineTabs labels={t.engine.tabs} />
+            </Reveal>
+            <Reveal delay={0.12} className="mt-5">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted-foreground">
+                <span className="font-mono text-xs uppercase tracking-wide text-brand-emphasis">
+                  {t.engine.worksWith}
+                </span>
+                {t.engine.targets.map((target) => (
+                  <span key={target} className="text-foreground">
+                    {target}
+                  </span>
+                ))}
+              </div>
+            </Reveal>
+          </div>
+
+          <Reveal delay={0.1} className="lg:pt-1">
+            <Eyebrow n="" className="mb-4">
+              <Command className="size-3.5" />
+              {t.engine.paletteLabel}
+            </Eyebrow>
+            <ul className="divide-y divide-border border-t border-border">
+              {t.engine.commands.map((commandItem, i) => (
+                <li
+                  key={commandItem.name}
+                  className="flex items-center gap-3 py-3"
+                >
+                  <span className="w-4 font-mono text-xs text-muted-foreground">
+                    {i + 1}
+                  </span>
                   <span
                     aria-hidden
-                    className="mt-2 size-1.5 shrink-0 rounded-full bg-brand"
+                    className="size-1.5 rounded-full bg-brand/70"
                   />
-                  <span className="text-sm">{point}</span>
+                  <span className="text-sm text-foreground">
+                    {commandItem.name}
+                  </span>
+                  <Kbd className="ml-auto">{commandItem.keys}</Kbd>
                 </li>
               ))}
             </ul>
           </Reveal>
-          <Reveal delay={0.1}>
-            <CodeBlock label="~/nohrs">
-              <Prompt />
-              git clone {'https://github.com/noh-rs/nohrs'}
-              {'\n'}
-              <Prompt />
-              cd nohrs{'\n'}
-              <Prompt />
-              cargo run --features gui{'\n'}
-              <Comment> Compiling nohrs v0.1.0</Comment>
-              {'\n'}
-              <Comment> Finished — launching nohrs</Comment>
-            </CodeBlock>
-          </Reveal>
         </div>
       </Section>
 
-      {/* 5. OSS transparency */}
-      <Section className="py-16 sm:py-24">
-        <SectionHead
-          n="04"
-          kicker={t.kickers.social}
-          title={t.social.heading}
-          subtitle={t.social.subheading}
+      {/* 6. Open source — centered, avatar marquees + big stats */}
+      <div className="relative overflow-hidden border-y border-border">
+        <div
+          aria-hidden
+          className="blueprint absolute inset-0 -z-10 opacity-60"
         />
-        <div className="mt-12 grid gap-4 sm:grid-cols-3">
-          {t.social.proof.map((stat, i) => (
-            <Reveal key={stat.label} delay={i * 0.05}>
-              <SpotlightCard className="h-full p-6">
-                <div className="font-mono text-3xl font-semibold tracking-tight text-ink">
-                  {stat.value}
-                </div>
-                <p className="mt-1.5 text-sm text-muted-foreground">
-                  {stat.label}
-                </p>
-              </SpotlightCard>
-            </Reveal>
-          ))}
-        </div>
-        <Reveal className="mt-4">
-          <div className="border-gradient surface relative overflow-hidden rounded-xl bg-card p-6 sm:p-8">
-            <Star
-              aria-hidden
-              className="absolute -right-4 -top-4 size-24 text-brand/10"
-            />
-            <h3 className="relative font-semibold text-ink">
-              {t.social.makersNoteHeading}
-            </h3>
-            <p className="relative mt-3 max-w-3xl text-pretty leading-relaxed text-muted-foreground">
-              {t.social.makersNote}
+        <Section className="py-20 text-center sm:py-28">
+          <Reveal>
+            <Eyebrow n="05" className="justify-center">
+              {t.kickers.social}
+            </Eyebrow>
+            <h2 className="mx-auto mt-5 max-w-2xl text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
+              {t.opensource.heading}
+            </h2>
+            <p className="mx-auto mt-3 max-w-xl text-muted-foreground">
+              {t.opensource.subheading}
             </p>
-            <a
-              href={GITHUB_REPO}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="relative mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-brand-emphasis hover:underline"
-            >
-              {t.social.viewGithub}
-              <ArrowRight className="size-4" />
-            </a>
-          </div>
-        </Reveal>
-      </Section>
+          </Reveal>
 
-      {/* 6. Roadmap — timeline */}
+          <Reveal delay={0.08} className="mt-12">
+            <AvatarMarquee contributors={stats?.contributors} />
+          </Reveal>
+
+          <Reveal delay={0.12}>
+            <dl className="mt-12 grid grid-cols-2 gap-x-6 gap-y-10 sm:grid-cols-4">
+              {t.opensource.stats.map((stat, i) => (
+                <div key={stat.label}>
+                  <dt className="sr-only">{stat.label}</dt>
+                  <dd className="font-mono text-4xl font-semibold tracking-tight text-ink sm:text-5xl">
+                    {statValues[i]}
+                  </dd>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {stat.label}
+                  </p>
+                </div>
+              ))}
+            </dl>
+          </Reveal>
+
+          {/* Maker's note — honest, human framing (frameless). */}
+          <Reveal delay={0.16} className="mx-auto mt-16 max-w-3xl">
+            <div className="border-t border-border pt-10 text-left">
+              <h3 className="font-semibold text-ink">
+                {t.social.makersNoteHeading}
+              </h3>
+              <p className="mt-3 text-pretty leading-relaxed text-muted-foreground">
+                {t.social.makersNote}
+              </p>
+              <a
+                href={GITHUB_REPO}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-brand-emphasis hover:underline"
+              >
+                {t.opensource.viewGithub}
+                <ArrowRight className="size-4" />
+              </a>
+            </div>
+          </Reveal>
+        </Section>
+      </div>
+
+      {/* 7. Roadmap — timeline */}
       <Section className="py-16 sm:py-24">
         <SectionHead
-          n="05"
+          n="06"
           kicker={t.kickers.roadmap}
           title={t.roadmap.heading}
           subtitle={t.roadmap.subheading}
@@ -440,7 +523,7 @@ function Landing() {
                       'mt-1 size-4 shrink-0 rounded-full border-2',
                       current
                         ? 'border-brand bg-brand shadow-[0_0_0_4px_color-mix(in_oklab,var(--color-brand)_22%,transparent)]'
-                        : 'border-border bg-card',
+                        : 'border-border bg-background',
                     )}
                   />
                   {!last ? (
@@ -456,8 +539,8 @@ function Landing() {
                       {phase.id}
                     </span>
                     {current ? (
-                      <span className="rounded-full bg-brand/15 px-2 py-0.5 font-mono text-[0.62rem] uppercase tracking-wide text-brand-emphasis ring-1 ring-brand/25">
-                        {t.features.available}
+                      <span className="font-mono text-[0.62rem] uppercase tracking-wide text-brand-emphasis">
+                        · {t.features.available}
                       </span>
                     ) : null}
                   </div>
@@ -474,50 +557,77 @@ function Landing() {
         </ol>
       </Section>
 
-      {/* 7. Community + 8. Final CTA */}
-      <Section className="pb-24 pt-4">
+      {/* 8. Final CTA — frameless band */}
+      <Section className="relative border-t border-border py-20 text-center sm:py-28">
+        <div
+          aria-hidden
+          className="glow-brand absolute left-1/2 top-0 -z-10 h-64 w-[520px] max-w-full -translate-x-1/2"
+        />
         <Reveal>
-          <div className="relative overflow-hidden rounded-2xl border border-border bg-card p-8 text-center sm:p-14">
-            <div
-              aria-hidden
-              className="glow-brand absolute left-1/2 top-0 h-64 w-[520px] max-w-full -translate-x-1/2"
-            />
-            <h2 className="relative text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
-              {t.finalCta.heading}
-            </h2>
-            <p className="relative mx-auto mt-3 max-w-xl text-muted-foreground">
-              {t.finalCta.subheading}
-            </p>
-            <div className="relative mt-8 flex flex-wrap items-center justify-center gap-3">
-              <Link
-                to="/$lang/download"
-                params={{ lang: locale }}
-                className={buttonClasses('brand', 'lg')}
-              >
-                {t.finalCta.download}
-              </Link>
-              <a
-                href={GITHUB_REPO}
-                target="_blank"
-                rel="noreferrer noopener"
-                className={buttonClasses('outline', 'lg')}
-              >
-                <Github className="size-5" />
-                {t.community.github}
-              </a>
-              <a
-                href={GITHUB_DISCUSSIONS}
-                target="_blank"
-                rel="noreferrer noopener"
-                className={buttonClasses('ghost', 'lg')}
-              >
-                <MessagesSquare className="size-5" />
-                {t.community.discussions}
-              </a>
-            </div>
+          <h2 className="text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
+            {t.finalCta.heading}
+          </h2>
+          <p className="mx-auto mt-3 max-w-xl text-muted-foreground">
+            {t.finalCta.subheading}
+          </p>
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+            <Link
+              to="/$lang/download"
+              params={{ lang: locale }}
+              className={buttonClasses('brand', 'lg')}
+            >
+              {t.finalCta.download}
+            </Link>
+            <a
+              href={GITHUB_REPO}
+              target="_blank"
+              rel="noreferrer noopener"
+              className={buttonClasses('ghost', 'lg')}
+            >
+              <Github className="size-5" />
+              {t.community.github}
+            </a>
+            <a
+              href={GITHUB_DISCUSSIONS}
+              target="_blank"
+              rel="noreferrer noopener"
+              className={buttonClasses('ghost', 'lg')}
+            >
+              <MessagesSquare className="size-5" />
+              {t.community.discussions}
+            </a>
           </div>
         </Reveal>
       </Section>
     </>
+  )
+}
+
+function FeatureHeader({
+  index,
+  name,
+  badge,
+  available = false,
+}: {
+  index: string
+  name: string
+  badge: string
+  available?: boolean
+}) {
+  const Icon = featureIcons[name] ?? Puzzle
+  return (
+    <div className="flex items-center gap-2.5">
+      <span className="font-mono text-xs text-muted-foreground">{index}</span>
+      <Icon className="size-5 text-brand-emphasis" />
+      <h3 className="text-lg font-semibold text-ink">{name}</h3>
+      <span
+        className={cn(
+          'font-mono text-[0.65rem] uppercase tracking-wide',
+          available ? 'text-brand-emphasis' : 'text-muted-foreground',
+        )}
+      >
+        · {badge}
+      </span>
+    </div>
   )
 }

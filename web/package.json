@@ -19,7 +19,7 @@
     "@cloudflare/vite-plugin": "^1.26.0",
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/geist-mono": "^5.2.8",
-    "@fontsource/zen-kaku-gothic-new": "^5.2.7",
+    "@fontsource-variable/noto-sans-jp": "^5.2.10",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-toggle": "^1.1.10",

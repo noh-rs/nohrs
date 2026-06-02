@@ -23,6 +23,7 @@ const en = {
   },
   kickers: {
     why: 'Why',
+    identity: 'Principles',
     features: 'Product',
     craft: 'Engineering',
     social: 'Open source',
@@ -89,6 +90,28 @@ const en = {
       },
     ],
   },
+  principles: {
+    lead: 'A different kind of desktop tool.',
+    trail:
+      'Keyboard-first, sandbox-safe, and built in Rust from the launcher to the file engine.',
+    items: [
+      {
+        fig: 'FIG 0.1',
+        title: 'Keyboard-first',
+        body: 'Every action has a key. The launcher, explorer, and command palette are driven without reaching for the mouse.',
+      },
+      {
+        fig: 'FIG 0.2',
+        title: 'Open & sandboxed',
+        body: 'Plugins compile to WebAssembly and run under a capability-based permission model — power without trusting native code.',
+      },
+      {
+        fig: 'FIG 0.3',
+        title: 'One Rust codebase',
+        body: 'UI, file engine, search index, and plugin host share a single Rust core. Native speed, memory-safe by construction.',
+      },
+    ],
+  },
   features: {
     heading: 'One tool, four surfaces',
     subheading:
@@ -96,6 +119,9 @@ const en = {
     available: 'Available',
     coming: 'Coming in v0.x',
     launcherPlaceholder: 'Open file, app, or action…',
+    taglineStrong: 'One tool, not four.',
+    tagline:
+      'Launcher, explorer, search, and plugin host share one index and one keymap — composed into a single keyboard-first surface.',
     items: [
       {
         name: 'Explorer',
@@ -126,6 +152,36 @@ const en = {
       'Native performance, no Electron',
       'Memory-safe by construction',
       'A plugin host built on the WASM Component Model',
+    ],
+  },
+  engine: {
+    headingStrong: 'Clone it, run it, read every line.',
+    heading:
+      'The whole stack is open — from the cargo command to the plugin you write.',
+    tabs: ['Clone & run', 'Configure', 'Plugin'],
+    worksWith: 'Runs on',
+    targets: ['macOS', 'Linux soon', 'from source'],
+    paletteLabel: 'Command palette',
+    commands: [
+      { name: 'Open file, app, or action', keys: '⌘K' },
+      { name: 'Jump to folder', keys: '⌘P' },
+      { name: 'Search file contents', keys: '⌘⇧F' },
+      { name: 'Toggle preview pane', keys: '⌘I' },
+      { name: 'Run quick action', keys: '⌘↵' },
+      { name: 'Open command menu', keys: '⌘⇧P' },
+    ],
+  },
+  opensource: {
+    heading: 'Open source',
+    subheading:
+      'nohrs is built in the open — every commit, issue, and decision lives on GitHub.',
+    contributorsAlt: 'Project contributors on GitHub',
+    viewGithub: 'Browse the repository',
+    stats: [
+      { value: '—', label: 'Stars' },
+      { value: '—', label: 'Forks' },
+      { value: '—', label: 'Contributors' },
+      { value: '—', label: 'Open issues' },
     ],
   },
   social: {
@@ -261,6 +317,7 @@ const ja: Messages = {
   },
   kickers: {
     why: 'なぜ',
+    identity: '原則',
     features: 'プロダクト',
     craft: 'エンジニアリング',
     social: 'オープンソース',
@@ -327,6 +384,28 @@ const ja: Messages = {
       },
     ],
   },
+  principles: {
+    lead: 'これまでとは違う、デスクトップの道具。',
+    trail:
+      'キーボード中心、サンドボックスで安全、ランチャーからファイルエンジンまで Rust 製。',
+    items: [
+      {
+        fig: 'FIG 0.1',
+        title: 'キーボード中心',
+        body: 'すべての操作にキーがあります。ランチャー・エクスプローラ・コマンドパレットは、マウスに手を伸ばさず操作できます。',
+      },
+      {
+        fig: 'FIG 0.2',
+        title: 'オープンでサンドボックス',
+        body: 'プラグインは WebAssembly にコンパイルされ、ケイパビリティベースの権限モデルで動きます。ネイティブコードを信頼せずに力を得られます。',
+      },
+      {
+        fig: 'FIG 0.3',
+        title: 'ひとつの Rust コードベース',
+        body: 'UI・ファイルエンジン・検索インデックス・プラグインホストがひとつの Rust コアを共有。ネイティブ性能で、構造的にメモリ安全。',
+      },
+    ],
+  },
   features: {
     heading: 'ひとつの道具、4 つの面',
     subheading:
@@ -334,6 +413,9 @@ const ja: Messages = {
     available: '利用可能',
     coming: 'v0.x で登場予定',
     launcherPlaceholder: 'ファイル・アプリ・アクションを開く…',
+    taglineStrong: '4 つではなく、ひとつの道具。',
+    tagline:
+      'ランチャー・エクスプローラ・検索・プラグインホストが、ひとつのインデックスとひとつのキーマップを共有。キーボード中心のひとつの面に統合します。',
     items: [
       {
         name: 'Explorer',
@@ -364,6 +446,36 @@ const ja: Messages = {
       'ネイティブ性能、Electron 不使用',
       '構造的にメモリ安全',
       'WASM Component Model 上のプラグインホスト',
+    ],
+  },
+  engine: {
+    headingStrong: 'クローンして、動かして、全行を読める。',
+    heading:
+      'cargo コマンドから、あなたが書くプラグインまで、スタック全体がオープン。',
+    tabs: ['クローン & 実行', '設定', 'プラグイン'],
+    worksWith: '動作環境',
+    targets: ['macOS', 'Linux 近日', 'ソースから'],
+    paletteLabel: 'コマンドパレット',
+    commands: [
+      { name: 'ファイル・アプリ・アクションを開く', keys: '⌘K' },
+      { name: 'フォルダへ移動', keys: '⌘P' },
+      { name: 'ファイル全文を検索', keys: '⌘⇧F' },
+      { name: 'プレビューを切替', keys: '⌘I' },
+      { name: 'クイックアクション実行', keys: '⌘↵' },
+      { name: 'コマンドメニューを開く', keys: '⌘⇧P' },
+    ],
+  },
+  opensource: {
+    heading: 'オープンソース',
+    subheading:
+      'nohrs はオープンに開発しています。すべてのコミット・課題・意思決定が GitHub にあります。',
+    contributorsAlt: 'GitHub のプロジェクトコントリビュータ',
+    viewGithub: 'リポジトリを見る',
+    stats: [
+      { value: '—', label: 'スター' },
+      { value: '—', label: 'フォーク' },
+      { value: '—', label: 'コントリビュータ' },
+      { value: '—', label: 'オープンな課題' },
     ],
   },
   social: {
