@@ -17,13 +17,17 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege by default; the coverage job opts into `code-quality: write`.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  check:
-    name: fmt / clippy / test
+  fmt:
+    name: fmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -33,21 +37,175 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+          components: rustfmt
 
       - name: Format
         run: cargo fmt --all --check
 
-      # gpui renders with Metal and only builds on macOS, so the `gui`
-      # feature (and its `[[bin]]`) is excluded from the Linux CI build.
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+  # gpui renders with Metal/Blade and the GUI stack is only exercised on macOS.
+  # Linux therefore lints/tests/builds the headless `default-members` subset
+  # (nohrs-core / nohrs-models / nohrs-services without its `gui` feature), while
+  # macOS covers the full workspace with `--all-features` (pulling in gpui). This
+  # mirrors the `default-members` split documented in the workspace Cargo.toml.
+  clippy:
+    name: clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            args: "--all-targets"
+          - os: macos-latest
+            args: "--workspace --all-targets --all-features"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - name: Build
-        run: cargo build --locked
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # `unwrap_used` / `expect_used` are enforced as warn-level workspace lints
+      # (see [workspace.lints.clippy] in Cargo.toml), promoted to errors here by
+      # `-D warnings`. Tests are exempt via clippy.toml.
+      - name: Clippy
+        run: cargo clippy ${{ matrix.args }} --locked -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            args: ""
+          - os: macos-latest
+            args: "--workspace --all-features"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test ${{ matrix.args }} --locked
+
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # lib only (headless default-members)
+          - os: ubuntu-latest
+            args: ""
+          # full workspace including the gpui-backed `nohrs` binary
+          - os: macos-latest
+            args: "--workspace"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Build
+        run: cargo build ${{ matrix.args }} --locked
+
+  # `bans` / `licenses` / `sources` are the required gate. `advisories` runs as a
+  # separate informational step (continue-on-error) so transitive advisories from
+  # the gpui async stack are surfaced without blocking merge (see deny.toml).
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-deny
+
+      - name: cargo-deny (bans / licenses / sources)
+        run: cargo deny check bans licenses sources
+
+      - name: cargo-deny (advisories, informational)
+        continue-on-error: true
+        run: cargo deny check advisories
+
+  # Coverage is informational during P1–P5 (target: core 80% / overall 50%); it
+  # never blocks merge. The Cobertura XML report feeds GitHub's native code
+  # coverage (PR diff inline; requires Code Quality enabled in repo settings);
+  # the browsable HTML report is uploaded as a downloadable CI artifact (no
+  # external hosting).
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      code-quality: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # Headless libraries only (default-members); `--all-features` is omitted so
+      # the Linux runner does not pull in gpui. GUI coverage is a future macOS
+      # extension. The HTML report reuses the profile data collected here, so it
+      # does not re-run the tests.
+      - name: Generate Cobertura XML
+        run: cargo llvm-cov --locked --cobertura --output-path cobertura.xml
+
+      - name: Generate HTML report
+        run: cargo llvm-cov report --html --output-dir target/llvm-cov
+
+      # GitHub native code coverage (PR diff inline). Skipped for PRs from forks,
+      # which cannot write coverage data.
+      - name: Upload coverage to GitHub
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3 # v1
+        with:
+          file: cobertura.xml
+          language: Rust
+          label: code-coverage/cargo-llvm-cov
+
+      # Browsable line-by-line report. Download the artifact and open index.html.
+      - name: Upload HTML report artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-html
+          path: target/llvm-cov/html

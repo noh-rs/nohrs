@@ -72,7 +72,12 @@ Run these before pushing — they mirror what CI enforces:
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+cargo deny check bans licenses sources   # license / dependency policy
 ```
+
+CI runs these on Linux against the headless library subset and additionally on
+macOS across the full workspace (`--workspace --all-features`, which builds the
+gpui GUI). `cargo deny check advisories` also runs in CI but is informational.
 
 Coding conventions (error handling, naming, avoiding panics, GPUI patterns) are
 documented in [`.rules`](.rules) / `CLAUDE.md`. Highlights:
@@ -89,6 +94,22 @@ documented in [`.rules`](.rules) / `CLAUDE.md`. Highlights:
   executor timer (`cx.background_executor.timer(...).await`) and
   `run_until_parked()` — **not** `smol::Timer` / `tokio::time::sleep`, which the
   GPUI scheduler doesn't track. See [`docs/testing.md`](docs/testing.md).
+
+### Coverage
+
+Generate an HTML coverage report locally with
+[`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov)
+(`cargo install cargo-llvm-cov`):
+
+```sh
+cargo llvm-cov --all-features --html
+open target/llvm-cov/html/index.html   # xdg-open on Linux
+```
+
+CI feeds a Cobertura XML report into GitHub's native code coverage (inline PR
+diff coverage) and uploads the HTML report as a downloadable `coverage-html`
+artifact on each run. Coverage is informational during P1–P5 (target: core 80%
+/ overall 50%) and does not block merge.
 
 ## License
 

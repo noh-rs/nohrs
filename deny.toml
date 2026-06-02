@@ -1,0 +1,55 @@
+# cargo-deny configuration — licenses, advisories, dependency bans, sources.
+# Mirrors docs/testing.md §3. The CI `deny` job runs `cargo deny check`.
+# Detailed tuning of this file is tracked in #54.
+
+[advisories]
+# In CI, `bans`/`licenses`/`sources` are the required gate; `advisories` runs as
+# an informational (non-blocking) step — see .github/workflows/ci.yml. The gpui
+# async stack pulls several crates with open advisories that we cannot fix until
+# upstream bumps; surfacing them without blocking matches testing.md's
+# "informational early" stance. Tracked in #54.
+db-urls = ["https://github.com/RustSec/advisory-db"]
+# Only flag unmaintained crates we depend on directly; transitive ones from the
+# gpui stack are out of our control.
+unmaintained = "workspace"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive licenses only. Extend deliberately (a new entry means a new license
+# is now allowed across the whole dependency tree).
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "Unicode-3.0",
+  "MPL-2.0",
+  "CC0-1.0",
+  # NCSA (University of Illinois/NCSA): OSI-approved permissive license, reached
+  # via gpui → image → ravif → rav1e → libfuzzer-sys.
+  "NCSA",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+deny = [
+  # rustls unification — no OpenSSL in the tree.
+  { name = "openssl-sys" },
+  # NOTE: testing.md §3 also bans tokio outside the WASI plugin-execution layer
+  # (nohrs-plugin-host, P4+). It cannot be enforced yet: gpui pulls a full async
+  # reqwest stack (h2/hyper/tokio-util/...) that transitively depends on tokio,
+  # which the `wrappers` mechanism cannot express. App-core tokio removal (ADR
+  # 0004) and re-introducing this ban are tracked in #54.
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = []
