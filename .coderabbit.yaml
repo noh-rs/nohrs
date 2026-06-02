@@ -57,7 +57,6 @@ knowledge_base:
       - "CLAUDE.md"
       - "CONTRIBUTING.md"
       - "docs/**/*.md"
-      - "docs/adr/**/*.md"
       - "deny.toml"
       - "clippy.toml"
   learnings:
