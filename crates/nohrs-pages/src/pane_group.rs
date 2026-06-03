@@ -36,6 +36,10 @@ pub trait PaneItem: Render + Focusable + 'static {
 /// trait should not know about.
 type BuildPane<T> = Box<dyn Fn(&mut Window, &mut App) -> Entity<T>>;
 
+/// Maximum panes a group holds. The split is 2-way today (P2 cap); full N-way
+/// tabs are tracked in #62.
+const MAX_PANES: usize = 2;
+
 /// A 2-way split container over independently-rendered panes of type `T`.
 pub struct PaneGroup<T: PaneItem> {
     // Invariant: always non-empty and at most two entries (2-way cap).
@@ -69,13 +73,17 @@ impl<T: PaneItem> PaneGroup<T> {
         (group, first)
     }
 
-    /// Builds a pane and appends it. Returns its index and entity so the embedder
-    /// can subscribe to it and apply per-pane configuration. Does not change the
+    /// Builds a pane and appends it, enforcing the 2-way cap. Returns its index
+    /// and entity (or `None` when already at [`MAX_PANES`]) so the embedder can
+    /// subscribe to it and apply per-pane configuration. Does not change the
     /// active pane or notify; that is the embedder's responsibility.
-    pub fn add_pane(&mut self, window: &mut Window, cx: &mut App) -> (usize, Entity<T>) {
+    pub fn add_pane(&mut self, window: &mut Window, cx: &mut App) -> Option<(usize, Entity<T>)> {
+        if self.panes.len() >= MAX_PANES {
+            return None;
+        }
         let pane = (self.build_pane)(window, cx);
         self.panes.push(pane.clone());
-        (self.panes.len() - 1, pane)
+        Some((self.panes.len() - 1, pane))
     }
 
     /// Removes the pane at `index`, keeping at least one open. Returns whether a
@@ -307,6 +315,9 @@ impl<T: PaneItem> PaneGroup<T> {
                         .rounded(px(4.0))
                         .cursor_pointer()
                         .hover(|style| style.bg(rgb(theme::TOOLBAR_HOVER)))
+                        // Swallow the press so the pane-wide `on_mouse_down`
+                        // doesn't activate the pane we're about to close.
+                        .on_mouse_down(MouseButton::Left, |_, _window, cx| cx.stop_propagation())
                         .on_click(cx.listener(move |this, _event, window, cx| {
                             on_close(this, index, window, cx)
                         }))

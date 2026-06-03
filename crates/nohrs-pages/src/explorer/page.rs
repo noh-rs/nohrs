@@ -141,8 +141,8 @@ impl ExplorerPage {
         cwd: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> usize {
-        let (index, pane) = self.group.add_pane(window, cx);
+    ) -> Option<usize> {
+        let (index, pane) = self.group.add_pane(window, cx)?;
         let subscription = cx.subscribe(&pane, Self::on_pane_event);
         self.pane_subscriptions.push(subscription);
         // Replay the active `[ui]` config so a pane opened by a split inherits the
@@ -158,7 +158,7 @@ impl ExplorerPage {
                 pane.loaded = false;
             }
         });
-        index
+        Some(index)
     }
 
     // Mirrors a pane's navigation into its siblings while syncing is enabled.
@@ -202,8 +202,9 @@ impl ExplorerPage {
         self.group.set_direction(direction);
         if self.group.pane_count() < 2 {
             let cwd = self.group.active_pane().read(cx).cwd.clone();
-            let index = self.add_explorer_pane(Some(cwd), window, cx);
-            self.group.set_active(index, window, cx);
+            if let Some(index) = self.add_explorer_pane(Some(cwd), window, cx) {
+                self.group.set_active(index, window, cx);
+            }
         } else {
             self.group.focus_active(window, cx);
         }
