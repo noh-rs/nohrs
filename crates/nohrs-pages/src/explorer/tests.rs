@@ -524,10 +524,12 @@ async fn synced_navigation_clears_stale_search_state(cx: &mut TestAppContext) {
             };
             page.apply_config_explorer(&synced, cx);
 
-            // Leave the mirrored pane with a stale filter from a prior search.
+            // Leave the mirrored pane with a stale filter and results from a
+            // prior search so the reset is actually exercised (not vacuous).
             page.pane(1).update(cx, |pane, _cx| {
                 pane.search_query = "stale".to_string();
                 pane.search_visible = true;
+                pane.search_results = Some(Vec::new());
             });
             page.pane(0)
                 .update(cx, |pane, cx| pane.change_dir(shared.clone(), window, cx));
