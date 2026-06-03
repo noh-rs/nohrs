@@ -10,6 +10,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Schema version understood by this build. Bumped only when the on-disk
@@ -22,11 +23,26 @@ pub const SCHEMA_URL: &str = "https://nohrs.app/schema/config.schema.json";
 
 /// The fully merged, validated configuration.
 ///
-/// Models the P1 surface (`theme` / `ui`) plus the P2 `[diagnostics]` section.
-/// `[keybindings]` and `[plugins]` are recognised as reserved sections (see
-/// [`is_reserved_section`]) but intentionally not deserialized yet, so their
-/// future shapes can be added without breaking older files.
+/// Models the P1 surface (`theme` / `ui`) plus the P2 sections: `[indexing]`,
+/// `[search]`, `[launcher]`, and `[diagnostics]`. `[keybindings]` and
+/// `[plugins]` are reserved here as forward-compatible drafts — their types are
+/// defined and parsed leniently so files can adopt them now, but the values do
+/// not drive behaviour yet (keybindings land in P3, plugins in P4; see
+/// `docs/config.md` §2/§5).
+///
+/// Only `theme`, `ui`, and `diagnostics` are consumed at runtime today. The
+/// remaining sections (`keybindings`, `plugins`, `indexing`, `search`,
+/// `launcher`) are accepted and validated now so files and editor completion can
+/// adopt them, but editing them has no effect until the matching subsystem is
+/// wired in a later phase — see the per-section notes and `docs/config.md` §5.
+///
+/// Every field is `#[serde(default)]`: the loader starts from
+/// [`Config::default`] and overlays only the keys present in the file, so a
+/// missing section is filled with its default rather than rejected. The
+/// generated schema therefore has no `required` properties, matching the
+/// loader (an empty `config.toml` is valid).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Config {
     /// On-disk schema version. Must be [`CURRENT_SCHEMA_VERSION`] for this build.
     pub schema_version: u64,
@@ -36,6 +52,17 @@ pub struct Config {
     pub ui: Ui,
     /// Split-view and pane settings.
     pub explorer: Explorer,
+    /// Keybinding overrides (draft; full support in P3). Empty means the
+    /// built-in keymap is used.
+    pub keybindings: Keybindings,
+    /// Plugin selection (reserved; full support in P4).
+    pub plugins: Plugins,
+    /// Filesystem indexing strategy and exclusions.
+    pub indexing: Indexing,
+    /// Search backend selection.
+    pub search: Search,
+    /// Launcher window settings.
+    pub launcher: Launcher,
     /// Diagnostics / performance-logging settings.
     pub diagnostics: Diagnostics,
 }
@@ -47,6 +74,11 @@ impl Default for Config {
             theme: Theme::default(),
             ui: Ui::default(),
             explorer: Explorer::default(),
+            keybindings: Keybindings::default(),
+            plugins: Plugins::default(),
+            indexing: Indexing::default(),
+            search: Search::default(),
+            launcher: Launcher::default(),
             diagnostics: Diagnostics::default(),
         }
     }
@@ -54,6 +86,7 @@ impl Default for Config {
 
 /// Appearance settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Theme {
     /// Light/dark selection, or following the OS.
     pub mode: ThemeMode,
@@ -73,6 +106,7 @@ impl Default for Theme {
 
 /// Explorer / view settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Ui {
     /// Column the listing is sorted by on load.
     pub default_sort: SortOrder,
@@ -94,6 +128,7 @@ impl Default for Ui {
 
 /// Split-view and pane settings (see `docs/explorer-essentials.md` §3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Explorer {
     /// Orientation a fresh split uses unless overridden by the split shortcut.
     pub split_direction: SplitDirection,
@@ -132,8 +167,139 @@ impl SplitDirection {
     }
 }
 
+/// Keybinding overrides (config.md §2, draft for P3).
+///
+/// A draft surface: a map of action identifier to key chord (e.g.
+/// `"quit" = "ctrl-q"`). An empty map — the default — means the built-in keymap
+/// is used. The action vocabulary and live re-binding are defined in P3; until
+/// then values are stored and validated but not applied (hot reload is a
+/// restart, config.md §5), so arbitrary action names are accepted without
+/// warning to keep forward compatibility.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct Keybindings {
+    /// Action identifier → key chord. Empty means "use the built-in keymap".
+    #[serde(flatten)]
+    pub bindings: BTreeMap<String, String>,
+}
+
+/// Plugin selection (config.md §2, reserved for P4).
+///
+/// Type definition / reservation only: the lists are parsed and stored, but no
+/// plugin host loads them yet (that lands in P4).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct Plugins {
+    /// Built-in (first-party) plugins to enable, by id (e.g. `"git"`).
+    pub core: Vec<String>,
+    /// Community plugins to enable, as `user/repo` or a URL.
+    pub community: Vec<String>,
+}
+
+/// Filesystem indexing settings.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct Indexing {
+    /// When the background index is built and maintained.
+    pub mode: IndexingMode,
+    /// Paths and globs excluded from indexing.
+    pub exclude: IndexingExclude,
+}
+
+/// When the filesystem index is built and kept up to date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum IndexingMode {
+    /// Index on demand and keep warm while the app is in use (the default).
+    #[default]
+    Auto,
+    /// Continuously index in the background, even while idle.
+    AlwaysOn,
+    /// Only index when explicitly requested.
+    Manual,
+}
+
+impl IndexingMode {
+    /// Parse the `config.toml` spelling (`auto`/`always-on`/`manual`).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "always-on" => Some(Self::AlwaysOn),
+            "manual" => Some(Self::Manual),
+            _ => None,
+        }
+    }
+}
+
+/// Paths and globs excluded from indexing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct IndexingExclude {
+    /// Literal paths (absolute or relative to the indexed root) to skip.
+    pub paths: Vec<String>,
+    /// Glob patterns (e.g. `**/target/**`) to skip.
+    pub globs: Vec<String>,
+}
+
+/// Search backend selection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct Search {
+    /// Which engine answers content searches.
+    pub backend: SearchBackend,
+}
+
+/// The engine used to answer content searches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SearchBackend {
+    /// Pick the best available backend at runtime (the default).
+    #[default]
+    Auto,
+    /// SQLite full-text search (FTS5).
+    SqliteFts,
+    /// The Tantivy index.
+    Tantivy,
+    /// External `ripgrep`.
+    Ripgrep,
+}
+
+impl SearchBackend {
+    /// Parse the `config.toml` spelling
+    /// (`sqlite-fts`/`tantivy`/`ripgrep`/`auto`).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "sqlite-fts" => Some(Self::SqliteFts),
+            "tantivy" => Some(Self::Tantivy),
+            "ripgrep" => Some(Self::Ripgrep),
+            "auto" => Some(Self::Auto),
+            _ => None,
+        }
+    }
+}
+
+/// Launcher window settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct Launcher {
+    /// Global hotkey that summons the launcher.
+    pub hotkey: String,
+    /// Whether the launcher reopens at its last on-screen position.
+    pub position_remember: bool,
+}
+
+impl Default for Launcher {
+    fn default() -> Self {
+        Self {
+            hotkey: "Cmd+Shift+Space".to_string(),
+            position_remember: true,
+        }
+    }
+}
+
 /// Diagnostics / performance-logging settings (see `docs/persistence.md` §5).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Diagnostics {
     /// Performance logging for the persistence layer (`nohrs-store`).
     pub store: DiagnosticsStore,
@@ -143,6 +309,7 @@ pub struct Diagnostics {
 /// default config adds no overhead. Output goes through `tracing` (targets
 /// `nohrs_store::sql` / `nohrs_store::redb`) and is filterable with `RUST_LOG`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct DiagnosticsStore {
     /// Log every SQL query at `debug` (verbose).
     pub log_all_queries: bool,
@@ -382,6 +549,38 @@ impl Config {
                 None => diagnostics.push(Diagnostic::warn("[explorer] is not a table; ignoring")),
             }
         }
+        if let Some(value) = table.get("keybindings") {
+            match value.as_table() {
+                Some(keys) => read_keybindings(keys, &mut config.keybindings, &mut diagnostics),
+                None => {
+                    diagnostics.push(Diagnostic::warn("[keybindings] is not a table; ignoring"))
+                }
+            }
+        }
+        if let Some(value) = table.get("plugins") {
+            match value.as_table() {
+                Some(plugins) => read_plugins(plugins, &mut config.plugins, &mut diagnostics),
+                None => diagnostics.push(Diagnostic::warn("[plugins] is not a table; ignoring")),
+            }
+        }
+        if let Some(value) = table.get("indexing") {
+            match value.as_table() {
+                Some(indexing) => read_indexing(indexing, &mut config.indexing, &mut diagnostics),
+                None => diagnostics.push(Diagnostic::warn("[indexing] is not a table; ignoring")),
+            }
+        }
+        if let Some(value) = table.get("search") {
+            match value.as_table() {
+                Some(search) => read_search(search, &mut config.search, &mut diagnostics),
+                None => diagnostics.push(Diagnostic::warn("[search] is not a table; ignoring")),
+            }
+        }
+        if let Some(value) = table.get("launcher") {
+            match value.as_table() {
+                Some(launcher) => read_launcher(launcher, &mut config.launcher, &mut diagnostics),
+                None => diagnostics.push(Diagnostic::warn("[launcher] is not a table; ignoring")),
+            }
+        }
         if let Some(value) = table.get("diagnostics") {
             match value.as_table() {
                 Some(diag) => read_diagnostics(diag, &mut config.diagnostics, &mut diagnostics),
@@ -398,9 +597,12 @@ impl Config {
                 "theme",
                 "ui",
                 "explorer",
-                "diagnostics",
                 "keybindings",
                 "plugins",
+                "indexing",
+                "search",
+                "launcher",
+                "diagnostics",
             ],
             "",
             &mut diagnostics,
@@ -415,7 +617,8 @@ impl Config {
     }
 
     /// The default `config.toml` written on first run or `reset`, including the
-    /// `#:schema` header and empty reserved sections.
+    /// `#:schema` header. Every value matches [`Config::default`], so a freshly
+    /// written file round-trips to defaults with no diagnostics.
     pub fn default_toml_template() -> String {
         format!(
             "#:schema {SCHEMA_URL}\n\
@@ -434,6 +637,24 @@ impl Config {
              split_direction = \"vertical\"   # \"vertical\" (left/right) | \"horizontal\" (top/bottom)\n\
              synced_panes = false            # when true, panes mirror the same path\n\
              \n\
+             # The sections below are parsed and validated, but not yet applied at\n\
+             # runtime — they take effect when their subsystem is wired in a later\n\
+             # phase (docs/config.md §5). They are here so files and editor\n\
+             # completion can adopt the shape early.\n\
+             [indexing]\n\
+             mode = \"auto\"   # \"auto\" | \"always-on\" | \"manual\"\n\
+             \n\
+             [indexing.exclude]\n\
+             paths = []\n\
+             globs = []\n\
+             \n\
+             [search]\n\
+             backend = \"auto\"   # \"sqlite-fts\" | \"tantivy\" | \"ripgrep\" | \"auto\"\n\
+             \n\
+             [launcher]\n\
+             hotkey = \"Cmd+Shift+Space\"\n\
+             position_remember = true\n\
+             \n\
              # Store performance logging for analysis; all off by default.\n\
              # Output via tracing (RUST_LOG), see docs/persistence.md §5.\n\
              [diagnostics.store]\n\
@@ -441,18 +662,16 @@ impl Config {
              slow_query_ms = 0         # warn on SQL slower than this (0 = off)\n\
              log_redb_ops = false      # log redb get/put/delete/batch timings\n\
              \n\
-             # Reserved for future use; left empty in P1.\n\
+             # Draft sections; defaults are built-in, so these stay empty until\n\
+             # keybindings (P3) and plugins (P4) are wired up.\n\
              [keybindings]\n\
+             # quit = \"ctrl-q\"\n\
              \n\
-             [plugins]\n"
+             [plugins]\n\
+             # core = [\"git\"]\n\
+             # community = [\"user/repo\"]\n"
         )
     }
-}
-
-/// Whether `name` is a reserved top-level section that P1 recognises but does
-/// not yet read (so its presence is not flagged as an unknown key).
-pub fn is_reserved_section(name: &str) -> bool {
-    matches!(name, "keybindings" | "plugins")
 }
 
 fn read_theme(table: &toml::Table, theme: &mut Theme, diagnostics: &mut Vec<Diagnostic>) {
@@ -540,6 +759,150 @@ fn read_explorer(table: &toml::Table, explorer: &mut Explorer, diagnostics: &mut
     );
 }
 
+fn read_keybindings(
+    table: &toml::Table,
+    keybindings: &mut Keybindings,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Draft: accept any action name → chord. Unknown actions are not warned
+    // about (the action vocabulary is defined in P3); only non-string values are.
+    for (action, value) in table {
+        match value.as_str() {
+            Some(chord) => {
+                keybindings
+                    .bindings
+                    .insert(action.clone(), chord.to_string());
+            }
+            None => diagnostics.push(Diagnostic::warn(format!(
+                "invalid keybindings.{action} {value}; expected a string, ignoring"
+            ))),
+        }
+    }
+}
+
+fn read_plugins(table: &toml::Table, plugins: &mut Plugins, diagnostics: &mut Vec<Diagnostic>) {
+    if let Some(value) = table.get("core") {
+        if let Some(core) = read_string_array(value, "plugins.core", diagnostics) {
+            plugins.core = core;
+        }
+    }
+    if let Some(value) = table.get("community") {
+        if let Some(community) = read_string_array(value, "plugins.community", diagnostics) {
+            plugins.community = community;
+        }
+    }
+    warn_unknown_keys(table, &["core", "community"], "plugins.", diagnostics);
+}
+
+fn read_indexing(table: &toml::Table, indexing: &mut Indexing, diagnostics: &mut Vec<Diagnostic>) {
+    if let Some(value) = table.get("mode") {
+        match value.as_str().and_then(IndexingMode::parse) {
+            Some(mode) => indexing.mode = mode,
+            None => diagnostics.push(Diagnostic::warn(format!(
+                "invalid indexing.mode {value}; using {:?}",
+                indexing.mode
+            ))),
+        }
+    }
+    if let Some(value) = table.get("exclude") {
+        match value.as_table() {
+            Some(exclude) => read_indexing_exclude(exclude, &mut indexing.exclude, diagnostics),
+            None => diagnostics.push(Diagnostic::warn(
+                "[indexing.exclude] is not a table; ignoring",
+            )),
+        }
+    }
+    warn_unknown_keys(table, &["mode", "exclude"], "indexing.", diagnostics);
+}
+
+fn read_indexing_exclude(
+    table: &toml::Table,
+    exclude: &mut IndexingExclude,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let Some(value) = table.get("paths") {
+        if let Some(paths) = read_string_array(value, "indexing.exclude.paths", diagnostics) {
+            exclude.paths = paths;
+        }
+    }
+    if let Some(value) = table.get("globs") {
+        if let Some(globs) = read_string_array(value, "indexing.exclude.globs", diagnostics) {
+            exclude.globs = globs;
+        }
+    }
+    warn_unknown_keys(table, &["paths", "globs"], "indexing.exclude.", diagnostics);
+}
+
+fn read_search(table: &toml::Table, search: &mut Search, diagnostics: &mut Vec<Diagnostic>) {
+    if let Some(value) = table.get("backend") {
+        match value.as_str().and_then(SearchBackend::parse) {
+            Some(backend) => search.backend = backend,
+            None => diagnostics.push(Diagnostic::warn(format!(
+                "invalid search.backend {value}; using {:?}",
+                search.backend
+            ))),
+        }
+    }
+    warn_unknown_keys(table, &["backend"], "search.", diagnostics);
+}
+
+fn read_launcher(table: &toml::Table, launcher: &mut Launcher, diagnostics: &mut Vec<Diagnostic>) {
+    if let Some(value) = table.get("hotkey") {
+        match value.as_str() {
+            Some(hotkey) if !hotkey.trim().is_empty() => launcher.hotkey = hotkey.to_string(),
+            _ => diagnostics.push(Diagnostic::warn(format!(
+                "invalid launcher.hotkey {value}; using {:?}",
+                launcher.hotkey
+            ))),
+        }
+    }
+    if let Some(value) = table.get("position_remember") {
+        match value.as_bool() {
+            Some(flag) => launcher.position_remember = flag,
+            None => diagnostics.push(Diagnostic::warn(format!(
+                "invalid launcher.position_remember {value}; using {}",
+                launcher.position_remember
+            ))),
+        }
+    }
+    warn_unknown_keys(
+        table,
+        &["hotkey", "position_remember"],
+        "launcher.",
+        diagnostics,
+    );
+}
+
+/// Read a TOML array of strings, warning about (and skipping) any non-string
+/// element. Returns `None` — with a warning — when the value is not an array,
+/// so the caller keeps its current value.
+fn read_string_array(
+    value: &toml::Value,
+    field: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<String>> {
+    match value.as_array() {
+        Some(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_str() {
+                    Some(entry) => out.push(entry.to_string()),
+                    None => diagnostics.push(Diagnostic::warn(format!(
+                        "ignoring non-string entry {item} in {field}"
+                    ))),
+                }
+            }
+            Some(out)
+        }
+        None => {
+            diagnostics.push(Diagnostic::warn(format!(
+                "{field} is not an array; ignoring"
+            )));
+            None
+        }
+    }
+}
+
 fn read_diagnostics(
     table: &toml::Table,
     diag: &mut Diagnostics,
@@ -596,9 +959,9 @@ fn read_diagnostics_store(
     );
 }
 
-/// Emit a warning for every key in `table` that is neither a known key nor a
-/// reserved top-level section. `prefix` is prepended for nested tables (e.g.
-/// `"theme."`) so messages point at the offending path.
+/// Emit a warning for every key in `table` that is not a known key. `prefix` is
+/// prepended for nested tables (e.g. `"theme."`) so messages point at the
+/// offending path.
 fn warn_unknown_keys(
     table: &toml::Table,
     known: &[&str],
@@ -606,9 +969,7 @@ fn warn_unknown_keys(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for key in table.keys() {
-        let is_known = known.contains(&key.as_str());
-        let is_reserved = prefix.is_empty() && is_reserved_section(key);
-        if !is_known && !is_reserved {
+        if !known.contains(&key.as_str()) {
             diagnostics.push(Diagnostic::warn(format!(
                 "unknown config key {prefix}{key}; ignoring"
             )));
@@ -629,7 +990,9 @@ fn warn_unknown_keys(
 ///   they are not standard JSON Schema draft 2020-12 formats, and `type` +
 ///   `minimum` already capture the constraint. Standard string formats are kept.
 ///
-/// Array element order (enum variants, `required`) is left untouched.
+/// There are no `required` arrays: every field is `#[serde(default)]`, so the
+/// loader (and a conforming editor) accepts a file that omits any section.
+/// Array element order (enum variants) is left untouched.
 pub fn json_schema_string() -> serde_json::Result<String> {
     let schema = schemars::schema_for!(Config);
     let value = serde_json::to_value(&schema)?;
@@ -764,6 +1127,85 @@ mod tests {
         assert!(config.diagnostics.store.log_all_queries);
         assert_eq!(config.diagnostics.store.slow_query_ms, 50);
         assert!(config.diagnostics.store.log_redb_ops);
+    }
+
+    #[test]
+    fn parses_p2_sections() {
+        let toml = r#"
+            [indexing]
+            mode = "always-on"
+            [indexing.exclude]
+            paths = ["/tmp", "node_modules"]
+            globs = ["**/target/**"]
+            [search]
+            backend = "tantivy"
+            [launcher]
+            hotkey = "Ctrl+Space"
+            position_remember = false
+            [plugins]
+            core = ["git", "calculator"]
+            community = ["user/repo"]
+            [keybindings]
+            quit = "ctrl-q"
+            search = "ctrl-f"
+        "#;
+        let (config, diagnostics) = Config::from_toml_str(toml);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(config.indexing.mode, IndexingMode::AlwaysOn);
+        assert_eq!(config.indexing.exclude.paths, ["/tmp", "node_modules"]);
+        assert_eq!(config.indexing.exclude.globs, ["**/target/**"]);
+        assert_eq!(config.search.backend, SearchBackend::Tantivy);
+        assert_eq!(config.launcher.hotkey, "Ctrl+Space");
+        assert!(!config.launcher.position_remember);
+        assert_eq!(config.plugins.core, ["git", "calculator"]);
+        assert_eq!(config.plugins.community, ["user/repo"]);
+        assert_eq!(
+            config.keybindings.bindings.get("quit").map(String::as_str),
+            Some("ctrl-q")
+        );
+        assert_eq!(
+            config
+                .keybindings
+                .bindings
+                .get("search")
+                .map(String::as_str),
+            Some("ctrl-f")
+        );
+    }
+
+    #[test]
+    fn p2_sections_reject_bad_values_leniently() {
+        let toml = r#"
+            [indexing]
+            mode = "turbo"
+            [indexing.exclude]
+            paths = "not-an-array"
+            globs = [1, "ok"]
+            [search]
+            backend = "grep"
+            [launcher]
+            hotkey = ""
+            position_remember = "yes"
+            [plugins]
+            core = "git"
+            [keybindings]
+            quit = 7
+        "#;
+        let (config, diagnostics) = Config::from_toml_str(toml);
+        // No fatal errors: bad fields fall back to defaults.
+        assert!(errors(&diagnostics).is_empty());
+        assert_eq!(config.indexing.mode, IndexingMode::Auto);
+        assert!(config.indexing.exclude.paths.is_empty());
+        // The non-string array entry is skipped; the valid one is kept.
+        assert_eq!(config.indexing.exclude.globs, ["ok"]);
+        assert_eq!(config.search.backend, SearchBackend::Auto);
+        assert_eq!(config.launcher.hotkey, Config::default().launcher.hotkey);
+        assert!(config.launcher.position_remember);
+        assert!(config.plugins.core.is_empty());
+        assert!(config.keybindings.bindings.is_empty());
+        // mode, paths(not array), globs(one bad entry), backend, hotkey,
+        // position_remember, plugins.core(not array), keybindings.quit.
+        assert_eq!(diagnostics.len(), 8);
     }
 
     #[test]
@@ -906,6 +1348,21 @@ mod tests {
         let schema = json_schema_string().unwrap();
         assert!(schema.contains("schema_version"));
         assert!(schema.contains("default_sort"));
+    }
+
+    #[test]
+    fn schema_has_no_required_so_partial_configs_validate() {
+        // The loader defaults every field (it overlays a parsed table onto
+        // `Config::default`), so no section is required. The schema must agree,
+        // otherwise editors reject files the app accepts.
+        let schema = json_schema_string().unwrap();
+        assert!(
+            !schema.contains("\"required\""),
+            "schema must not mark any field required"
+        );
+        let (config, diagnostics) = Config::from_toml_str("");
+        assert_eq!(config, Config::default());
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]

@@ -61,6 +61,32 @@ jobs:
       - name: Spell check
         run: typos
 
+  # Keeps `docs/config.schema.json` in lock-step with the `Config` structs. The
+  # schema is generated from the Rust types (schemars) via a `nohrs-core` example
+  # so it builds on Linux without the gpui-backed binary. Regenerating into the
+  # committed path and diffing makes a stale schema a hard failure with a visible
+  # diff; `nohrs config schema` emits the same bytes. Regenerate locally with
+  # `cargo run -p nohrs-core --example schema > docs/config.schema.json`.
+  schema:
+    name: config schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Regenerate JSON Schema
+        run: cargo run -p nohrs-core --example schema --locked > docs/config.schema.json
+
+      - name: Fail if the committed schema is stale
+        run: git diff --exit-code -- docs/config.schema.json
+
   # gpui renders with Metal/Blade and the GUI stack is only exercised on macOS.
   # Linux therefore lints/tests/builds the headless `default-members` subset
   # (nohrs-core / nohrs-models / nohrs-services without its `gui` feature), while

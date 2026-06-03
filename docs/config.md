@@ -1,6 +1,6 @@
 # Configuration
 
-> Status: Draft (P1 で最小実装、P2 で拡張)
+> Status: P1 最小実装 + P2 拡張 (indexing / search / launcher 実装、keybindings / plugins 予約)
 > Related: [`ROADMAP.md`](./ROADMAP.md), [`docs/persistence.md`](./persistence.md)
 
 本書はユーザー設定ファイル `config.toml` の配置・スキーマ・ロード戦略・hot reload を定めます。
@@ -39,15 +39,23 @@ show_hidden = false
 icon_pack = "default"
 
 [keybindings]
-# P3 で本格化。P1 では空、デフォルトは built-in。
+# 草案 (P3 で本格化)。`action = "chord"` の自由マップ。空ならデフォルトは built-in。
+# 任意のアクション名を forward-compat のため warn なしで受理 (値は string のみ)。
+# quit = "ctrl-q"
 
 [plugins]
-# P4 で本格運用。P1 では空。
+# 型予約のみ (P4 で本格運用)。リストは parse/格納されるが host はまだロードしない。
 # core = ["git", "calculator"]
 # community = ["user/repo", "https://..."]
 ```
 
-### P2 以降の拡張
+`[keybindings]` と `[plugins]` は型として定義済みだが、値はまだ挙動に反映されない (hot reload は再起動扱い、§5)。スキーマには予約済みで、P3/P4 で形を拡張しても古いファイルは壊れない。
+
+> **ランタイム反映状況**: 現状でランタイムに反映されるのは `theme` / `ui` / `diagnostics` のみ。`indexing` / `search` / `launcher` / `keybindings` / `plugins` は **parse + validate されるが、まだ挙動には反映されない** (各サブシステムが配線される後続フェーズで有効化)。schema / template に先行して載せているのは、ファイルとエディタ補完が形を先取りできるようにするため。編集しても今は効果がない点に注意。
+>
+> **`required` なし**: 全フィールドが `#[serde(default)]`。ローダは `Config::default()` から開始して存在するキーだけ上書きするため、どのセクションを省略しても (空の `config.toml` でも) 受理される。生成スキーマも `required` を持たず、エディタ検証とローダ挙動が一致する。
+
+### P2 拡張 (schema 定義済み / ランタイムは後続フェーズ)
 
 ```toml
 [indexing]
@@ -103,11 +111,17 @@ let merged = defaults
 
 ## 4. JSON Schema 生成
 
-`schemars` crate で Rust 構造体から JSON Schema を自動生成し、`docs/config.schema.json` を生成。
+`schemars` crate で Rust 構造体 (`Config` 以下) から JSON Schema を自動生成し、`docs/config.schema.json` にコミットする。出力は安定化済み (キーソート + Rust 固有の integer `format` を除去) なので byte-for-byte で再現できる。
 
 ```bash
+# GUI バイナリ経由 (macOS):
 cargo run --bin nohrs -- config schema > docs/config.schema.json
+
+# GUI 非依存 (Linux/CI、上と同一バイト列を出力):
+cargo run -p nohrs-core --example schema > docs/config.schema.json
 ```
+
+**CI で常に最新を保証**: `config schema` ジョブが上記 example でスキーマを再生成し、コミット済みファイルと `git diff --exit-code` する。構造体を変更してスキーマ再生成を忘れると、diff 付きで CI が落ちる。加えて `nohrs-core` のユニットテスト (`committed_schema_is_up_to_date`) が同じ検証をローカル/`cargo test` でも行う。
 
 config.toml の冒頭に:
 
