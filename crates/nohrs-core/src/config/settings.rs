@@ -660,7 +660,9 @@ fn read_keybindings(
     for (action, value) in table {
         match value.as_str() {
             Some(chord) => {
-                keybindings.bindings.insert(action.clone(), chord.to_string());
+                keybindings
+                    .bindings
+                    .insert(action.clone(), chord.to_string());
             }
             None => diagnostics.push(Diagnostic::warn(format!(
                 "invalid keybindings.{action} {value}; expected a string, ignoring"
@@ -1051,7 +1053,11 @@ mod tests {
             Some("ctrl-q")
         );
         assert_eq!(
-            config.keybindings.bindings.get("search").map(String::as_str),
+            config
+                .keybindings
+                .bindings
+                .get("search")
+                .map(String::as_str),
             Some("ctrl-f")
         );
     }
