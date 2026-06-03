@@ -1,5 +1,5 @@
 use super::super::types::ViewMode;
-use crate::explorer::ExplorerPage;
+use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::breadcrumb::{Breadcrumb, BreadcrumbItem};
@@ -9,9 +9,9 @@ use nohrs_ui::theme::theme;
 /// Renders the explorer header with navigation buttons, the breadcrumb path
 /// bar, and view-mode controls.
 pub fn render(
-    page: &mut ExplorerPage,
+    page: &mut ExplorerPane,
     _window: &mut Window,
-    cx: &mut Context<ExplorerPage>,
+    cx: &mut Context<ExplorerPane>,
 ) -> impl IntoElement {
     let parts = path_parts(&page.cwd);
 
@@ -162,8 +162,8 @@ pub fn render(
 }
 
 fn render_view_mode_toggle(
-    page: &mut ExplorerPage,
-    cx: &mut Context<ExplorerPage>,
+    page: &mut ExplorerPane,
+    cx: &mut Context<ExplorerPane>,
 ) -> impl IntoElement {
     div()
         .flex()
@@ -188,12 +188,12 @@ fn render_view_mode_toggle(
 }
 
 fn view_mode_button(
-    page: &mut ExplorerPage,
+    page: &mut ExplorerPane,
     mode: ViewMode,
     id: &'static str,
     icon: IconName,
     label: &'static str,
-    cx: &mut Context<ExplorerPage>,
+    cx: &mut Context<ExplorerPane>,
 ) -> impl IntoElement {
     let is_active = page.view_mode == mode;
     ListItem::new(id)

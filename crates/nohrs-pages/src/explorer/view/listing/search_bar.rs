@@ -1,5 +1,5 @@
 use crate::explorer::types::SearchType;
-use crate::explorer::ExplorerPage;
+use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::input::TextInput;
@@ -8,7 +8,7 @@ use nohrs_services::search::SearchScope;
 use nohrs_ui::theme::theme;
 
 /// Renders the search bar with the query input and search option toggles.
-pub fn render(page: &mut ExplorerPage, cx: &mut Context<ExplorerPage>) -> impl IntoElement {
+pub fn render(page: &mut ExplorerPane, cx: &mut Context<ExplorerPane>) -> impl IntoElement {
     let current_text = page.search_input.read(cx).text().to_string();
     if current_text != page.search_query {
         page.search_query = current_text;
@@ -206,10 +206,10 @@ pub fn render(page: &mut ExplorerPage, cx: &mut Context<ExplorerPage>) -> impl I
 }
 
 fn render_scope_button(
-    page: &ExplorerPage,
+    page: &ExplorerPane,
     scope: SearchScope,
     label: &str,
-    cx: &mut Context<ExplorerPage>,
+    cx: &mut Context<ExplorerPane>,
 ) -> impl IntoElement {
     let is_active = page.search_scope == scope;
     div()
@@ -232,10 +232,10 @@ fn render_scope_button(
 }
 
 fn render_type_button(
-    page: &ExplorerPage,
+    page: &ExplorerPane,
     search_type: SearchType,
     label: &str,
-    cx: &mut Context<ExplorerPage>,
+    cx: &mut Context<ExplorerPane>,
 ) -> impl IntoElement {
     let is_active = page.search_type == search_type;
     div()
@@ -261,8 +261,8 @@ fn render_type_button(
 fn render_toggle_button(
     label: &str,
     active: bool,
-    on_click: impl Fn(&mut ExplorerPage, &mut Context<ExplorerPage>) + 'static + Copy,
-    cx: &mut Context<ExplorerPage>,
+    on_click: impl Fn(&mut ExplorerPane, &mut Context<ExplorerPane>) + 'static + Copy,
+    cx: &mut Context<ExplorerPane>,
 ) -> impl IntoElement {
     div()
         .cursor_pointer()

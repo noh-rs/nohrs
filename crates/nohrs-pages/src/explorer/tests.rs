@@ -17,21 +17,32 @@ use gpui_component::resizable::ResizableState;
 use nohrs_core::config;
 use nohrs_services::fs::listing::FileEntryDto;
 
-use super::types::{SortKey, StatusLevel, ViewMode};
-use super::ExplorerPage;
+use nohrs_core::config::SplitDirection;
 
-/// Build a real `ExplorerPage` inside a test window. The sub-entities
+use super::types::{SortKey, StatusLevel, ViewMode};
+use super::{ExplorerPage, ExplorerPane};
+
+/// Build a real `ExplorerPane` inside a test window. The sub-entities
 /// (`ResizableState`, `InputState`) are window-bound, so the page is
 /// constructed in the `add_window` build closure — the canonical pattern for
 /// views whose dependencies need a `Window`.
-fn new_explorer(cx: &mut TestAppContext) -> WindowHandle<ExplorerPage> {
+fn new_explorer(cx: &mut TestAppContext) -> WindowHandle<ExplorerPane> {
     // gpui-component installs the `Theme` global and input/list subsystems its
     // widgets rely on; initialize it once before building any window.
     cx.update(gpui_component::init);
     cx.add_window(|window, cx| {
         let resizable = ResizableState::new(cx);
         let search_input = cx.new(|cx| InputState::new(window, cx));
-        ExplorerPage::new(resizable, search_input, None, cx.focus_handle())
+        ExplorerPane::new(resizable, search_input, None, cx.focus_handle())
+    })
+}
+
+/// Build the split-view container (`ExplorerPage`), which owns its panes.
+fn new_explorer_page(cx: &mut TestAppContext) -> WindowHandle<ExplorerPage> {
+    cx.update(gpui_component::init);
+    cx.add_window(|window, cx| {
+        let resizable = ResizableState::new(cx);
+        ExplorerPage::new(resizable, None, window, cx)
     })
 }
 
@@ -362,6 +373,136 @@ async fn reload_reports_error_for_unreadable_dir(cx: &mut TestAppContext) {
             let (_, is_error) = page.status_for_footer().expect("error status set");
             assert!(is_error);
             assert!(page.entries.is_empty());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn explorer_page_starts_with_single_pane(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .read_with(cx, |page, _cx| {
+            assert_eq!(page.pane_count(), 1);
+            assert_eq!(page.active_index(), 0);
+            assert!(!page.is_synced());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn split_opens_second_pane_then_reorients(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            assert_eq!(page.pane_count(), 2, "first split opens a second pane");
+            assert_eq!(page.active_index(), 1, "the new pane becomes active");
+            assert_eq!(page.direction(), SplitDirection::Vertical);
+
+            // The opposite split shortcut flips orientation without adding a pane
+            // (2-way cap, §3.1).
+            page.split(SplitDirection::Horizontal, window, cx);
+            assert_eq!(page.pane_count(), 2);
+            assert_eq!(page.direction(), SplitDirection::Horizontal);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn close_pane_keeps_at_least_one(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            assert_eq!(page.pane_count(), 2);
+
+            page.close_pane(1, window, cx);
+            assert_eq!(page.pane_count(), 1);
+            assert_eq!(page.active_index(), 0);
+
+            // The final pane can never be closed.
+            page.close_pane(0, window, cx);
+            assert_eq!(page.pane_count(), 1);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn set_active_selects_pane_in_bounds(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            page.set_active(0, window, cx);
+            assert_eq!(page.active_index(), 0);
+
+            // Out-of-range indices are ignored rather than panicking.
+            page.set_active(5, window, cx);
+            assert_eq!(page.active_index(), 0);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn panes_navigate_independently_by_default(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("left")).unwrap();
+    std::fs::create_dir(root.join("right")).unwrap();
+    let left = root.join("left").to_string_lossy().to_string();
+    let right = root.join("right").to_string_lossy().to_string();
+
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            let pane0 = page.pane(0);
+            let pane1 = page.pane(1);
+            pane0.update(cx, |pane, cx| pane.change_dir(left.clone(), window, cx));
+            pane1.update(cx, |pane, cx| pane.change_dir(right.clone(), window, cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .read_with(cx, |page, cx| {
+            assert_eq!(page.pane_cwd(0, cx).as_deref(), Some(left.as_str()));
+            assert_eq!(page.pane_cwd(1, cx).as_deref(), Some(right.as_str()));
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn synced_panes_mirror_navigation(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("shared")).unwrap();
+    let shared = root.join("shared").to_string_lossy().to_string();
+
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            let synced = config::Explorer {
+                split_direction: SplitDirection::Vertical,
+                synced_panes: true,
+            };
+            page.apply_config_explorer(&synced, cx);
+            assert!(page.is_synced());
+
+            let pane0 = page.pane(0);
+            pane0.update(cx, |pane, cx| pane.change_dir(shared.clone(), window, cx));
+        })
+        .unwrap();
+    // Navigation events are delivered on the next effect flush; mirror happens there.
+    cx.run_until_parked();
+    window
+        .read_with(cx, |page, cx| {
+            assert_eq!(page.pane_cwd(0, cx).as_deref(), Some(shared.as_str()));
+            assert_eq!(
+                page.pane_cwd(1, cx).as_deref(),
+                Some(shared.as_str()),
+                "sibling pane mirrors the active pane's path"
+            );
         })
         .unwrap();
 }

@@ -37,6 +37,24 @@
       ],
       "type": "object"
     },
+    "Explorer": {
+      "description": "Split-view and pane settings (see `docs/explorer-essentials.md` §3).",
+      "properties": {
+        "split_direction": {
+          "$ref": "#/$defs/SplitDirection",
+          "description": "Orientation a fresh split uses unless overridden by the split shortcut."
+        },
+        "synced_panes": {
+          "description": "When enabled, navigating in one pane mirrors the path into the others.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "split_direction",
+        "synced_panes"
+      ],
+      "type": "object"
+    },
     "SortOrder": {
       "description": "The column a directory listing is ordered by.",
       "oneOf": [
@@ -58,6 +76,21 @@
         {
           "const": "kind",
           "description": "Sort by entry kind (file/directory/...).",
+          "type": "string"
+        }
+      ]
+    },
+    "SplitDirection": {
+      "description": "How a 2-way split arranges its panes.",
+      "oneOf": [
+        {
+          "const": "vertical",
+          "description": "Panes side by side, separated by a vertical divider (`Cmd+\\`).",
+          "type": "string"
+        },
+        {
+          "const": "horizontal",
+          "description": "Panes stacked, separated by a horizontal divider (`Cmd+Shift+\\`).",
           "type": "string"
         }
       ]
@@ -131,6 +164,10 @@
       "$ref": "#/$defs/Diagnostics",
       "description": "Diagnostics / performance-logging settings."
     },
+    "explorer": {
+      "$ref": "#/$defs/Explorer",
+      "description": "Split-view and pane settings."
+    },
     "schema_version": {
       "description": "On-disk schema version. Must be [`CURRENT_SCHEMA_VERSION`] for this build.",
       "minimum": 0,
@@ -149,6 +186,7 @@
     "schema_version",
     "theme",
     "ui",
+    "explorer",
     "diagnostics"
   ],
   "title": "Config",

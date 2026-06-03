@@ -4,10 +4,10 @@ use nohrs_services::fs::listing::{list_dir_sync, FileEntryDto, ListParams};
 use gpui::{Context, Window};
 
 use super::entries;
-use super::types::StatusLevel;
-use super::ExplorerPage;
+use super::types::{PaneEvent, StatusLevel};
+use super::ExplorerPane;
 
-impl ExplorerPage {
+impl ExplorerPane {
     pub(crate) fn ensure_loaded(&mut self) {
         if !self.loaded {
             self.reload();
@@ -54,6 +54,17 @@ impl ExplorerPage {
             return;
         }
         self.close_search(window, cx);
+        self.push_history(path.clone());
+        self.cwd = path;
+        self.entries.clear();
+        self.reload();
+        cx.emit(PaneEvent::Navigated(self.cwd.clone()));
+        cx.notify();
+    }
+
+    // Records a forward navigation in the back/forward history, seeding the
+    // starting directory on first use and dropping any forward entries.
+    fn push_history(&mut self, path: String) {
         if self.history.is_empty() {
             self.history.push(self.cwd.clone());
             self.history_index = 0;
@@ -61,8 +72,18 @@ impl ExplorerPage {
         if self.history_index + 1 < self.history.len() {
             self.history.truncate(self.history_index + 1);
         }
-        self.history.push(path.clone());
+        self.history.push(path);
         self.history_index += 1;
+    }
+
+    /// Mirrors a path requested by a sibling pane while `synced_panes` is on
+    /// (§3.2). Unlike [`change_dir`], it does not re-emit a navigation event, so
+    /// the originating pane is not driven back into an update loop.
+    pub(crate) fn navigate_to_synced(&mut self, path: String, cx: &mut Context<Self>) {
+        if path == self.cwd {
+            return;
+        }
+        self.push_history(path.clone());
         self.cwd = path;
         self.entries.clear();
         self.reload();
@@ -77,6 +98,7 @@ impl ExplorerPage {
                 self.entries.clear();
                 self.close_search(window, cx);
                 self.reload();
+                cx.emit(PaneEvent::Navigated(self.cwd.clone()));
                 cx.notify();
             }
         }
@@ -90,6 +112,7 @@ impl ExplorerPage {
                 self.entries.clear();
                 self.close_search(window, cx);
                 self.reload();
+                cx.emit(PaneEvent::Navigated(self.cwd.clone()));
                 cx.notify();
             }
         }

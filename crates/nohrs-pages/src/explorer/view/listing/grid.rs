@@ -1,5 +1,5 @@
 use super::truncate_middle;
-use crate::explorer::ExplorerPage;
+use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::{Icon, IconName};
@@ -8,9 +8,9 @@ use nohrs_ui::theme::theme;
 
 /// Renders the file listing as a grid of icon tiles.
 pub fn render(
-    page: &mut ExplorerPage,
+    page: &mut ExplorerPane,
     window: &mut Window,
-    cx: &mut Context<ExplorerPage>,
+    cx: &mut Context<ExplorerPane>,
 ) -> AnyElement {
     let items = page.filtered_entries.clone();
     let mut grid = div()
@@ -36,12 +36,12 @@ pub fn render(
 }
 
 fn render_grid_item(
-    _page: &mut ExplorerPage,
+    _page: &mut ExplorerPane,
     item: FileEntryDto,
     ix: usize,
     selected: bool,
     _window: &mut Window,
-    cx: &mut Context<ExplorerPage>,
+    cx: &mut Context<ExplorerPane>,
 ) -> AnyElement {
     use nohrs_ui::components::file_list::{format_date, get_file_type, human_bytes};
 

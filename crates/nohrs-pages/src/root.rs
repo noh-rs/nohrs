@@ -15,7 +15,6 @@ use gpui::{
     div, prelude::*, px, rgb, AnyElement, App, AsyncWindowContext, Context, Entity, FocusHandle,
     Focusable, InteractiveElement, Render, WeakEntity, Window,
 };
-use gpui_component::input::InputState;
 use gpui_component::resizable::ResizableState;
 use gpui_component::{Icon, Root, Theme, ThemeMode as GpuiThemeMode};
 use nohrs_core::config::{self, Config, ConfigOverride, ConfigWatcher};
@@ -75,17 +74,10 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search_input = cx.new(|cx| InputState::new(window, cx));
         let focus_handle = cx.focus_handle();
 
-        let explorer = cx.new(|cx| {
-            ExplorerPage::new(
-                resizable,
-                search_input.clone(),
-                search_service.clone(),
-                cx.focus_handle(),
-            )
-        });
+        let explorer =
+            cx.new(|cx| ExplorerPage::new(resizable, search_service.clone(), window, cx));
         let git = cx.new(|_cx| GitPage::new());
         let s3 = cx.new(|_cx| S3Page::new());
         let extensions = cx.new(|_cx| ExtensionsPage::new());
@@ -143,8 +135,11 @@ impl RootView {
         });
 
         let ui = config.ui.clone();
-        self.explorer
-            .update(cx, |page, cx| page.apply_config_ui(&ui, cx));
+        let explorer_cfg = config.explorer.clone();
+        self.explorer.update(cx, |page, cx| {
+            page.apply_config_ui(&ui, cx);
+            page.apply_config_explorer(&explorer_cfg, cx);
+        });
 
         self.config = config;
         cx.notify();
@@ -302,7 +297,7 @@ impl Render for RootView {
                     // transient status and is always shown as an error.
                     let (status_message, status_is_error) = match &self.config_status {
                         Some(message) => (Some(message.clone()), true),
-                        None => match self.explorer.read(cx).status_for_footer() {
+                        None => match self.explorer.read(cx).status_for_footer(cx) {
                             Some((text, is_error)) => (Some(text), is_error),
                             None => (None, false),
                         },

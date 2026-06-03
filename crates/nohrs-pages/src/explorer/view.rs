@@ -1,4 +1,4 @@
-use crate::explorer::ExplorerPage;
+use crate::explorer::ExplorerPane;
 use gpui::*;
 use nohrs_ui::theme::theme;
 
@@ -13,9 +13,9 @@ pub mod sidebar;
 
 /// Renders the explorer page: header, sidebar, listing, and preview panes.
 pub fn render(
-    page: &mut ExplorerPage,
+    page: &mut ExplorerPane,
     window: &mut Window,
-    cx: &mut Context<ExplorerPage>,
+    cx: &mut Context<ExplorerPane>,
 ) -> impl IntoElement {
     page.ensure_loaded();
     page.update_editor_search(window, cx);

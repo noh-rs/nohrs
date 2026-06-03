@@ -4,7 +4,7 @@ use nohrs_services::search::{SearchScope, SearchService};
 use nohrs_services::syntax::SyntaxService;
 use nohrs_ui::components::file_list::FileListDelegate;
 
-use gpui::{px, size, Context, Entity, FocusHandle, Focusable};
+use gpui::{px, size, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, Window};
 use gpui_component::input::InputState;
 use gpui_component::list::List;
 use gpui_component::resizable::ResizableState;
@@ -17,7 +17,7 @@ use super::view::preview::editor::PreviewEditor;
 
 /// State for the file explorer page: the current directory listing, navigation
 /// history, sorting and filtering, search, preview, and view layout.
-pub struct ExplorerPage {
+pub struct ExplorerPane {
     /// Absolute path of the currently displayed directory.
     pub cwd: String,
     /// Navigation history of visited directories for back/forward.
@@ -126,14 +126,29 @@ pub struct ExplorerPage {
     pub status_message: Option<StatusMessage>,
 }
 
-impl Focusable for ExplorerPage {
+impl Focusable for ExplorerPane {
     fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl ExplorerPage {
-    /// Creates a new explorer page rooted at the current working directory,
+impl EventEmitter<PaneEvent> for ExplorerPane {}
+
+impl ExplorerPane {
+    /// Builds a self-contained pane, creating the window-bound sub-entities
+    /// (listing/preview resizable, search input) and focus handle it owns. Used
+    /// by the split-view container, which may hold several independent panes.
+    pub fn build(
+        search_service: Option<Arc<SearchService>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let resizable = ResizableState::new(cx);
+        let search_input = cx.new(|cx| InputState::new(window, cx));
+        Self::new(resizable, search_input, search_service, cx.focus_handle())
+    }
+
+    /// Creates a new explorer pane rooted at the current working directory,
     /// wired to the given resizable, search input, and optional search service.
     pub fn new(
         resizable: Entity<ResizableState>,

@@ -3,7 +3,7 @@ use nohrs_core::config;
 use gpui::{AppContext, AsyncWindowContext, Context, Window};
 
 use super::view::preview::editor::PreviewEditor;
-use super::ExplorerPage;
+use super::ExplorerPane;
 
 /// Result of reading a file for preview off the UI thread.
 enum PreviewOutcome {
@@ -118,7 +118,7 @@ fn line_start_offset(text: &str, target_line: usize) -> Option<usize> {
     None
 }
 
-impl ExplorerPage {
+impl ExplorerPane {
     pub(crate) fn open_preview(
         &mut self,
         path: String,
@@ -142,7 +142,7 @@ impl ExplorerPage {
 
         cx.spawn_in(
             window,
-            move |this: gpui::WeakEntity<ExplorerPage>, cx: &mut AsyncWindowContext| {
+            move |this: gpui::WeakEntity<ExplorerPane>, cx: &mut AsyncWindowContext| {
                 let mut cx = cx.clone();
                 async move {
                     let outcome = read_task.await;
