@@ -37,6 +37,155 @@
       ],
       "type": "object"
     },
+    "Indexing": {
+      "description": "Filesystem indexing settings.",
+      "properties": {
+        "exclude": {
+          "$ref": "#/$defs/IndexingExclude",
+          "description": "Paths and globs excluded from indexing."
+        },
+        "mode": {
+          "$ref": "#/$defs/IndexingMode",
+          "description": "When the background index is built and maintained."
+        }
+      },
+      "required": [
+        "mode",
+        "exclude"
+      ],
+      "type": "object"
+    },
+    "IndexingExclude": {
+      "description": "Paths and globs excluded from indexing.",
+      "properties": {
+        "globs": {
+          "description": "Glob patterns (e.g. `**/target/**`) to skip.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "paths": {
+          "description": "Literal paths (absolute or relative to the indexed root) to skip.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "paths",
+        "globs"
+      ],
+      "type": "object"
+    },
+    "IndexingMode": {
+      "description": "When the filesystem index is built and kept up to date.",
+      "oneOf": [
+        {
+          "const": "auto",
+          "description": "Index on demand and keep warm while the app is in use (the default).",
+          "type": "string"
+        },
+        {
+          "const": "always-on",
+          "description": "Continuously index in the background, even while idle.",
+          "type": "string"
+        },
+        {
+          "const": "manual",
+          "description": "Only index when explicitly requested.",
+          "type": "string"
+        }
+      ]
+    },
+    "Keybindings": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Keybinding overrides (config.md §2, draft for P3).\n\nA draft surface: a map of action identifier to key chord (e.g.\n`\"quit\" = \"ctrl-q\"`). An empty map — the default — means the built-in keymap\nis used. The action vocabulary and live re-binding are defined in P3; until\nthen values are stored and validated but not applied (hot reload is a\nrestart, config.md §5), so arbitrary action names are accepted without\nwarning to keep forward compatibility.",
+      "type": "object"
+    },
+    "Launcher": {
+      "description": "Launcher window settings.",
+      "properties": {
+        "hotkey": {
+          "description": "Global hotkey that summons the launcher.",
+          "type": "string"
+        },
+        "position_remember": {
+          "description": "Whether the launcher reopens at its last on-screen position.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "hotkey",
+        "position_remember"
+      ],
+      "type": "object"
+    },
+    "Plugins": {
+      "description": "Plugin selection (config.md §2, reserved for P4).\n\nType definition / reservation only: the lists are parsed and stored, but no\nplugin host loads them yet (that lands in P4).",
+      "properties": {
+        "community": {
+          "description": "Community plugins to enable, as `user/repo` or a URL.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "core": {
+          "description": "Built-in (first-party) plugins to enable, by id (e.g. `\"git\"`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "core",
+        "community"
+      ],
+      "type": "object"
+    },
+    "Search": {
+      "description": "Search backend selection.",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/SearchBackend",
+          "description": "Which engine answers content searches."
+        }
+      },
+      "required": [
+        "backend"
+      ],
+      "type": "object"
+    },
+    "SearchBackend": {
+      "description": "The engine used to answer content searches.",
+      "oneOf": [
+        {
+          "const": "auto",
+          "description": "Pick the best available backend at runtime (the default).",
+          "type": "string"
+        },
+        {
+          "const": "sqlite-fts",
+          "description": "SQLite full-text search (FTS5).",
+          "type": "string"
+        },
+        {
+          "const": "tantivy",
+          "description": "The Tantivy index.",
+          "type": "string"
+        },
+        {
+          "const": "ripgrep",
+          "description": "External `ripgrep`.",
+          "type": "string"
+        }
+      ]
+    },
     "SortOrder": {
       "description": "The column a directory listing is ordered by.",
       "oneOf": [
@@ -125,16 +274,36 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "The fully merged, validated configuration.\n\nModels the P1 surface (`theme` / `ui`) plus the P2 `[diagnostics]` section.\n`[keybindings]` and `[plugins]` are recognised as reserved sections (see\n[`is_reserved_section`]) but intentionally not deserialized yet, so their\nfuture shapes can be added without breaking older files.",
+  "description": "The fully merged, validated configuration.\n\nModels the P1 surface (`theme` / `ui`) plus the P2 sections: `[indexing]`,\n`[search]`, `[launcher]`, and `[diagnostics]`. `[keybindings]` and\n`[plugins]` are reserved here as forward-compatible drafts — their types are\ndefined and parsed leniently so files can adopt them now, but the values do\nnot drive behaviour yet (keybindings land in P3, plugins in P4; see\n`docs/config.md` §2/§5).",
   "properties": {
     "diagnostics": {
       "$ref": "#/$defs/Diagnostics",
       "description": "Diagnostics / performance-logging settings."
     },
+    "indexing": {
+      "$ref": "#/$defs/Indexing",
+      "description": "Filesystem indexing strategy and exclusions."
+    },
+    "keybindings": {
+      "$ref": "#/$defs/Keybindings",
+      "description": "Keybinding overrides (draft; full support in P3). Empty means the\nbuilt-in keymap is used."
+    },
+    "launcher": {
+      "$ref": "#/$defs/Launcher",
+      "description": "Launcher window settings."
+    },
+    "plugins": {
+      "$ref": "#/$defs/Plugins",
+      "description": "Plugin selection (reserved; full support in P4)."
+    },
     "schema_version": {
       "description": "On-disk schema version. Must be [`CURRENT_SCHEMA_VERSION`] for this build.",
       "minimum": 0,
       "type": "integer"
+    },
+    "search": {
+      "$ref": "#/$defs/Search",
+      "description": "Search backend selection."
     },
     "theme": {
       "$ref": "#/$defs/Theme",
@@ -149,6 +318,11 @@
     "schema_version",
     "theme",
     "ui",
+    "keybindings",
+    "plugins",
+    "indexing",
+    "search",
+    "launcher",
     "diagnostics"
   ],
   "title": "Config",

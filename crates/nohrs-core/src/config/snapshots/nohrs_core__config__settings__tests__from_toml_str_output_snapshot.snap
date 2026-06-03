@@ -14,6 +14,27 @@ expression: parsed
             show_hidden: true,
             icon_pack: "default",
         },
+        keybindings: Keybindings {
+            bindings: {},
+        },
+        plugins: Plugins {
+            core: [],
+            community: [],
+        },
+        indexing: Indexing {
+            mode: Auto,
+            exclude: IndexingExclude {
+                paths: [],
+                globs: [],
+            },
+        },
+        search: Search {
+            backend: Auto,
+        },
+        launcher: Launcher {
+            hotkey: "Cmd+Shift+Space",
+            position_remember: true,
+        },
         diagnostics: Diagnostics {
             store: DiagnosticsStore {
                 log_all_queries: false,
