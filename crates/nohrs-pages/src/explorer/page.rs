@@ -84,6 +84,9 @@ pub struct ExplorerPage {
     direction: SplitDirection,
     /// Whether navigation in one pane mirrors into the others (§3.2).
     synced_panes: bool,
+    // Last-applied `[ui]` settings, replayed onto panes opened by a later split
+    // so they match config rather than reverting to pane defaults.
+    ui: Ui,
     // Resizable state for the divider between the two panes.
     pane_resizable: Entity<ResizableState>,
     search_service: Option<Arc<SearchService>>,
@@ -113,6 +116,7 @@ impl ExplorerPage {
             active: 0,
             direction: SplitDirection::default(),
             synced_panes: false,
+            ui: Ui::default(),
             pane_resizable,
             search_service,
             focus_handle: cx.focus_handle(),
@@ -131,13 +135,17 @@ impl ExplorerPage {
     ) -> usize {
         let search_service = self.search_service.clone();
         let pane = cx.new(|cx| ExplorerPane::build(search_service, window, cx));
-        if let Some(cwd) = cwd {
-            pane.update(cx, |pane, _cx| {
+        // Replay the active `[ui]` config so a pane opened by a split inherits the
+        // user's sort/hidden/icon settings instead of reverting to pane defaults.
+        let ui = self.ui.clone();
+        pane.update(cx, |pane, cx| {
+            pane.apply_config_ui(&ui, cx);
+            if let Some(cwd) = cwd {
                 pane.cwd = cwd;
                 // Force a reload of the new root on the next render.
                 pane.loaded = false;
-            });
-        }
+            }
+        });
         let subscription = cx.subscribe(&pane, Self::on_pane_event);
         self.panes.push(pane);
         self.pane_subscriptions.push(subscription);
@@ -163,6 +171,10 @@ impl ExplorerPage {
             .collect();
         for pane in targets {
             let path = path.clone();
+            // `navigate_to_synced` (not `change_dir`) is deliberate: it does not
+            // re-emit `PaneEvent::Navigated`, which would mirror back to the
+            // source pane and loop indefinitely. Don't replace it with a regular
+            // navigation method.
             pane.update(cx, |pane, cx| pane.navigate_to_synced(path, cx));
         }
     }
@@ -240,6 +252,7 @@ impl ExplorerPage {
 
     /// Applies the `[ui]` config section to every pane (§5 of `config.md`).
     pub fn apply_config_ui(&mut self, ui: &Ui, cx: &mut Context<Self>) {
+        self.ui = ui.clone();
         for pane in self.panes.clone() {
             pane.update(cx, |pane, cx| pane.apply_config_ui(ui, cx));
         }

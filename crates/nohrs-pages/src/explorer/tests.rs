@@ -506,3 +506,67 @@ async fn synced_panes_mirror_navigation(cx: &mut TestAppContext) {
         })
         .unwrap();
 }
+
+#[gpui::test]
+async fn synced_navigation_clears_stale_search_state(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("shared")).unwrap();
+    let shared = root.join("shared").to_string_lossy().to_string();
+
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            let synced = config::Explorer {
+                split_direction: SplitDirection::Vertical,
+                synced_panes: true,
+            };
+            page.apply_config_explorer(&synced, cx);
+
+            // Leave the mirrored pane with a stale filter from a prior search.
+            page.pane(1).update(cx, |pane, _cx| {
+                pane.search_query = "stale".to_string();
+                pane.search_visible = true;
+            });
+            page.pane(0)
+                .update(cx, |pane, cx| pane.change_dir(shared.clone(), window, cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .read_with(cx, |page, cx| {
+            let pane1 = page.pane(1);
+            let pane1 = pane1.read(cx);
+            assert!(
+                pane1.search_query.is_empty(),
+                "stale filter cleared on sync"
+            );
+            assert!(!pane1.search_visible);
+            assert!(pane1.search_results.is_none());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn split_pane_inherits_applied_ui_config(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            let ui = config::Ui {
+                default_sort: config::SortOrder::Size,
+                show_hidden: true,
+                icon_pack: "default".to_string(),
+            };
+            page.apply_config_ui(&ui, cx);
+
+            // A pane opened by a later split should pick up the applied config
+            // rather than reverting to pane defaults.
+            page.split(SplitDirection::Vertical, window, cx);
+            let pane1 = page.pane(1);
+            let pane1 = pane1.read(cx);
+            assert!(pane1.show_hidden, "new pane inherits show_hidden");
+            assert!(pane1.sort_key == SortKey::Size, "new pane inherits sort");
+        })
+        .unwrap();
+}

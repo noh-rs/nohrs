@@ -83,6 +83,13 @@ impl ExplorerPane {
         if path == self.cwd {
             return;
         }
+        // Clear search state so mirrored navigation doesn't leave a stale filter
+        // or full-text results from the previous directory visible. This mirrors
+        // the `close_search` reset on `change_dir`, minus the window-bound editor
+        // sync (the subscription that drives sync has no `Window`).
+        self.search_visible = false;
+        self.search_results = None;
+        self.search_query.clear();
         self.push_history(path.clone());
         self.cwd = path;
         self.entries.clear();
