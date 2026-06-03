@@ -9,16 +9,15 @@
 
 use std::sync::{Arc, Once};
 
-use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable, ResizableState};
-use gpui_component::{Icon, IconName};
+use gpui_component::resizable::ResizableState;
 use nohrs_core::config::{Explorer as ExplorerConfig, SplitDirection, Ui};
 use nohrs_services::search::SearchService;
 use nohrs_ui::theme::theme;
 
 use super::state::ExplorerPane;
 use super::types::PaneEvent;
+use crate::pane_group::PaneGroup;
 
 // Key context the pane shortcuts are bound under, so they only fire while the
 // explorer (and not another page) is focused.
@@ -73,23 +72,22 @@ fn bind_pane_keys(cx: &mut App) {
 
 /// The explorer page: a 2-way split container over independently-navigating
 /// panes. With a single pane it renders exactly like an unsplit explorer.
+///
+/// The split/tab/resize machinery lives in the content-agnostic [`PaneGroup`];
+/// `ExplorerPage` adds the explorer-specific layer on top: replaying `[ui]`
+/// config onto new panes and mirroring navigation across panes when
+/// `synced_panes` is enabled (§3.2). It keeps a per-pane subscription Vec
+/// index-aligned with `group.panes()` by funneling every create/remove through
+/// `add_explorer_pane` / `close_pane`.
 pub struct ExplorerPage {
-    // Invariant: always non-empty and at most two entries (2-way cap, §3.1).
-    panes: Vec<Entity<ExplorerPane>>,
-    // Subscriptions for pane navigation events, index-aligned with `panes`.
+    group: PaneGroup<ExplorerPane>,
+    // Subscriptions for pane navigation events, index-aligned with `group.panes()`.
     pane_subscriptions: Vec<Subscription>,
-    /// Index of the pane keyboard input and shortcuts act on.
-    active: usize,
-    /// Orientation a split uses; seeded from config, toggled by the shortcuts.
-    direction: SplitDirection,
     /// Whether navigation in one pane mirrors into the others (§3.2).
     synced_panes: bool,
     // Last-applied `[ui]` settings, replayed onto panes opened by a later split
     // so they match config rather than reverting to pane defaults.
     ui: Ui,
-    // Resizable state for the divider between the two panes.
-    pane_resizable: Entity<ResizableState>,
-    search_service: Option<Arc<SearchService>>,
     focus_handle: FocusHandle,
 }
 
@@ -110,46 +108,57 @@ impl ExplorerPage {
         cx: &mut Context<Self>,
     ) -> Self {
         bind_pane_keys(cx);
+        let build_search_service = search_service.clone();
+        let (group, first_pane) = PaneGroup::new(
+            Box::new(move |window, cx| {
+                let search_service = build_search_service.clone();
+                cx.new(|cx| ExplorerPane::build(search_service, window, cx))
+            }),
+            pane_resizable,
+            window,
+            cx,
+        );
         let mut page = Self {
-            panes: Vec::new(),
+            group,
             pane_subscriptions: Vec::new(),
-            active: 0,
-            direction: SplitDirection::default(),
             synced_panes: false,
             ui: Ui::default(),
-            pane_resizable,
-            search_service,
             focus_handle: cx.focus_handle(),
         };
-        page.add_pane(None, window, cx);
+        let subscription = cx.subscribe(&first_pane, Self::on_pane_event);
+        page.pane_subscriptions.push(subscription);
+        // The root pane shows its sidebar; panes opened by a later split default
+        // to hidden (issue #164, §2).
+        first_pane.update(cx, |pane, _cx| pane.sidebar_visible = true);
         page
     }
 
-    // Creates a pane (optionally rooted at `cwd`), subscribes to its navigation
-    // events, and appends it. Returns the new pane's index.
-    fn add_pane(
+    // Creates a pane (optionally rooted at `cwd`) through the group, subscribes to
+    // its navigation events keeping `pane_subscriptions` index-aligned, and
+    // replays the active `[ui]` config. Returns the new pane's index.
+    fn add_explorer_pane(
         &mut self,
         cwd: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> usize {
-        let search_service = self.search_service.clone();
-        let pane = cx.new(|cx| ExplorerPane::build(search_service, window, cx));
+        let (index, pane) = self.group.add_pane(window, cx);
+        let subscription = cx.subscribe(&pane, Self::on_pane_event);
+        self.pane_subscriptions.push(subscription);
         // Replay the active `[ui]` config so a pane opened by a split inherits the
         // user's sort/hidden/icon settings instead of reverting to pane defaults.
         let ui = self.ui.clone();
         pane.update(cx, |pane, cx| {
             pane.apply_config_ui(&ui, cx);
+            // Split-created panes start with the sidebar collapsed (issue #164).
+            pane.sidebar_visible = false;
             if let Some(cwd) = cwd {
                 pane.cwd = cwd;
                 // Force a reload of the new root on the next render.
                 pane.loaded = false;
             }
         });
-        let subscription = cx.subscribe(&pane, Self::on_pane_event);
-        self.panes.push(pane);
-        self.pane_subscriptions.push(subscription);
-        self.panes.len() - 1
+        index
     }
 
     // Mirrors a pane's navigation into its siblings while syncing is enabled.
@@ -164,7 +173,8 @@ impl ExplorerPage {
         }
         let PaneEvent::Navigated(path) = event;
         let targets: Vec<Entity<ExplorerPane>> = self
-            .panes
+            .group
+            .panes()
             .iter()
             .filter(|pane| pane.entity_id() != source.entity_id())
             .cloned()
@@ -189,71 +199,50 @@ impl ExplorerPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.direction = direction;
-        if self.panes.len() < 2 {
-            let cwd = self.active_pane().read(cx).cwd.clone();
-            let index = self.add_pane(Some(cwd), window, cx);
-            self.active = index;
+        self.group.set_direction(direction);
+        if self.group.pane_count() < 2 {
+            let cwd = self.group.active_pane().read(cx).cwd.clone();
+            let index = self.add_explorer_pane(Some(cwd), window, cx);
+            self.group.set_active(index, window, cx);
+        } else {
+            self.group.focus_active(window, cx);
         }
-        self.focus_active(window, cx);
         cx.notify();
     }
 
     /// Closes a pane, keeping at least one open (§3.1). No-op for the last pane.
     pub fn close_pane(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.panes.len() <= 1 || index >= self.panes.len() {
-            return;
+        if self.group.remove_pane(index, window, cx) {
+            // Dropping the subscription deregisters the removed pane's event
+            // handler; removing at the same index keeps the Vecs aligned.
+            drop(self.pane_subscriptions.remove(index));
+            cx.notify();
         }
-        self.panes.remove(index);
-        // Dropping the subscription deregisters the removed pane's event handler.
-        drop(self.pane_subscriptions.remove(index));
-        if self.active >= self.panes.len() {
-            self.active = self.panes.len() - 1;
-        }
-        self.focus_active(window, cx);
-        cx.notify();
     }
 
     /// Makes `index` the active pane and moves keyboard focus to it.
     pub fn set_active(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if index >= self.panes.len() || index == self.active {
-            return;
+        if self.group.set_active(index, window, cx) {
+            cx.notify();
         }
-        self.active = index;
-        self.focus_active(window, cx);
-        cx.notify();
     }
 
     fn focus_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.panes.len() < 2 {
-            return;
+        if self.group.focus_next(window, cx) {
+            cx.notify();
         }
-        self.set_active((self.active + 1) % self.panes.len(), window, cx);
     }
 
     fn focus_prev(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.panes.len() < 2 {
-            return;
+        if self.group.focus_prev(window, cx) {
+            cx.notify();
         }
-        let count = self.panes.len();
-        self.set_active((self.active + count - 1) % count, window, cx);
-    }
-
-    fn active_pane(&self) -> &Entity<ExplorerPane> {
-        // `active` is kept in bounds by every mutator; fall back to the first
-        // pane rather than panicking should that invariant ever be violated.
-        self.panes.get(self.active).unwrap_or(&self.panes[0])
-    }
-
-    fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let handle = self.active_pane().read(cx).focus_handle.clone();
-        handle.focus(window);
     }
 
     /// Applies the `[ui]` config section to every pane (§5 of `config.md`).
     pub fn apply_config_ui(&mut self, ui: &Ui, cx: &mut Context<Self>) {
         self.ui = ui.clone();
-        for pane in self.panes.clone() {
+        for pane in self.group.panes().to_vec() {
             pane.update(cx, |pane, cx| pane.apply_config_ui(ui, cx));
         }
     }
@@ -264,15 +253,15 @@ impl ExplorerPage {
     pub fn apply_config_explorer(&mut self, explorer: &ExplorerConfig, cx: &mut Context<Self>) {
         // Only adopt the configured orientation while unsplit, so a config reload
         // does not silently flip a split the user arranged via the shortcuts.
-        if self.panes.len() < 2 {
-            self.direction = explorer.split_direction;
+        if self.group.pane_count() < 2 {
+            self.group.set_direction(explorer.split_direction);
         }
         let enabling = explorer.synced_panes && !self.synced_panes;
         self.synced_panes = explorer.synced_panes;
         if enabling {
-            let path = self.active_pane().read(cx).cwd.clone();
-            let active_id = self.active_pane().entity_id();
-            for pane in self.panes.clone() {
+            let path = self.group.active_pane().read(cx).cwd.clone();
+            let active_id = self.group.active_pane().entity_id();
+            for pane in self.group.panes().to_vec() {
                 if pane.entity_id() != active_id {
                     let path = path.clone();
                     pane.update(cx, |pane, cx| pane.navigate_to_synced(path, cx));
@@ -285,136 +274,17 @@ impl ExplorerPage {
     /// Footer status for the active pane (a config error in `RootView` still
     /// takes precedence over this).
     pub fn status_for_footer(&self, cx: &App) -> Option<(String, bool)> {
-        self.active_pane().read(cx).status_for_footer()
-    }
-
-    fn render_pane(&mut self, index: usize, cx: &mut Context<Self>) -> AnyElement {
-        let pane = self.panes[index].clone();
-        let split = self.panes.len() > 1;
-        let is_active = split && index == self.active;
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .min_w(px(0.0))
-            .min_h(px(0.0))
-            .when(is_active, |this| {
-                this.border_t_2().border_color(rgb(theme::ACCENT))
-            })
-            .when(split && !is_active, |this| {
-                this.border_t_2().border_color(rgb(theme::BG))
-            })
-            // Clicking anywhere in a pane makes it the active one.
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event, window, cx| this.set_active(index, window, cx)),
-            )
-            .child(self.render_tab_bar(index, split, cx))
-            .child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(pane))
-            .into_any_element()
-    }
-
-    // The pane-local tab bar: foundation for per-pane tabs (§3.3, full tabs in
-    // #62). For now it shows the current directory as a single tab plus the
-    // pane-close button, which only appears once a split exists.
-    fn render_tab_bar(
-        &self,
-        index: usize,
-        split: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let cwd = self.panes[index].read(cx).cwd.clone();
-        let label = std::path::Path::new(&cwd)
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or(cwd);
-        let is_active = split && index == self.active;
-
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .h(px(32.0))
-            .w_full()
-            .px(px(6.0))
-            .gap(px(4.0))
-            .bg(rgb(theme::TOOLBAR_BG))
-            .border_b_1()
-            .border_color(rgb(theme::BORDER))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .h(px(24.0))
-                    .px(px(10.0))
-                    .rounded(px(6.0))
-                    .text_sm()
-                    .when(is_active, |this| {
-                        this.bg(rgb(theme::TOOLBAR_ACTIVE_BG))
-                            .text_color(rgb(theme::TOOLBAR_ACTIVE_TEXT))
-                    })
-                    .when(!is_active, |this| this.text_color(rgb(theme::TOOLBAR_TEXT)))
-                    .child(label),
-            )
-            // Placeholder for the new-tab affordance fleshed out in #62.
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(20.0))
-                    .rounded(px(4.0))
-                    .child(
-                        Icon::new(IconName::Plus)
-                            .size_4()
-                            .text_color(rgb(theme::MUTED)),
-                    ),
-            )
-            .child(div().flex_grow())
-            .when(split, |this| {
-                this.child(
-                    div()
-                        .id(("close-pane", index))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(22.0))
-                        .rounded(px(4.0))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(rgb(theme::TOOLBAR_HOVER)))
-                        .on_click(cx.listener(move |this, _event, window, cx| {
-                            this.close_pane(index, window, cx);
-                        }))
-                        .child(
-                            Icon::new(IconName::Close)
-                                .size_4()
-                                .text_color(rgb(theme::TOOLBAR_TEXT)),
-                        ),
-                )
-            })
+        self.group.active_pane().read(cx).status_for_footer()
     }
 }
 
 impl Render for ExplorerPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = if self.panes.len() > 1 {
-            let first = self.render_pane(0, cx);
-            let second = self.render_pane(1, cx);
-            let group = match self.direction {
-                SplitDirection::Vertical => {
-                    h_resizable("explorer-panes", self.pane_resizable.clone())
-                }
-                SplitDirection::Horizontal => {
-                    v_resizable("explorer-panes", self.pane_resizable.clone())
-                }
-            };
-            group
-                .child(resizable_panel().child(first))
-                .child(resizable_panel().child(second))
-                .into_any_element()
-        } else {
-            self.render_pane(0, cx)
-        };
+        let body = self.group.render(
+            cx,
+            |this, index, window, cx| this.set_active(index, window, cx),
+            |this, index, window, cx| this.close_pane(index, window, cx),
+        );
 
         div()
             .size_full()
@@ -454,15 +324,15 @@ impl crate::Page for ExplorerPage {
 #[cfg(test)]
 impl ExplorerPage {
     pub(crate) fn pane_count(&self) -> usize {
-        self.panes.len()
+        self.group.pane_count()
     }
 
     pub(crate) fn active_index(&self) -> usize {
-        self.active
+        self.group.active()
     }
 
     pub(crate) fn direction(&self) -> SplitDirection {
-        self.direction
+        self.group.direction()
     }
 
     pub(crate) fn is_synced(&self) -> bool {
@@ -470,10 +340,21 @@ impl ExplorerPage {
     }
 
     pub(crate) fn pane(&self, index: usize) -> Entity<ExplorerPane> {
-        self.panes[index].clone()
+        self.group
+            .pane(index)
+            .expect("test requested an out-of-range pane")
     }
 
     pub(crate) fn pane_cwd(&self, index: usize, cx: &App) -> Option<String> {
-        self.panes.get(index).map(|pane| pane.read(cx).cwd.clone())
+        self.group
+            .panes()
+            .get(index)
+            .map(|pane| pane.read(cx).cwd.clone())
+    }
+
+    /// Number of live per-pane subscriptions; used to assert the subscription Vec
+    /// stays aligned with the pane Vec across splits/closes.
+    pub(crate) fn subscription_count(&self) -> usize {
+        self.pane_subscriptions.len()
     }
 }

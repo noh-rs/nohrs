@@ -87,6 +87,8 @@ pub struct ExplorerPane {
     pub last_click_info: Option<LastClickInfo>,
     /// Whether the listing is shown as a list or a grid.
     pub view_mode: ViewMode,
+    /// Whether the left quick-access sidebar is shown (toggled with `Cmd/Ctrl+B`).
+    pub sidebar_visible: bool,
 
     // Search
     /// The full-text search service, when available.
@@ -133,6 +135,15 @@ impl Focusable for ExplorerPane {
 }
 
 impl EventEmitter<PaneEvent> for ExplorerPane {}
+
+impl crate::pane_group::PaneItem for ExplorerPane {
+    fn tab_title(&self, _cx: &gpui::App) -> String {
+        std::path::Path::new(&self.cwd)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| self.cwd.clone())
+    }
+}
 
 impl ExplorerPane {
     /// Builds a self-contained pane, creating the window-bound sub-entities
@@ -190,6 +201,9 @@ impl ExplorerPane {
             focus_requested: false,
             last_click_info: None,
             view_mode: ViewMode::List,
+            // Hidden by default; the root pane is revealed by `ExplorerPage::new`,
+            // split-created panes stay collapsed (issue #164, §2).
+            sidebar_visible: false,
 
             // Search
             search_service,
@@ -219,6 +233,13 @@ impl ExplorerPane {
 
     pub(crate) fn clear_status(&mut self) {
         self.status_message = None;
+    }
+
+    /// Toggles the left quick-access sidebar (issue #164, §2). Mirrors the
+    /// `toggle_search` open/close pattern.
+    pub(crate) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_visible = !self.sidebar_visible;
+        cx.notify();
     }
 
     /// Returns the current status text and whether it represents an error, for

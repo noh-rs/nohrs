@@ -10,6 +10,8 @@ pub mod explorer;
 pub mod extensions;
 /// The git page.
 pub mod git;
+/// A reusable 2-way split/tab container shared across pages.
+pub mod pane_group;
 /// The application root view that hosts the sidebar and active page.
 pub mod root;
 /// The S3 page.
