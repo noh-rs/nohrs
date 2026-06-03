@@ -5,36 +5,36 @@
       "properties": {
         "store": {
           "$ref": "#/$defs/DiagnosticsStore",
+          "default": {
+            "log_all_queries": false,
+            "log_redb_ops": false,
+            "slow_query_ms": 0
+          },
           "description": "Performance logging for the persistence layer (`nohrs-store`)."
         }
       },
-      "required": [
-        "store"
-      ],
       "type": "object"
     },
     "DiagnosticsStore": {
       "description": "Performance logging for the SQLite / redb store. All off by default, so a\ndefault config adds no overhead. Output goes through `tracing` (targets\n`nohrs_store::sql` / `nohrs_store::redb`) and is filterable with `RUST_LOG`.",
       "properties": {
         "log_all_queries": {
+          "default": false,
           "description": "Log every SQL query at `debug` (verbose).",
           "type": "boolean"
         },
         "log_redb_ops": {
+          "default": false,
           "description": "Log redb `get`/`put`/`delete`/`batch` operations and their durations.",
           "type": "boolean"
         },
         "slow_query_ms": {
+          "default": 0,
           "description": "Log SQL queries slower than this many milliseconds at `warn`. Zero (the\ndefault) disables slow-query logging.",
           "minimum": 0,
           "type": "integer"
         }
       },
-      "required": [
-        "log_all_queries",
-        "slow_query_ms",
-        "log_redb_ops"
-      ],
       "type": "object"
     },
     "Indexing": {
@@ -42,23 +42,25 @@
       "properties": {
         "exclude": {
           "$ref": "#/$defs/IndexingExclude",
+          "default": {
+            "globs": [],
+            "paths": []
+          },
           "description": "Paths and globs excluded from indexing."
         },
         "mode": {
           "$ref": "#/$defs/IndexingMode",
+          "default": "auto",
           "description": "When the background index is built and maintained."
         }
       },
-      "required": [
-        "mode",
-        "exclude"
-      ],
       "type": "object"
     },
     "IndexingExclude": {
       "description": "Paths and globs excluded from indexing.",
       "properties": {
         "globs": {
+          "default": [],
           "description": "Glob patterns (e.g. `**/target/**`) to skip.",
           "items": {
             "type": "string"
@@ -66,6 +68,7 @@
           "type": "array"
         },
         "paths": {
+          "default": [],
           "description": "Literal paths (absolute or relative to the indexed root) to skip.",
           "items": {
             "type": "string"
@@ -73,10 +76,6 @@
           "type": "array"
         }
       },
-      "required": [
-        "paths",
-        "globs"
-      ],
       "type": "object"
     },
     "IndexingMode": {
@@ -110,24 +109,23 @@
       "description": "Launcher window settings.",
       "properties": {
         "hotkey": {
+          "default": "Cmd+Shift+Space",
           "description": "Global hotkey that summons the launcher.",
           "type": "string"
         },
         "position_remember": {
+          "default": true,
           "description": "Whether the launcher reopens at its last on-screen position.",
           "type": "boolean"
         }
       },
-      "required": [
-        "hotkey",
-        "position_remember"
-      ],
       "type": "object"
     },
     "Plugins": {
       "description": "Plugin selection (config.md §2, reserved for P4).\n\nType definition / reservation only: the lists are parsed and stored, but no\nplugin host loads them yet (that lands in P4).",
       "properties": {
         "community": {
+          "default": [],
           "description": "Community plugins to enable, as `user/repo` or a URL.",
           "items": {
             "type": "string"
@@ -135,6 +133,7 @@
           "type": "array"
         },
         "core": {
+          "default": [],
           "description": "Built-in (first-party) plugins to enable, by id (e.g. `\"git\"`).",
           "items": {
             "type": "string"
@@ -142,10 +141,6 @@
           "type": "array"
         }
       },
-      "required": [
-        "core",
-        "community"
-      ],
       "type": "object"
     },
     "Search": {
@@ -153,12 +148,10 @@
       "properties": {
         "backend": {
           "$ref": "#/$defs/SearchBackend",
+          "default": "auto",
           "description": "Which engine answers content searches."
         }
       },
-      "required": [
-        "backend"
-      ],
       "type": "object"
     },
     "SearchBackend": {
@@ -215,18 +208,16 @@
       "description": "Appearance settings.",
       "properties": {
         "accent": {
+          "default": "blue",
           "description": "Accent colour, given as a named colour or a hex string. Full\ncustomization lands in P5; P1 stores the value and applies the mode.",
           "type": "string"
         },
         "mode": {
           "$ref": "#/$defs/ThemeMode",
+          "default": "system",
           "description": "Light/dark selection, or following the OS."
         }
       },
-      "required": [
-        "mode",
-        "accent"
-      ],
       "type": "object"
     },
     "ThemeMode": {
@@ -254,77 +245,100 @@
       "properties": {
         "default_sort": {
           "$ref": "#/$defs/SortOrder",
+          "default": "name",
           "description": "Column the listing is sorted by on load."
         },
         "icon_pack": {
+          "default": "default",
           "description": "Identifier of the icon pack used to render entries.",
           "type": "string"
         },
         "show_hidden": {
+          "default": false,
           "description": "Whether dotfiles are shown in listings.",
           "type": "boolean"
         }
       },
-      "required": [
-        "default_sort",
-        "show_hidden",
-        "icon_pack"
-      ],
       "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "The fully merged, validated configuration.\n\nModels the P1 surface (`theme` / `ui`) plus the P2 sections: `[indexing]`,\n`[search]`, `[launcher]`, and `[diagnostics]`. `[keybindings]` and\n`[plugins]` are reserved here as forward-compatible drafts — their types are\ndefined and parsed leniently so files can adopt them now, but the values do\nnot drive behaviour yet (keybindings land in P3, plugins in P4; see\n`docs/config.md` §2/§5).",
+  "description": "The fully merged, validated configuration.\n\nModels the P1 surface (`theme` / `ui`) plus the P2 sections: `[indexing]`,\n`[search]`, `[launcher]`, and `[diagnostics]`. `[keybindings]` and\n`[plugins]` are reserved here as forward-compatible drafts — their types are\ndefined and parsed leniently so files can adopt them now, but the values do\nnot drive behaviour yet (keybindings land in P3, plugins in P4; see\n`docs/config.md` §2/§5).\n\nOnly `theme`, `ui`, and `diagnostics` are consumed at runtime today. The\nremaining sections (`keybindings`, `plugins`, `indexing`, `search`,\n`launcher`) are accepted and validated now so files and editor completion can\nadopt them, but editing them has no effect until the matching subsystem is\nwired in a later phase — see the per-section notes and `docs/config.md` §5.\n\nEvery field is `#[serde(default)]`: the loader starts from\n[`Config::default`] and overlays only the keys present in the file, so a\nmissing section is filled with its default rather than rejected. The\ngenerated schema therefore has no `required` properties, matching the\nloader (an empty `config.toml` is valid).",
   "properties": {
     "diagnostics": {
       "$ref": "#/$defs/Diagnostics",
+      "default": {
+        "store": {
+          "log_all_queries": false,
+          "log_redb_ops": false,
+          "slow_query_ms": 0
+        }
+      },
       "description": "Diagnostics / performance-logging settings."
     },
     "indexing": {
       "$ref": "#/$defs/Indexing",
+      "default": {
+        "exclude": {
+          "globs": [],
+          "paths": []
+        },
+        "mode": "auto"
+      },
       "description": "Filesystem indexing strategy and exclusions."
     },
     "keybindings": {
       "$ref": "#/$defs/Keybindings",
+      "default": {},
       "description": "Keybinding overrides (draft; full support in P3). Empty means the\nbuilt-in keymap is used."
     },
     "launcher": {
       "$ref": "#/$defs/Launcher",
+      "default": {
+        "hotkey": "Cmd+Shift+Space",
+        "position_remember": true
+      },
       "description": "Launcher window settings."
     },
     "plugins": {
       "$ref": "#/$defs/Plugins",
+      "default": {
+        "community": [],
+        "core": []
+      },
       "description": "Plugin selection (reserved; full support in P4)."
     },
     "schema_version": {
+      "default": 1,
       "description": "On-disk schema version. Must be [`CURRENT_SCHEMA_VERSION`] for this build.",
       "minimum": 0,
       "type": "integer"
     },
     "search": {
       "$ref": "#/$defs/Search",
+      "default": {
+        "backend": "auto"
+      },
       "description": "Search backend selection."
     },
     "theme": {
       "$ref": "#/$defs/Theme",
+      "default": {
+        "accent": "blue",
+        "mode": "system"
+      },
       "description": "Appearance settings."
     },
     "ui": {
       "$ref": "#/$defs/Ui",
+      "default": {
+        "default_sort": "name",
+        "icon_pack": "default",
+        "show_hidden": false
+      },
       "description": "Explorer / view settings."
     }
   },
-  "required": [
-    "schema_version",
-    "theme",
-    "ui",
-    "keybindings",
-    "plugins",
-    "indexing",
-    "search",
-    "launcher",
-    "diagnostics"
-  ],
   "title": "Config",
   "type": "object"
 }

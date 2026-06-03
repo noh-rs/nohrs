@@ -29,7 +29,20 @@ pub const SCHEMA_URL: &str = "https://nohrs.app/schema/config.schema.json";
 /// defined and parsed leniently so files can adopt them now, but the values do
 /// not drive behaviour yet (keybindings land in P3, plugins in P4; see
 /// `docs/config.md` §2/§5).
+///
+/// Only `theme`, `ui`, and `diagnostics` are consumed at runtime today. The
+/// remaining sections (`keybindings`, `plugins`, `indexing`, `search`,
+/// `launcher`) are accepted and validated now so files and editor completion can
+/// adopt them, but editing them has no effect until the matching subsystem is
+/// wired in a later phase — see the per-section notes and `docs/config.md` §5.
+///
+/// Every field is `#[serde(default)]`: the loader starts from
+/// [`Config::default`] and overlays only the keys present in the file, so a
+/// missing section is filled with its default rather than rejected. The
+/// generated schema therefore has no `required` properties, matching the
+/// loader (an empty `config.toml` is valid).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Config {
     /// On-disk schema version. Must be [`CURRENT_SCHEMA_VERSION`] for this build.
     pub schema_version: u64,
@@ -70,6 +83,7 @@ impl Default for Config {
 
 /// Appearance settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Theme {
     /// Light/dark selection, or following the OS.
     pub mode: ThemeMode,
@@ -89,6 +103,7 @@ impl Default for Theme {
 
 /// Explorer / view settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Ui {
     /// Column the listing is sorted by on load.
     pub default_sort: SortOrder,
@@ -117,6 +132,7 @@ impl Default for Ui {
 /// restart, config.md §5), so arbitrary action names are accepted without
 /// warning to keep forward compatibility.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Keybindings {
     /// Action identifier → key chord. Empty means "use the built-in keymap".
     #[serde(flatten)]
@@ -128,6 +144,7 @@ pub struct Keybindings {
 /// Type definition / reservation only: the lists are parsed and stored, but no
 /// plugin host loads them yet (that lands in P4).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Plugins {
     /// Built-in (first-party) plugins to enable, by id (e.g. `"git"`).
     pub core: Vec<String>,
@@ -137,6 +154,7 @@ pub struct Plugins {
 
 /// Filesystem indexing settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Indexing {
     /// When the background index is built and maintained.
     pub mode: IndexingMode,
@@ -171,6 +189,7 @@ impl IndexingMode {
 
 /// Paths and globs excluded from indexing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct IndexingExclude {
     /// Literal paths (absolute or relative to the indexed root) to skip.
     pub paths: Vec<String>,
@@ -180,6 +199,7 @@ pub struct IndexingExclude {
 
 /// Search backend selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Search {
     /// Which engine answers content searches.
     pub backend: SearchBackend,
@@ -216,6 +236,7 @@ impl SearchBackend {
 
 /// Launcher window settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Launcher {
     /// Global hotkey that summons the launcher.
     pub hotkey: String,
@@ -234,6 +255,7 @@ impl Default for Launcher {
 
 /// Diagnostics / performance-logging settings (see `docs/persistence.md` §5).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct Diagnostics {
     /// Performance logging for the persistence layer (`nohrs-store`).
     pub store: DiagnosticsStore,
@@ -243,6 +265,7 @@ pub struct Diagnostics {
 /// default config adds no overhead. Output goes through `tracing` (targets
 /// `nohrs_store::sql` / `nohrs_store::redb`) and is filterable with `RUST_LOG`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct DiagnosticsStore {
     /// Log every SQL query at `debug` (verbose).
     pub log_all_queries: bool,
@@ -559,6 +582,10 @@ impl Config {
              show_hidden = false\n\
              icon_pack = \"default\"\n\
              \n\
+             # The sections below are parsed and validated, but not yet applied at\n\
+             # runtime — they take effect when their subsystem is wired in a later\n\
+             # phase (docs/config.md §5). They are here so files and editor\n\
+             # completion can adopt the shape early.\n\
              [indexing]\n\
              mode = \"auto\"   # \"auto\" | \"always-on\" | \"manual\"\n\
              \n\
@@ -881,7 +908,9 @@ fn warn_unknown_keys(
 ///   they are not standard JSON Schema draft 2020-12 formats, and `type` +
 ///   `minimum` already capture the constraint. Standard string formats are kept.
 ///
-/// Array element order (enum variants, `required`) is left untouched.
+/// There are no `required` arrays: every field is `#[serde(default)]`, so the
+/// loader (and a conforming editor) accepts a file that omits any section.
+/// Array element order (enum variants) is left untouched.
 pub fn json_schema_string() -> serde_json::Result<String> {
     let schema = schemars::schema_for!(Config);
     let value = serde_json::to_value(&schema)?;
@@ -1209,6 +1238,21 @@ mod tests {
         let schema = json_schema_string().unwrap();
         assert!(schema.contains("schema_version"));
         assert!(schema.contains("default_sort"));
+    }
+
+    #[test]
+    fn schema_has_no_required_so_partial_configs_validate() {
+        // The loader defaults every field (it overlays a parsed table onto
+        // `Config::default`), so no section is required. The schema must agree,
+        // otherwise editors reject files the app accepts.
+        let schema = json_schema_string().unwrap();
+        assert!(
+            !schema.contains("\"required\""),
+            "schema must not mark any field required"
+        );
+        let (config, diagnostics) = Config::from_toml_str("");
+        assert_eq!(config, Config::default());
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]
