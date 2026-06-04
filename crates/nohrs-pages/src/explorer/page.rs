@@ -765,3 +765,52 @@ impl ExplorerPage {
         self.panes.len()
     }
 }
+
+#[cfg(test)]
+mod drop_zone_tests {
+    // Import specific items rather than `super::*`: the page module glob-imports
+    // `gpui::*`, which re-exports a `test` attribute macro that would shadow the
+    // built-in `#[test]` and fail to expand.
+    use super::{drop_zone_for, DropZone};
+    use gpui::{point, px, size, Bounds, Pixels};
+    use gpui_component::Placement;
+
+    fn unit_bounds() -> Bounds<Pixels> {
+        Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(100.0), px(100.0)),
+        }
+    }
+
+    #[test]
+    fn center_when_cursor_is_mid_pane() {
+        assert!(drop_zone_for(unit_bounds(), point(px(50.0), px(50.0))) == DropZone::Center);
+    }
+
+    #[test]
+    fn edges_resolve_to_the_nearest_side() {
+        let bounds = unit_bounds();
+        assert!(drop_zone_for(bounds, point(px(5.0), px(50.0))) == DropZone::Left);
+        assert!(drop_zone_for(bounds, point(px(95.0), px(50.0))) == DropZone::Right);
+        assert!(drop_zone_for(bounds, point(px(50.0), px(5.0))) == DropZone::Top);
+        assert!(drop_zone_for(bounds, point(px(50.0), px(95.0))) == DropZone::Bottom);
+    }
+
+    #[test]
+    fn degenerate_bounds_are_center() {
+        let bounds = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(0.0), px(0.0)),
+        };
+        assert!(drop_zone_for(bounds, point(px(0.0), px(0.0))) == DropZone::Center);
+    }
+
+    #[test]
+    fn edge_placements_map_to_dock_placements() {
+        assert!(DropZone::Left.placement() == Some(Placement::Left));
+        assert!(DropZone::Right.placement() == Some(Placement::Right));
+        assert!(DropZone::Top.placement() == Some(Placement::Top));
+        assert!(DropZone::Bottom.placement() == Some(Placement::Bottom));
+        assert!(DropZone::Center.placement().is_none());
+    }
+}

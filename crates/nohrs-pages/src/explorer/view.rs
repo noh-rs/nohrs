@@ -1,9 +1,32 @@
+use crate::explorer::types::ExplorerDrag;
 use crate::explorer::ExplorerPane;
 use gpui::*;
+use gpui_component::{Icon, IconName};
 use nohrs_ui::theme::theme;
 
 /// The explorer header with navigation controls and the path bar.
 pub mod header;
+
+impl Render for ExplorerDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let name = std::path::Path::new(&self.path)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| self.path.clone());
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px(px(10.0))
+            .py(px(6.0))
+            .rounded(px(6.0))
+            .bg(rgb(theme::TOOLBAR_ACTIVE_BG))
+            .text_sm()
+            .text_color(rgb(theme::TOOLBAR_ACTIVE_TEXT))
+            .child(Icon::new(IconName::Folder).size_4())
+            .child(SharedString::from(name))
+    }
+}
 /// The main file listing, in list or grid mode, with the search bar.
 pub mod listing;
 /// The file preview pane.
