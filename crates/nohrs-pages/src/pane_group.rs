@@ -78,23 +78,30 @@ pub struct TabCloseOutcome {
     pub pane_closed: bool,
 }
 
+/// A pane-indexed render hook: `(view, pane, window, cx)`.
+type PaneHook<V> = Rc<dyn Fn(&mut V, usize, &mut Window, &mut Context<V>)>;
+/// A tab-indexed render hook: `(view, pane, tab, window, cx)`.
+type TabHook<V> = Rc<dyn Fn(&mut V, usize, usize, &mut Window, &mut Context<V>)>;
+/// A tab-reorder render hook: `(view, pane, from, to, window, cx)`.
+type ReorderHook<V> = Rc<dyn Fn(&mut V, usize, usize, usize, &mut Window, &mut Context<V>)>;
+
 /// The view-state hooks a [`PaneGroup`] needs to render its interactive chrome.
 /// Bundled into one struct because the tab bar wires up six distinct actions;
 /// each closure runs against the embedding view `V`. Closures are `Rc`-wrapped so
 /// the struct can be cheaply cloned across the two panes and their tabs.
 pub struct PaneGroupCallbacks<V: 'static> {
     /// A pane was clicked: `(pane)`.
-    pub on_activate_pane: Rc<dyn Fn(&mut V, usize, &mut Window, &mut Context<V>)>,
+    pub on_activate_pane: PaneHook<V>,
     /// A pane's close button was clicked: `(pane)`.
-    pub on_close_pane: Rc<dyn Fn(&mut V, usize, &mut Window, &mut Context<V>)>,
+    pub on_close_pane: PaneHook<V>,
     /// The new-tab (`+`) button was clicked: `(pane)`.
-    pub on_new_tab: Rc<dyn Fn(&mut V, usize, &mut Window, &mut Context<V>)>,
+    pub on_new_tab: PaneHook<V>,
     /// A tab was clicked: `(pane, tab)`.
-    pub on_activate_tab: Rc<dyn Fn(&mut V, usize, usize, &mut Window, &mut Context<V>)>,
+    pub on_activate_tab: TabHook<V>,
     /// A tab's close button was clicked: `(pane, tab)`.
-    pub on_close_tab: Rc<dyn Fn(&mut V, usize, usize, &mut Window, &mut Context<V>)>,
+    pub on_close_tab: TabHook<V>,
     /// A tab was dragged onto another within the same pane: `(pane, from, to)`.
-    pub on_reorder_tab: Rc<dyn Fn(&mut V, usize, usize, usize, &mut Window, &mut Context<V>)>,
+    pub on_reorder_tab: ReorderHook<V>,
 }
 
 // Manual `Clone` (derive would wrongly demand `V: Clone`; `Rc` clones regardless).

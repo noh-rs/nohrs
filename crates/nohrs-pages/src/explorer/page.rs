@@ -490,6 +490,10 @@ impl ExplorerPage {
                 let path = path.clone();
                 tab.update(cx, |pane, cx| pane.navigate_to_synced(path, cx));
             }
+            // Mirroring changed the other tabs' directories, but
+            // `navigate_to_synced` deliberately emits no `Navigated` event, so
+            // nothing else schedules a save. Persist the new session here.
+            self.schedule_save(cx);
         }
         cx.notify();
     }
