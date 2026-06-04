@@ -1,4 +1,7 @@
-use gpui::{Pixels, Point};
+use gpui::prelude::*;
+use gpui::{div, px, rgb, Context, Pixels, Point, SharedString, Window};
+use gpui_component::{Icon, IconName};
+use nohrs_ui::theme::theme;
 use std::time::Instant;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -74,4 +77,37 @@ pub struct StatusMessage {
 pub enum PaneEvent {
     /// The pane navigated to a new directory (carries the new absolute path).
     Navigated(String),
+}
+
+/// Payload for dragging a directory (a sidebar shortcut or a folder row) onto the
+/// dock to open it as a new tab or split. The dock's own tab drag/drop uses a
+/// different, private payload type, so the two coexist without interfering.
+///
+/// It is its own drag preview: `on_drag` constructs an `Entity<ExplorerDrag>` and
+/// the dock renders it under the cursor.
+#[derive(Clone)]
+pub struct ExplorerDrag {
+    /// Absolute path of the directory being dragged.
+    pub path: String,
+}
+
+impl Render for ExplorerDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let name = std::path::Path::new(&self.path)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| self.path.clone());
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px(px(10.0))
+            .py(px(6.0))
+            .rounded(px(6.0))
+            .bg(rgb(theme::TOOLBAR_ACTIVE_BG))
+            .text_sm()
+            .text_color(rgb(theme::TOOLBAR_ACTIVE_TEXT))
+            .child(Icon::new(IconName::Folder).size_4())
+            .child(SharedString::from(name))
+    }
 }

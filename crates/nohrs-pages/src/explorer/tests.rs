@@ -383,29 +383,27 @@ async fn explorer_page_starts_with_single_pane(cx: &mut TestAppContext) {
     window
         .read_with(cx, |page, _cx| {
             assert_eq!(page.pane_count(), 1);
-            assert_eq!(page.active_index(), 0);
             assert!(!page.is_synced());
+            assert!(page.sidebar_is_visible(), "the shared sidebar starts open");
         })
         .unwrap();
 }
 
 #[gpui::test]
-async fn split_opens_second_pane_then_reorients(cx: &mut TestAppContext) {
+async fn split_opens_additional_panes(cx: &mut TestAppContext) {
     let window = new_explorer_page(cx);
     window
         .update(cx, |page, window, cx| {
             page.split(SplitDirection::Vertical, window, cx);
             assert_eq!(page.pane_count(), 2, "first split opens a second pane");
-            assert_eq!(page.active_index(), 1, "the new pane becomes active");
-            assert_eq!(page.direction(), SplitDirection::Vertical);
 
-            // The opposite split shortcut flips orientation without adding a pane
-            // (2-way cap, §3.1).
+            // Unlike the old 2-way cap, the dock supports any number of panes;
+            // splitting again adds a third.
             page.split(SplitDirection::Horizontal, window, cx);
-            assert_eq!(page.pane_count(), 2);
-            assert_eq!(page.direction(), SplitDirection::Horizontal);
+            assert_eq!(page.pane_count(), 3);
         })
         .unwrap();
+    cx.run_until_parked();
 }
 
 #[gpui::test]
@@ -415,10 +413,13 @@ async fn close_pane_keeps_at_least_one(cx: &mut TestAppContext) {
         .update(cx, |page, window, cx| {
             page.split(SplitDirection::Vertical, window, cx);
             assert_eq!(page.pane_count(), 2);
-
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |page, window, cx| {
             page.close_pane(1, window, cx);
             assert_eq!(page.pane_count(), 1);
-            assert_eq!(page.active_index(), 0);
 
             // The final pane can never be closed.
             page.close_pane(0, window, cx);
@@ -428,17 +429,30 @@ async fn close_pane_keeps_at_least_one(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-async fn set_active_selects_pane_in_bounds(cx: &mut TestAppContext) {
+async fn focus_pane_out_of_range_is_noop(cx: &mut TestAppContext) {
     let window = new_explorer_page(cx);
     window
         .update(cx, |page, window, cx| {
             page.split(SplitDirection::Vertical, window, cx);
-            page.set_active(0, window, cx);
-            assert_eq!(page.active_index(), 0);
+            // Out-of-range focus is ignored rather than panicking, and never
+            // changes how many panes exist.
+            page.focus_pane(5, window, cx);
+            assert_eq!(page.pane_count(), 2);
+        })
+        .unwrap();
+    cx.run_until_parked();
+}
 
-            // Out-of-range indices are ignored rather than panicking.
-            page.set_active(5, window, cx);
-            assert_eq!(page.active_index(), 0);
+#[gpui::test]
+async fn toggle_shared_sidebar_flips_visibility(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, _window, cx| {
+            assert!(page.sidebar_is_visible());
+            page.toggle_sidebar(cx);
+            assert!(!page.sidebar_is_visible());
+            page.toggle_sidebar(cx);
+            assert!(page.sidebar_is_visible());
         })
         .unwrap();
 }
@@ -574,53 +588,7 @@ async fn split_pane_inherits_applied_ui_config(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-async fn root_pane_shows_sidebar_but_split_pane_hides_it(cx: &mut TestAppContext) {
-    let window = new_explorer_page(cx);
-    window
-        .update(cx, |page, window, cx| {
-            assert!(
-                page.pane(0).read(cx).sidebar_visible,
-                "the root pane shows its sidebar by default (§2)"
-            );
-
-            page.split(SplitDirection::Vertical, window, cx);
-            assert!(
-                !page.pane(1).read(cx).sidebar_visible,
-                "a pane opened by a split starts with the sidebar collapsed"
-            );
-            assert!(
-                page.pane(0).read(cx).sidebar_visible,
-                "splitting does not disturb the original pane's sidebar"
-            );
-        })
-        .unwrap();
-}
-
-#[gpui::test]
-async fn toggle_sidebar_is_independent_per_pane(cx: &mut TestAppContext) {
-    let window = new_explorer_page(cx);
-    window
-        .update(cx, |page, window, cx| {
-            page.split(SplitDirection::Vertical, window, cx);
-            let pane0 = page.pane(0); // sidebar visible (root)
-            let pane1 = page.pane(1); // sidebar hidden (split)
-
-            pane1.update(cx, |pane, cx| pane.toggle_sidebar(cx));
-            assert!(pane1.read(cx).sidebar_visible, "pane 1 toggled on");
-            assert!(
-                pane0.read(cx).sidebar_visible,
-                "toggling pane 1 leaves pane 0 untouched"
-            );
-
-            pane0.update(cx, |pane, cx| pane.toggle_sidebar(cx));
-            assert!(!pane0.read(cx).sidebar_visible, "pane 0 toggled off");
-            assert!(pane1.read(cx).sidebar_visible, "pane 1 unchanged");
-        })
-        .unwrap();
-}
-
-#[gpui::test]
-async fn close_pane_keeps_subscriptions_aligned(cx: &mut TestAppContext) {
+async fn close_pane_prunes_registry_and_keeps_sync_working(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let shared = dir.path().join("shared");
     std::fs::create_dir(&shared).unwrap();
@@ -632,18 +600,29 @@ async fn close_pane_keeps_subscriptions_aligned(cx: &mut TestAppContext) {
             page.split(SplitDirection::Vertical, window, cx);
             assert_eq!(page.pane_count(), 2);
             assert_eq!(page.subscription_count(), 2, "one subscription per pane");
+        })
+        .unwrap();
+    // `add_panel_at` splits on the next tick; let the dock settle before closing.
+    cx.run_until_parked();
 
-            // Closing index 0 must drop the subscription at the same index so the
-            // Vec stays aligned with the surviving pane.
+    window
+        .update(cx, |page, window, cx| {
+            // Closing a pane must drop its registry entry (and subscription) so the
+            // registry stays in step with the panes the dock holds.
             page.close_pane(0, window, cx);
             assert_eq!(page.pane_count(), 1);
             assert_eq!(page.subscription_count(), 1);
 
-            // Reuse the container: split again and enable sync. If the
-            // subscription Vec had desynced, the mirror below would target the
-            // wrong pane (or none).
+            // Reuse the container: split again and enable sync. If a stale
+            // subscription had survived, the mirror below would misfire.
             page.split(SplitDirection::Vertical, window, cx);
             assert_eq!(page.subscription_count(), 2);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    window
+        .update(cx, |page, window, cx| {
             let synced = config::Explorer {
                 split_direction: SplitDirection::Vertical,
                 synced_panes: true,

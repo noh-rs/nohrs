@@ -4,11 +4,16 @@ use nohrs_services::search::{SearchScope, SearchService};
 use nohrs_services::syntax::SyntaxService;
 use nohrs_ui::components::file_list::FileListDelegate;
 
-use gpui::{px, size, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, Window};
+use gpui::prelude::*;
+use gpui::{
+    div, px, size, AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, SharedString, Window,
+};
+use gpui_component::dock::{Panel, PanelControl, PanelEvent};
 use gpui_component::input::InputState;
 use gpui_component::list::List;
 use gpui_component::resizable::ResizableState;
-use gpui_component::VirtualListScrollHandle;
+use gpui_component::{Icon, IconName, VirtualListScrollHandle};
 use std::{rc::Rc, sync::Arc, time::Instant};
 
 use super::entries;
@@ -87,8 +92,10 @@ pub struct ExplorerPane {
     pub last_click_info: Option<LastClickInfo>,
     /// Whether the listing is shown as a list or a grid.
     pub view_mode: ViewMode,
-    /// Whether the left quick-access sidebar is shown (toggled with `Cmd/Ctrl+B`).
-    pub sidebar_visible: bool,
+    // Whether this pane is the dock's active panel. Set by `Panel::set_active`;
+    // the shared sidebar reads it to know which pane its clicks navigate.
+    /// Whether this pane is the dock's currently active panel.
+    pub active_in_dock: bool,
 
     // Search
     /// The full-text search service, when available.
@@ -135,13 +142,46 @@ impl Focusable for ExplorerPane {
 }
 
 impl EventEmitter<PaneEvent> for ExplorerPane {}
+impl EventEmitter<PanelEvent> for ExplorerPane {}
 
-impl crate::pane_group::PaneItem for ExplorerPane {
-    fn tab_title(&self, _cx: &gpui::App) -> String {
+impl ExplorerPane {
+    // Basename of `cwd`, used as the tab label (falls back to the full path for
+    // a root directory that has no final component).
+    fn tab_title(&self) -> String {
         std::path::Path::new(&self.cwd)
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| self.cwd.clone())
+    }
+}
+
+impl Panel for ExplorerPane {
+    fn panel_name(&self) -> &'static str {
+        "ExplorerPane"
+    }
+
+    fn title(&self, _window: &Window, _cx: &App) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(Icon::new(IconName::Folder).size_4())
+            .child(SharedString::from(self.tab_title()))
+            .into_any_element()
+    }
+
+    // No zoom affordance: the explorer has no use for fullscreening a pane, and
+    // the default `Some(Menu)` would add an otherwise-empty popup control.
+    fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
+        None
+    }
+
+    // Mirrors the dock's active-tab state onto the pane so `ExplorerPage` can find
+    // the active pane (which the shared sidebar navigates) without walking the
+    // dock tree. The dock calls this with `false` on the outgoing pane and `true`
+    // on the incoming one.
+    fn set_active(&mut self, active: bool, _window: &mut Window, _cx: &mut App) {
+        self.active_in_dock = active;
     }
 }
 
@@ -201,9 +241,7 @@ impl ExplorerPane {
             focus_requested: false,
             last_click_info: None,
             view_mode: ViewMode::List,
-            // Hidden by default; the root pane is revealed by `ExplorerPage::new`,
-            // split-created panes stay collapsed (issue #164, §2).
-            sidebar_visible: false,
+            active_in_dock: false,
 
             // Search
             search_service,
@@ -233,13 +271,6 @@ impl ExplorerPane {
 
     pub(crate) fn clear_status(&mut self) {
         self.status_message = None;
-    }
-
-    /// Toggles the left quick-access sidebar (issue #164, §2). Mirrors the
-    /// `toggle_search` open/close pattern.
-    pub(crate) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.sidebar_visible = !self.sidebar_visible;
-        cx.notify();
     }
 
     /// Returns the current status text and whether it represents an error, for

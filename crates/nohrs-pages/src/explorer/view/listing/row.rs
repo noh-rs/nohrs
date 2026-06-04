@@ -1,5 +1,6 @@
 use super::truncate_middle;
 
+use crate::explorer::types::ExplorerDrag;
 use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
@@ -100,9 +101,18 @@ pub fn render(
     // I'll copy the logic.
 
     div()
+        .id(("file-row-drag", ix))
         .flex()
         .flex_col()
         .w(px(total_width))
+        // A folder can be dragged onto the dock to open it as a new tab/split.
+        // The drag carries `ExplorerDrag`, which is also its own drag preview.
+        .when(item.kind == "dir", |row| {
+            let path = item.path.clone();
+            row.on_drag(ExplorerDrag { path }, |drag, _, _, cx| {
+                cx.new(|_| drag.clone())
+            })
+        })
         .child(
             ListItem::new(("file-row", ix))
                 .w(px(total_width))
