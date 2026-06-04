@@ -163,7 +163,7 @@
 
 | 観点 | P2 仕様 | 後続 |
 |------|---------|------|
-| scope | **ペイン単位** | — |
+| scope | **スプリット単位** (各スプリット = dock の `TabPanel` がタブバーを持つ、§3.3) | — |
 | 復元 | 再起動時に直前の tab 群を復元 (config で disable 可) | — |
 | close | `Cmd+W` で active tab を close、最後の tab を close した場合は pane も close (上記 §3 参照) | — |
 | reorder | tab bar 上でドラッグ並び替え | — |
