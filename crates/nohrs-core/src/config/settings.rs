@@ -134,6 +134,8 @@ pub struct Explorer {
     pub split_direction: SplitDirection,
     /// When enabled, navigating in one pane mirrors the path into the others.
     pub synced_panes: bool,
+    /// When enabled, the previous session's tabs are restored on restart (§4).
+    pub restore_tabs: bool,
 }
 
 impl Default for Explorer {
@@ -141,6 +143,7 @@ impl Default for Explorer {
         Self {
             split_direction: SplitDirection::Vertical,
             synced_panes: false,
+            restore_tabs: true,
         }
     }
 }
@@ -636,6 +639,7 @@ impl Config {
              [explorer]\n\
              split_direction = \"vertical\"   # \"vertical\" (left/right) | \"horizontal\" (top/bottom)\n\
              synced_panes = false            # when true, panes mirror the same path\n\
+             restore_tabs = true             # restore the previous session's tabs on restart\n\
              \n\
              # The sections below are parsed and validated, but not yet applied at\n\
              # runtime — they take effect when their subsystem is wired in a later\n\
@@ -751,9 +755,18 @@ fn read_explorer(table: &toml::Table, explorer: &mut Explorer, diagnostics: &mut
             ))),
         }
     }
+    if let Some(value) = table.get("restore_tabs") {
+        match value.as_bool() {
+            Some(flag) => explorer.restore_tabs = flag,
+            None => diagnostics.push(Diagnostic::warn(format!(
+                "invalid explorer.restore_tabs {value}; using {}",
+                explorer.restore_tabs
+            ))),
+        }
+    }
     warn_unknown_keys(
         table,
-        &["split_direction", "synced_panes"],
+        &["split_direction", "synced_panes", "restore_tabs"],
         "explorer.",
         diagnostics,
     );

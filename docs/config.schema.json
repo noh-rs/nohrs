@@ -40,6 +40,11 @@
     "Explorer": {
       "description": "Split-view and pane settings (see `docs/explorer-essentials.md` §3).",
       "properties": {
+        "restore_tabs": {
+          "default": true,
+          "description": "When enabled, the previous session's tabs are restored on restart (§4).",
+          "type": "boolean"
+        },
         "split_direction": {
           "$ref": "#/$defs/SplitDirection",
           "default": "vertical",
@@ -310,6 +315,7 @@
     "explorer": {
       "$ref": "#/$defs/Explorer",
       "default": {
+        "restore_tabs": true,
         "split_direction": "vertical",
         "synced_panes": false
       },

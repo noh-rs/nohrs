@@ -14,6 +14,7 @@ use nohrs_core::config::{self, ConfigOverride};
 use nohrs_core::telemetry::logging::init_logging;
 use nohrs_pages::RootView;
 use nohrs_services::search::SearchService;
+use nohrs_store::{KvStore, RedbKvStore, StoreLogConfig};
 use nohrs_ui::assets::Assets;
 use nohrs_ui::components::layout::unified_toolbar::UNIFIED_TOOLBAR_HEIGHT;
 use nohrs_ui::window::{self, traffic_lights::TrafficLightsHook};
@@ -55,11 +56,17 @@ impl NohrsApp {
             let traffic_lights = TrafficLightsHook::new().center_vertically(UNIFIED_TOOLBAR_HEIGHT);
             let window_options = window::unified_window_options(bounds, &traffic_lights);
 
+            // Open the host KV store (`state.redb`) for tab/session restore
+            // (docs/persistence.md §3). Failure is non-fatal: the app starts
+            // without session persistence rather than crashing.
+            let store: Option<Arc<dyn KvStore>> = open_host_store();
+
             let opened = app.open_window(window_options, {
                 let config = config.clone();
                 let config_path = config_path.clone();
                 let config_overrides = config_overrides.clone();
                 let config_error = config_error.clone();
+                let store = store.clone();
                 move |window, cx| {
                     // Initialize SearchService. Failure is non-fatal: the app starts
                     // with full-text search disabled rather than crashing.
@@ -87,6 +94,7 @@ impl NohrsApp {
                         RootView::new(
                             resizable.clone(),
                             search_service,
+                            store,
                             config,
                             config_path,
                             config_overrides,
@@ -102,5 +110,24 @@ impl NohrsApp {
                 tracing::error!("failed to open main window: {error}");
             }
         });
+    }
+}
+
+/// Opens the host KV store at `<data_dir>/state.redb`, creating the data
+/// directory if needed. Returns `None` (and logs) on any failure so a broken or
+/// unwritable store degrades to "no session persistence" rather than a crash.
+fn open_host_store() -> Option<Arc<dyn KvStore>> {
+    let data_dir = config::paths::data_dir();
+    if let Err(error) = std::fs::create_dir_all(&data_dir) {
+        tracing::error!("could not create data dir {}: {error}", data_dir.display());
+        return None;
+    }
+    let path = data_dir.join("state.redb");
+    match RedbKvStore::open(&path, &StoreLogConfig::default()) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(error) => {
+            tracing::error!("could not open KV store {}: {error}", path.display());
+            None
+        }
     }
 }

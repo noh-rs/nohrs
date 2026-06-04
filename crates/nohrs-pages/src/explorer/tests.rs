@@ -9,6 +9,7 @@
 // Test fixtures write files directly; the synchronous-fs ban targets app code.
 #![allow(clippy::disallowed_methods)]
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{point, px, AppContext, TestAppContext, WindowHandle};
@@ -16,6 +17,7 @@ use gpui_component::input::InputState;
 use gpui_component::resizable::ResizableState;
 use nohrs_core::config;
 use nohrs_services::fs::listing::FileEntryDto;
+use nohrs_store::{KvStore, RedbKvStore, StoreLogConfig};
 
 use nohrs_core::config::SplitDirection;
 
@@ -37,12 +39,27 @@ fn new_explorer(cx: &mut TestAppContext) -> WindowHandle<ExplorerPane> {
     })
 }
 
-/// Build the split-view container (`ExplorerPage`), which owns its panes.
+/// Build the split-view container (`ExplorerPage`), which owns its panes. No KV
+/// store, so session save/restore is inert.
 fn new_explorer_page(cx: &mut TestAppContext) -> WindowHandle<ExplorerPage> {
     cx.update(gpui_component::init);
     cx.add_window(|window, cx| {
         let resizable = ResizableState::new(cx);
-        ExplorerPage::new(resizable, None, window, cx)
+        ExplorerPage::new(resizable, None, None, false, window, cx)
+    })
+}
+
+/// Build the container backed by a `store`, optionally restoring its session,
+/// for the persistence round-trip tests.
+fn new_explorer_page_with_store(
+    cx: &mut TestAppContext,
+    store: Arc<dyn KvStore>,
+    restore_tabs: bool,
+) -> WindowHandle<ExplorerPage> {
+    cx.update(gpui_component::init);
+    cx.add_window(|window, cx| {
+        let resizable = ResizableState::new(cx);
+        ExplorerPage::new(resizable, None, Some(store), restore_tabs, window, cx)
     })
 }
 
@@ -485,6 +502,7 @@ async fn synced_panes_mirror_navigation(cx: &mut TestAppContext) {
             let synced = config::Explorer {
                 split_direction: SplitDirection::Vertical,
                 synced_panes: true,
+                restore_tabs: true,
             };
             page.apply_config_explorer(&synced, cx);
             assert!(page.is_synced());
@@ -521,6 +539,7 @@ async fn synced_navigation_clears_stale_search_state(cx: &mut TestAppContext) {
             let synced = config::Explorer {
                 split_direction: SplitDirection::Vertical,
                 synced_panes: true,
+                restore_tabs: true,
             };
             page.apply_config_explorer(&synced, cx);
 
@@ -647,6 +666,7 @@ async fn close_pane_keeps_subscriptions_aligned(cx: &mut TestAppContext) {
             let synced = config::Explorer {
                 split_direction: SplitDirection::Vertical,
                 synced_panes: true,
+                restore_tabs: true,
             };
             page.apply_config_explorer(&synced, cx);
             page.pane(0)
@@ -661,6 +681,186 @@ async fn close_pane_keeps_subscriptions_aligned(cx: &mut TestAppContext) {
                 Some(shared.as_str()),
                 "the sibling still mirrors after a close/split cycle"
             );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn new_tab_appends_and_activates(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            assert_eq!(page.tab_count(0), 1);
+            page.test_new_tab(0, window, cx);
+            assert_eq!(page.tab_count(0), 2, "a new tab is appended");
+            assert_eq!(page.active_tab(0), 1, "the new tab becomes active");
+            // A new tab defaults to home (§4).
+            if let Ok(home) = std::env::var("HOME") {
+                assert_eq!(page.tab_cwd(0, 1, cx).as_deref(), Some(home.as_str()));
+            }
+
+            // Switching back to the first tab makes it active again.
+            page.test_activate_tab(0, 0, window, cx);
+            assert_eq!(page.active_tab(0), 0);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn close_tab_keeps_pane_when_others_remain(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.test_new_tab(0, window, cx);
+            page.test_new_tab(0, window, cx);
+            assert_eq!(page.tab_count(0), 3);
+            page.test_close_tab(0, 1, window, cx);
+            assert_eq!(
+                page.tab_count(0),
+                2,
+                "closing a non-last tab keeps the pane"
+            );
+            assert_eq!(page.pane_count(), 1);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn closing_last_tab_closes_its_pane(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            assert_eq!(page.pane_count(), 2);
+            assert_eq!(page.tab_count(1), 1);
+
+            // Closing pane 1's only tab closes the pane (§3.1 / §4).
+            page.test_close_tab(1, 0, window, cx);
+            assert_eq!(page.pane_count(), 1);
+
+            // The final tab of the final pane is never closed.
+            page.test_close_tab(0, 0, window, cx);
+            assert_eq!(page.pane_count(), 1);
+            assert_eq!(page.tab_count(0), 1);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn reorder_tab_swaps_order_and_follows_active(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    std::fs::create_dir(&first).unwrap();
+    std::fs::create_dir(&second).unwrap();
+    let first = first.to_string_lossy().to_string();
+    let second = second.to_string_lossy().to_string();
+
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            // Tab 0 -> first, tab 1 (new, active) -> second.
+            page.pane(0)
+                .update(cx, |pane, _cx| pane.cwd = first.clone());
+            page.test_new_tab(0, window, cx);
+            page.pane(0)
+                .update(cx, |pane, _cx| pane.cwd = second.clone());
+            assert_eq!(page.tab_cwd(0, 0, cx).as_deref(), Some(first.as_str()));
+            assert_eq!(page.tab_cwd(0, 1, cx).as_deref(), Some(second.as_str()));
+            assert_eq!(page.active_tab(0), 1);
+
+            // Drag tab 0 to position 1; the active tab (second) follows its entity.
+            page.test_reorder_tab(0, 0, 1, cx);
+            assert_eq!(page.tab_cwd(0, 0, cx).as_deref(), Some(second.as_str()));
+            assert_eq!(page.tab_cwd(0, 1, cx).as_deref(), Some(first.as_str()));
+            assert_eq!(page.active_tab(0), 0, "the active tab follows the reorder");
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn subscriptions_track_every_tab(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            assert_eq!(page.subscription_count(), 1);
+            page.test_new_tab(0, window, cx);
+            assert_eq!(page.subscription_count(), 2, "one subscription per tab");
+            page.split(SplitDirection::Vertical, window, cx);
+            assert_eq!(page.subscription_count(), 3, "the split's pane adds a tab");
+            page.test_close_tab(0, 1, window, cx);
+            assert_eq!(
+                page.subscription_count(),
+                2,
+                "closing a tab drops its subscription"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn tabs_round_trip_through_the_store(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let alpha = dir.path().join("alpha");
+    std::fs::create_dir(&alpha).unwrap();
+    let alpha = alpha.to_string_lossy().to_string();
+    let store: Arc<dyn KvStore> =
+        Arc::new(RedbKvStore::open_in_memory(&StoreLogConfig::default()).unwrap());
+
+    // First session: open a second tab and navigate it, then let the debounced
+    // save fire and write to the store.
+    let window = new_explorer_page_with_store(cx, store.clone(), true);
+    window
+        .update(cx, |page, window, cx| {
+            page.test_new_tab(0, window, cx);
+            page.pane(0)
+                .update(cx, |pane, cx| pane.change_dir(alpha.clone(), window, cx));
+        })
+        .unwrap();
+    // Drive the debounce timer past `SAVE_DEBOUNCE`, then flush the spawned save.
+    cx.background_executor
+        .timer(Duration::from_millis(600))
+        .await;
+    cx.run_until_parked();
+
+    // Second session with the same store restores both tabs.
+    let restored = new_explorer_page_with_store(cx, store.clone(), true);
+    restored
+        .read_with(cx, |page, cx| {
+            assert_eq!(page.tab_count(0), 2, "both tabs are restored");
+            assert_eq!(page.tab_cwd(0, 1, cx).as_deref(), Some(alpha.as_str()));
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn restore_disabled_ignores_saved_session(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let beta = dir.path().join("beta");
+    std::fs::create_dir(&beta).unwrap();
+    let beta = beta.to_string_lossy().to_string();
+    let store: Arc<dyn KvStore> =
+        Arc::new(RedbKvStore::open_in_memory(&StoreLogConfig::default()).unwrap());
+
+    let window = new_explorer_page_with_store(cx, store.clone(), true);
+    window
+        .update(cx, |page, window, cx| {
+            page.test_new_tab(0, window, cx);
+            page.pane(0)
+                .update(cx, |pane, cx| pane.change_dir(beta.clone(), window, cx));
+        })
+        .unwrap();
+    cx.background_executor
+        .timer(Duration::from_millis(600))
+        .await;
+    cx.run_until_parked();
+
+    // With restore disabled, a fresh session starts with a single default tab.
+    let fresh = new_explorer_page_with_store(cx, store.clone(), false);
+    fresh
+        .read_with(cx, |page, _cx| {
+            assert_eq!(page.tab_count(0), 1, "restore disabled: no extra tabs");
+            assert_eq!(page.pane_count(), 1);
         })
         .unwrap();
 }

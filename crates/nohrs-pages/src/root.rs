@@ -20,6 +20,7 @@ use gpui_component::{Icon, Root, Theme, ThemeMode as GpuiThemeMode};
 use nohrs_core::config::{self, Config, ConfigOverride, ConfigWatcher};
 use nohrs_core::telemetry::LogErr;
 use nohrs_services::search::SearchService;
+use nohrs_store::KvStore;
 use nohrs_ui::components::layout::footer::{footer, FooterProps};
 use nohrs_ui::components::layout::unified_toolbar::{
     unified_toolbar, AccountMenuAction, AccountMenuCommand, UnifiedToolbarProps,
@@ -67,6 +68,7 @@ impl RootView {
     pub fn new(
         resizable: Entity<ResizableState>,
         search_service: Option<Arc<SearchService>>,
+        store: Option<Arc<dyn KvStore>>,
         config: Config,
         config_path: PathBuf,
         config_overrides: Vec<ConfigOverride>,
@@ -76,8 +78,17 @@ impl RootView {
     ) -> Self {
         let focus_handle = cx.focus_handle();
 
-        let explorer =
-            cx.new(|cx| ExplorerPage::new(resizable, search_service.clone(), window, cx));
+        let restore_tabs = config.explorer.restore_tabs;
+        let explorer = cx.new(|cx| {
+            ExplorerPage::new(
+                resizable,
+                search_service.clone(),
+                store,
+                restore_tabs,
+                window,
+                cx,
+            )
+        });
         let git = cx.new(|_cx| GitPage::new());
         let s3 = cx.new(|_cx| S3Page::new());
         let extensions = cx.new(|_cx| ExtensionsPage::new());
