@@ -1,5 +1,5 @@
-use crate::explorer::types::SearchType;
 use crate::explorer::ExplorerPage;
+use crate::explorer::types::SearchType;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::input::TextInput;
@@ -8,7 +8,7 @@ use nohrs_services::search::SearchScope;
 use nohrs_ui::theme::theme;
 
 /// Renders the search bar with the query input and search option toggles.
-pub fn render(page: &mut ExplorerPage, cx: &mut Context<ExplorerPage>) -> impl IntoElement {
+pub fn render(page: &mut ExplorerPage, cx: &mut Context<ExplorerPage>) -> impl IntoElement + use<> {
     let current_text = page.search_input.read(cx).text().to_string();
     if current_text != page.search_query {
         page.search_query = current_text;
@@ -210,7 +210,7 @@ fn render_scope_button(
     scope: SearchScope,
     label: &str,
     cx: &mut Context<ExplorerPage>,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     let is_active = page.search_scope == scope;
     div()
         .cursor_pointer()
@@ -236,7 +236,7 @@ fn render_type_button(
     search_type: SearchType,
     label: &str,
     cx: &mut Context<ExplorerPage>,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     let is_active = page.search_type == search_type;
     div()
         .cursor_pointer()

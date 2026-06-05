@@ -13,7 +13,7 @@ pub fn render(
     item: &FileEntryDto,
     ix: usize,
     cx: &mut Context<ExplorerPage>,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     use nohrs_ui::components::file_list::{format_date, get_file_type, human_bytes};
 
     let icon_name = match item.kind.as_str() {

@@ -12,7 +12,7 @@ pub fn render(
     page: &mut ExplorerPage,
     _window: &mut Window,
     cx: &mut Context<ExplorerPage>,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     let parts = path_parts(&page.cwd);
 
     let (display_parts, is_truncated) = if parts.len() > 5 {
@@ -164,7 +164,7 @@ pub fn render(
 fn render_view_mode_toggle(
     page: &mut ExplorerPage,
     cx: &mut Context<ExplorerPage>,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     div()
         .flex()
         .items_center()
@@ -194,7 +194,7 @@ fn view_mode_button(
     icon: IconName,
     label: &'static str,
     cx: &mut Context<ExplorerPage>,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     let is_active = page.view_mode == mode;
     ListItem::new(id)
         .px(px(8.0))

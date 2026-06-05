@@ -65,7 +65,9 @@ pub fn config_file() -> PathBuf {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+// Rust 2024 made `std::env::{set_var, remove_var}` unsafe; these tests must
+// mutate the process environment to exercise XDG path resolution.
+#[allow(clippy::unwrap_used, unsafe_code)]
 mod tests {
     use super::*;
 
@@ -92,18 +94,22 @@ mod tests {
     #[test]
     fn absolute_xdg_var_is_honoured() {
         let _guard = env_lock();
-        std::env::set_var("XDG_CONFIG_HOME", "/tmp/xdg-test-abs");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", "/tmp/xdg-test-abs") };
         let dir = config_dir();
-        std::env::remove_var("XDG_CONFIG_HOME");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
         assert_eq!(dir, PathBuf::from("/tmp/xdg-test-abs/nohrs"));
     }
 
     #[test]
     fn relative_xdg_var_is_ignored() {
         let _guard = env_lock();
-        std::env::set_var("XDG_CONFIG_HOME", "relative/path");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", "relative/path") };
         let home = config_home();
-        std::env::remove_var("XDG_CONFIG_HOME");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
         // A relative value is ignored per the XDG spec, so we fall back to a home
         // (or cwd) based path, never the relative value itself.
         assert!(!home.ends_with("relative/path"));
@@ -112,12 +118,16 @@ mod tests {
     #[test]
     fn each_home_honours_its_own_xdg_var() {
         let _guard = env_lock();
-        std::env::set_var("XDG_CONFIG_HOME", "/tmp/cfg");
-        std::env::set_var("XDG_DATA_HOME", "/tmp/data");
-        std::env::set_var("XDG_CACHE_HOME", "/tmp/cache");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", "/tmp/cfg") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("XDG_DATA_HOME", "/tmp/data") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("XDG_CACHE_HOME", "/tmp/cache") };
         let (config, data, cache) = (config_home(), data_home(), cache_home());
         for key in ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"] {
-            std::env::remove_var(key);
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var(key) };
         }
         assert_eq!(config, PathBuf::from("/tmp/cfg"));
         assert_eq!(data, PathBuf::from("/tmp/data"));

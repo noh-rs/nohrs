@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::{
-    now_ns, FileId, FileRecord, FileUpsert, HistoryEntry, HistoryKind, HistoryStore, MetadataQuery,
-    MetadataStore, Result, StoreLogConfig,
+    FileId, FileRecord, FileUpsert, HistoryEntry, HistoryKind, HistoryStore, MetadataQuery,
+    MetadataStore, Result, StoreLogConfig, now_ns,
 };
 
 /// Forward-only migrations, applied in order and recorded in `_migrations`.
@@ -373,10 +373,12 @@ mod tests {
             .unwrap();
         assert_eq!(record.indexed_at, Some(500));
         store.delete_file(Path::new("/home/user/a.txt")).unwrap();
-        assert!(store
-            .get_file(Path::new("/home/user/a.txt"))
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .get_file(Path::new("/home/user/a.txt"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -417,10 +419,12 @@ mod tests {
         let id = store
             .upsert_file(&sample("/home/user/a.txt", 1, 100))
             .unwrap();
-        assert!(store
-            .get_file(Path::new("/home/user/a.txt"))
-            .unwrap()
-            .is_some());
+        assert!(
+            store
+                .get_file(Path::new("/home/user/a.txt"))
+                .unwrap()
+                .is_some()
+        );
         store.mark_indexed(id, 1).unwrap();
     }
 
@@ -435,9 +439,11 @@ mod tests {
                 .unwrap();
         }
         let reopened = SqliteStore::open(&path, &StoreLogConfig::default()).unwrap();
-        assert!(reopened
-            .get_file(Path::new("/home/user/a.txt"))
-            .unwrap()
-            .is_some());
+        assert!(
+            reopened
+                .get_file(Path::new("/home/user/a.txt"))
+                .unwrap()
+                .is_some()
+        );
     }
 }

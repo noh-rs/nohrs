@@ -988,7 +988,9 @@ pub fn report_diagnostics(diagnostics: &[Diagnostic]) -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::disallowed_methods)]
+// Rust 2024 made `std::env::set_var` unsafe; these tests must mutate the
+// process environment to exercise env-var config overrides.
+#[allow(clippy::unwrap_used, clippy::disallowed_methods, unsafe_code)]
 mod tests {
     use super::*;
 
@@ -1385,11 +1387,16 @@ mod tests {
     #[test]
     fn from_env_reads_valid_vars() {
         let _guard = env_lock();
-        std::env::set_var("NOHRS_THEME", "dark");
-        std::env::set_var("NOHRS_ACCENT", "violet");
-        std::env::set_var("NOHRS_DEFAULT_SORT", "size");
-        std::env::set_var("NOHRS_SHOW_HIDDEN", "on");
-        std::env::set_var("NOHRS_ICON_PACK", "nerd");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("NOHRS_THEME", "dark") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("NOHRS_ACCENT", "violet") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("NOHRS_DEFAULT_SORT", "size") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("NOHRS_SHOW_HIDDEN", "on") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("NOHRS_ICON_PACK", "nerd") };
         let over = ConfigOverride::from_env();
         for key in [
             "NOHRS_THEME",
@@ -1398,7 +1405,8 @@ mod tests {
             "NOHRS_SHOW_HIDDEN",
             "NOHRS_ICON_PACK",
         ] {
-            std::env::remove_var(key);
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var(key) };
         }
         assert_eq!(over.theme_mode, Some(ThemeMode::Dark));
         assert_eq!(over.theme_accent.as_deref(), Some("violet"));
@@ -1410,11 +1418,15 @@ mod tests {
     #[test]
     fn from_env_skips_invalid_values() {
         let _guard = env_lock();
-        std::env::set_var("NOHRS_THEME", "neon");
-        std::env::set_var("NOHRS_SHOW_HIDDEN", "maybe");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("NOHRS_THEME", "neon") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("NOHRS_SHOW_HIDDEN", "maybe") };
         let over = ConfigOverride::from_env();
-        std::env::remove_var("NOHRS_THEME");
-        std::env::remove_var("NOHRS_SHOW_HIDDEN");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("NOHRS_THEME") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("NOHRS_SHOW_HIDDEN") };
         assert_eq!(over.theme_mode, None);
         assert_eq!(over.ui_show_hidden, None);
     }

@@ -178,12 +178,14 @@ mod tests {
 
     #[test]
     fn nonexistent_path_is_an_error() {
-        assert!(list_dir_sync(ListParams {
-            path: "/no/such/dir/here",
-            limit: 10,
-            cursor: None,
-        })
-        .is_err());
+        assert!(
+            list_dir_sync(ListParams {
+                path: "/no/such/dir/here",
+                limit: 10,
+                cursor: None,
+            })
+            .is_err()
+        );
     }
 
     #[test]

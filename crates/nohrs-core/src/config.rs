@@ -18,10 +18,10 @@ pub mod watcher;
 
 pub use loader::{backup, ensure_exists, needs_migration, reset, write_default};
 pub use settings::{
-    json_schema_string, load_from_path, report_diagnostics, Config, ConfigOverride, Diagnostic,
-    DiagnosticLevel, Diagnostics, DiagnosticsStore, Indexing, IndexingExclude, IndexingMode,
-    Keybindings, Launcher, Plugins, Search, SearchBackend, SortOrder, Theme, ThemeMode, Ui,
-    CURRENT_SCHEMA_VERSION, SCHEMA_URL,
+    CURRENT_SCHEMA_VERSION, Config, ConfigOverride, Diagnostic, DiagnosticLevel, Diagnostics,
+    DiagnosticsStore, Indexing, IndexingExclude, IndexingMode, Keybindings, Launcher, Plugins,
+    SCHEMA_URL, Search, SearchBackend, SortOrder, Theme, ThemeMode, Ui, json_schema_string,
+    load_from_path, report_diagnostics,
 };
 pub use watcher::ConfigWatcher;
 

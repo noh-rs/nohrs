@@ -1,11 +1,11 @@
 use nohrs_core::config;
-use nohrs_services::fs::listing::{list_dir_sync, FileEntryDto, ListParams};
+use nohrs_services::fs::listing::{FileEntryDto, ListParams, list_dir_sync};
 
 use gpui::{Context, Window};
 
+use super::ExplorerPage;
 use super::entries;
 use super::types::StatusLevel;
-use super::ExplorerPage;
 
 impl ExplorerPage {
     pub(crate) fn ensure_loaded(&mut self) {

@@ -2,8 +2,8 @@ use nohrs_core::config;
 
 use gpui::{AppContext, AsyncWindowContext, Context, Window};
 
-use super::view::preview::editor::PreviewEditor;
 use super::ExplorerPage;
+use super::view::preview::editor::PreviewEditor;
 
 /// Result of reading a file for preview off the UI thread.
 enum PreviewOutcome {

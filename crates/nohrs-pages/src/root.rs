@@ -9,11 +9,11 @@
 
 use crate::explorer::ExplorerPage;
 use crate::{
-    extensions::ExtensionsPage, git::GitPage, s3::S3Page, settings::SettingsPage, PageKind,
+    PageKind, extensions::ExtensionsPage, git::GitPage, s3::S3Page, settings::SettingsPage,
 };
 use gpui::{
-    div, prelude::*, px, rgb, AnyElement, App, AsyncWindowContext, Context, Entity, FocusHandle,
-    Focusable, InteractiveElement, Render, WeakEntity, Window,
+    AnyElement, App, AsyncWindowContext, Context, Entity, FocusHandle, Focusable,
+    InteractiveElement, Render, WeakEntity, Window, div, prelude::*, px, rgb,
 };
 use gpui_component::input::InputState;
 use gpui_component::resizable::ResizableState;
@@ -21,14 +21,14 @@ use gpui_component::{Icon, Root, Theme, ThemeMode as GpuiThemeMode};
 use nohrs_core::config::{self, Config, ConfigOverride, ConfigWatcher};
 use nohrs_core::telemetry::LogErr;
 use nohrs_services::search::SearchService;
-use nohrs_ui::components::layout::footer::{footer, FooterProps};
+use nohrs_ui::components::layout::footer::{FooterProps, footer};
 use nohrs_ui::components::layout::unified_toolbar::{
-    unified_toolbar, AccountMenuAction, AccountMenuCommand, UnifiedToolbarProps,
+    AccountMenuAction, AccountMenuCommand, UnifiedToolbarProps, unified_toolbar,
 };
 use nohrs_ui::theme::theme;
 use std::path::PathBuf;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Duration;
 use tracing::info;
 
@@ -347,7 +347,7 @@ impl RootView {
         }
     }
 
-    fn render_navigation(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_navigation(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let active_page = self.current_page;
 
         div()
@@ -376,7 +376,7 @@ impl RootView {
         page: PageKind,
         active: bool,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .id(("nav-btn", page as usize))
             .w(px(48.0))

@@ -6,7 +6,7 @@ use nohrs_ui::theme::theme;
 // Calculate the maximum line width in characters for horizontal scroll sizing
 /// Renders the preview pane for the selected file, showing a text editor,
 /// image, status message, or an empty placeholder.
-pub fn render(page: &mut ExplorerPage, _window: &mut Window) -> impl IntoElement {
+pub fn render(page: &mut ExplorerPage, _window: &mut Window) -> impl IntoElement + use<> {
     let title = page
         .preview_path
         .as_ref()
