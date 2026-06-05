@@ -70,18 +70,7 @@ pub fn config_file() -> PathBuf {
 #[allow(clippy::unwrap_used, unsafe_code)]
 mod tests {
     use super::*;
-
-    // `XDG_*` env tests mutate process-global state; serialize them so parallel
-    // test threads do not observe each other's vars. Recover from a poisoned
-    // lock (a panic in another env test) so the offending test's own assertion
-    // surfaces instead of an opaque poison panic in every later env test.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
+    use crate::config::test_env::env_lock;
 
     #[test]
     fn config_file_lives_under_config_home() {

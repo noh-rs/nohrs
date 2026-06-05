@@ -993,6 +993,7 @@ pub fn report_diagnostics(diagnostics: &[Diagnostic]) -> Option<String> {
 #[allow(clippy::unwrap_used, clippy::disallowed_methods, unsafe_code)]
 mod tests {
     use super::*;
+    use crate::config::test_env::env_lock;
 
     fn errors(diagnostics: &[Diagnostic]) -> Vec<&str> {
         diagnostics
@@ -1370,18 +1371,6 @@ mod tests {
         assert!(json.contains("schema_version"));
         let parsed: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, config);
-    }
-
-    // `NOHRS_*` env tests mutate process-global state; serialize them so parallel
-    // test threads do not observe each other's vars. Recover from a poisoned
-    // lock so a panicking env test surfaces its own assertion rather than an
-    // opaque poison panic in every later env test.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[test]
