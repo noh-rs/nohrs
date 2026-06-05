@@ -5,7 +5,7 @@
 
 ## Context
 
-v0.1.0 時点の nohrs は **単一 crate** (`nohrs`) で約 5000 行、`src/` 配下に `core / models / services / ui / pages / gui` をフラットに配置している。
+0.0.x 時点 (single-crate 期) の nohrs は **単一 crate** (`nohrs`) で約 5000 行、`src/` 配下に `core / models / services / ui / pages / gui` をフラットに配置している。
 
 このまま開発を進めると以下の問題が深刻化する:
 

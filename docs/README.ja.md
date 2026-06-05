@@ -73,16 +73,16 @@ gpui は macOS 上で Metal を使用するため、Xcode と Metal ツールチ
 
 ## ロードマップ
 
-Nohrs は `v0.2.0` から `v0.7.0` まで、6 つのシリアルなフェーズで開発します。概要は次のとおりです。
+Nohrs は 6 つのシリアルなフェーズで開発します。P1 は `0.0.x` で iterate し、P2 完了で最初の MVP を `0.1.0` として切り、P6 で `0.5.0`、安定化で `1.0.0` に到達します。概要は次のとおりです。
 
 | Phase | Milestone | テーマ |
 |-------|-----------|--------|
-| **P1** | `v0.2.0` | Foundation — 品質改善・workspace 化・開発/CI 基盤・web MVP |
-| **P2** | `v0.3.0` | Explorer Essentials — DnD・ファイル操作・スプリットビュー・タブ・永続化 |
-| **P3** | `v0.4.0` | Launcher & Search — グローバルホットキーランチャー・SQLite FTS5 検索 |
-| **P4** | `v0.5.0` | Plugin Host — WASM Component Model・3 言語テンプレ |
-| **P5** | `v0.6.0` | Ecosystem — Plugin Store・コミュニティプラグイン |
-| **P6** | `v0.7.0` | Stabilization — 多 OS 戦略・パフォーマンスゲート・ドキュメント |
+| **P1** | `0.0.x` | Foundation — 品質改善・workspace 化・開発/CI 基盤・web MVP |
+| **P2** | `0.1.0` | Explorer Essentials — DnD・ファイル操作・スプリットビュー・タブ・永続化 |
+| **P3** | `0.2.0` | Launcher & Search — グローバルホットキーランチャー・SQLite FTS5 検索 |
+| **P4** | `0.3.0` | Plugin Host — WASM Component Model・3 言語テンプレ |
+| **P5** | `0.4.0` | Ecosystem — Plugin Store・コミュニティプラグイン |
+| **P6** | `0.5.0` | Stabilization — 多 OS 戦略・パフォーマンスゲート・ドキュメント |
 
 ビジョン・各フェーズの詳細・設計ドキュメントは [`docs/ROADMAP.md`](ROADMAP.md) にあります。
 

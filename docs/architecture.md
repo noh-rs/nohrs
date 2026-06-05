@@ -55,7 +55,7 @@ members = [
 exclude = ["web"]
 
 [workspace.package]
-version      = "0.2.0"
+version      = "0.0.1"
 edition      = "2021"
 rust-version = "1.83"
 license      = "MIT"
