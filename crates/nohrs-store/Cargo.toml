@@ -19,7 +19,7 @@ tracing.workspace   = true
 # `bundled` vendors SQLite (no OS dependency, stable docker/nix). `blob` enables
 # incremental BLOB I/O (reserved for P3 content hashing). `trace` exposes the
 # `profile` hook used by the diagnostics query logger. No tokio is pulled in.
-rusqlite = { version = "0.31", features = ["bundled", "blob", "trace"] }
+rusqlite = { version = "0.40", features = ["bundled", "blob", "trace"] }
 redb     = "2"
 
 [dev-dependencies]
