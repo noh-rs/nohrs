@@ -129,11 +129,7 @@ fn home_dir() -> String {
 /// Clamp `index` into `0..len` (or `0` when `len` is zero), for restoring a
 /// possibly-stale active index from a snapshot.
 fn clamp_index(index: usize, len: usize) -> usize {
-    if len == 0 {
-        0
-    } else {
-        index.min(len - 1)
-    }
+    if len == 0 { 0 } else { index.min(len - 1) }
 }
 
 /// The explorer page: a 2-way split container over panes, each holding its own

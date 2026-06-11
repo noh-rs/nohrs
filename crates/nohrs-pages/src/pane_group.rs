@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_component::resizable::{h_resizable, resizable_panel, v_resizable, ResizableState};
+use gpui_component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
 use gpui_component::{Icon, IconName};
 use nohrs_core::config::SplitDirection;
 use nohrs_ui::theme::theme;

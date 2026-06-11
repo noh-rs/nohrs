@@ -8,10 +8,7 @@ use nohrs_services::search::SearchScope;
 use nohrs_ui::theme::theme;
 
 /// Renders the search bar with the query input and search option toggles.
-pub fn render(
-    page: &mut ExplorerPane,
-    cx: &mut Context<ExplorerPane>,
-) -> impl IntoElement + use<> {
+pub fn render(page: &mut ExplorerPane, cx: &mut Context<ExplorerPane>) -> impl IntoElement + use<> {
     let current_text = page.search_input.read(cx).text().to_string();
     if current_text != page.search_query {
         page.search_query = current_text;
