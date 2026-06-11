@@ -37,14 +37,9 @@ pub fn render(
             let with_modifier =
                 event.keystroke.modifiers.platform || event.keystroke.modifiers.control;
             let is_f = key_lc == "f" || event.keystroke.key == "KeyF";
-            let is_b = key_lc == "b" || event.keystroke.key == "KeyB";
             let close_with_escape = key_lc == "escape" && this.search_visible;
             if (is_f && with_modifier) || close_with_escape {
                 this.toggle_search(window, cx);
-                cx.stop_propagation();
-            } else if is_b && with_modifier {
-                // Cmd/Ctrl+B toggles the left quick-access sidebar (issue #164).
-                this.toggle_sidebar(cx);
                 cx.stop_propagation();
             }
         }))

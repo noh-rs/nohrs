@@ -73,6 +73,8 @@ actions!(
         NewTab,
         /// Close the active tab (closing the pane if it was its last tab).
         CloseTab,
+        /// Toggle the active tab's left quick-access sidebar.
+        ToggleSidebar,
     ]
 );
 
@@ -105,6 +107,8 @@ fn bind_pane_keys(cx: &mut App) {
             KeyBinding::new("ctrl-t", NewTab, Some(PANES_CONTEXT)),
             KeyBinding::new("cmd-w", CloseTab, Some(PANES_CONTEXT)),
             KeyBinding::new("ctrl-w", CloseTab, Some(PANES_CONTEXT)),
+            KeyBinding::new("cmd-b", ToggleSidebar, Some(PANES_CONTEXT)),
+            KeyBinding::new("ctrl-b", ToggleSidebar, Some(PANES_CONTEXT)),
         ]);
     });
 }
@@ -621,6 +625,13 @@ impl Render for ExplorerPage {
                 let pane = this.group.active();
                 let tab = this.group.active_tab(pane);
                 this.close_tab_in_pane(pane, tab, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _window, cx| {
+                let pane = this.group.active();
+                let tab_index = this.group.active_tab(pane);
+                if let Some(tab) = this.group.tab(pane, tab_index) {
+                    tab.update(cx, |tab, cx| tab.toggle_sidebar(cx));
+                }
             }))
             .child(body)
     }
