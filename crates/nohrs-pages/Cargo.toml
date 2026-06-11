@@ -20,7 +20,7 @@ nohrs-services = { path = "../nohrs-services", features = ["gui"] }
 nohrs-store    = { path = "../nohrs-store" }
 nohrs-ui       = { path = "../nohrs-ui" }
 gpui = "0.2"
-gpui-component = "0.3"
+gpui-component = "0.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 anyhow.workspace     = true
 serde.workspace      = true

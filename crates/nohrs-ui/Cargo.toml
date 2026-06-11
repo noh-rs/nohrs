@@ -19,7 +19,7 @@ path = "src/nohrs_ui.rs"
 nohrs-core   = { path = "../nohrs-core" }
 nohrs-models = { path = "../nohrs-models" }
 gpui = "0.2"
-gpui-component = "0.3"
+gpui-component = "0.5"
 rust-embed = "8"
 serde.workspace      = true
 serde_json.workspace = true
