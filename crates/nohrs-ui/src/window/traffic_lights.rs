@@ -1,4 +1,4 @@
-use gpui::{point, px, Pixels, Point, TitlebarOptions, WindowOptions};
+use gpui::{Pixels, Point, TitlebarOptions, WindowOptions, point, px};
 
 const DEFAULT_HORIZONTAL_OFFSET: Pixels = px(12.0);
 const DEFAULT_BUTTON_SIZE: Pixels = px(16.0);

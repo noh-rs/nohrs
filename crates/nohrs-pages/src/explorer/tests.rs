@@ -12,7 +12,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{point, px, AppContext, TestAppContext, WindowHandle};
+use gpui::{AppContext, TestAppContext, WindowHandle, point, px};
 use gpui_component::input::InputState;
 use gpui_component::resizable::ResizableState;
 use nohrs_core::config;
@@ -133,18 +133,20 @@ async fn apply_filter_hides_dotfiles_until_enabled(cx: &mut TestAppContext) {
 
             page.show_hidden = false;
             page.apply_filter();
-            assert!(page
-                .filtered_entries
-                .iter()
-                .all(|entry| entry.name != ".hidden"));
+            assert!(
+                page.filtered_entries
+                    .iter()
+                    .all(|entry| entry.name != ".hidden")
+            );
             assert_eq!(page.filtered_entries.len(), 2);
 
             page.show_hidden = true;
             page.apply_filter();
-            assert!(page
-                .filtered_entries
-                .iter()
-                .any(|entry| entry.name == ".hidden"));
+            assert!(
+                page.filtered_entries
+                    .iter()
+                    .any(|entry| entry.name == ".hidden")
+            );
             assert_eq!(page.filtered_entries.len(), 3);
         })
         .unwrap();

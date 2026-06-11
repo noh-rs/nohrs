@@ -75,16 +75,17 @@ gpui renders with Metal on macOS, so Xcode and the Metal toolchain are required:
 
 ## Roadmap
 
-Nohrs ships in six serial phases from `v0.2.0` to `v0.7.0`. Highlights:
+Nohrs ships in six serial phases. P1 iterates on `0.0.x`; the first usable MVP is cut as
+`0.1.0` when P2 completes, reaching `0.5.0` by P6 and `1.0.0` at stabilization. Highlights:
 
 | Phase | Milestone | Theme |
 |-------|-----------|-------|
-| **P1** | `v0.2.0` | Foundation — quality, workspace split, dev/CI infra, web MVP |
-| **P2** | `v0.3.0` | Explorer Essentials — DnD, file ops, split view, tabs, persistence |
-| **P3** | `v0.4.0` | Launcher & Search — global-hotkey launcher, SQLite FTS5 search |
-| **P4** | `v0.5.0` | Plugin Host — WASM Component Model, 3-language templates |
-| **P5** | `v0.6.0` | Ecosystem — Plugin Store, community plugins |
-| **P6** | `v0.7.0` | Stabilization — multi-OS strategy, performance gates, docs |
+| **P1** | `0.0.x` | Foundation — quality, workspace split, dev/CI infra, web MVP |
+| **P2** | `0.1.0` | Explorer Essentials — DnD, file ops, split view, tabs, persistence |
+| **P3** | `0.2.0` | Launcher & Search — global-hotkey launcher, SQLite FTS5 search |
+| **P4** | `0.3.0` | Plugin Host — WASM Component Model, 3-language templates |
+| **P5** | `0.4.0` | Ecosystem — Plugin Store, community plugins |
+| **P6** | `0.5.0` | Stabilization — multi-OS strategy, performance gates, docs |
 
 Full details, vision, and design docs live in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 

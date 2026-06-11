@@ -18,10 +18,10 @@ pub mod watcher;
 
 pub use loader::{backup, ensure_exists, needs_migration, reset, write_default};
 pub use settings::{
-    json_schema_string, load_from_path, report_diagnostics, Config, ConfigOverride, Diagnostic,
-    DiagnosticLevel, Diagnostics, DiagnosticsStore, Explorer, Indexing, IndexingExclude,
-    IndexingMode, Keybindings, Launcher, Plugins, Search, SearchBackend, SortOrder, SplitDirection,
-    Theme, ThemeMode, Ui, CURRENT_SCHEMA_VERSION, SCHEMA_URL,
+    CURRENT_SCHEMA_VERSION, Config, ConfigOverride, Diagnostic, DiagnosticLevel, Diagnostics,
+    DiagnosticsStore, Explorer, Indexing, IndexingExclude, IndexingMode, Keybindings, Launcher,
+    Plugins, SCHEMA_URL, Search, SearchBackend, SortOrder, SplitDirection, Theme, ThemeMode, Ui,
+    json_schema_string, load_from_path, report_diagnostics,
 };
 pub use watcher::ConfigWatcher;
 
@@ -74,3 +74,22 @@ pub const SEARCH_MAX_LINE_LEN: usize = 1000;
 
 /// Upper bound on matches collected from a single file during a content search.
 pub const SEARCH_MAX_MATCHES_PER_FILE: usize = 1000;
+
+/// Process-wide serialization for tests that mutate the environment.
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+
+    // `std::env::set_var`/`remove_var` mutate process-global state that any
+    // thread's `getenv` can observe, so every env-mutating test in this crate —
+    // across all `config` submodules, which compile into one test binary — must
+    // serialize through a single lock, not a per-module one. Recover from a
+    // poisoned lock (a panic in another env test) so the offending test's own
+    // assertion surfaces instead of an opaque poison panic in later env tests.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Acquire the shared environment lock for the duration of an env-mutating test.
+    pub(crate) fn env_lock() -> MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}

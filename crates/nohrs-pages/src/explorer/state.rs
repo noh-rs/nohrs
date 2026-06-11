@@ -4,11 +4,11 @@ use nohrs_services::search::{SearchScope, SearchService};
 use nohrs_services::syntax::SyntaxService;
 use nohrs_ui::components::file_list::FileListDelegate;
 
-use gpui::{px, size, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, Window};
+use gpui::{AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, Window, px, size};
+use gpui_component::VirtualListScrollHandle;
 use gpui_component::input::InputState;
 use gpui_component::list::List;
 use gpui_component::resizable::ResizableState;
-use gpui_component::VirtualListScrollHandle;
 use std::{rc::Rc, sync::Arc, time::Instant};
 
 use super::entries;

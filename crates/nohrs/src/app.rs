@@ -7,9 +7,9 @@
 //! P3) will be opened from here too, as a symmetric second pillar.
 
 use crate::cli::Cli;
-use gpui::{px, size, App, AppContext, Application, Bounds};
-use gpui_component::resizable::ResizableState;
+use gpui::{App, AppContext, Application, Bounds, px, size};
 use gpui_component::Root;
+use gpui_component::resizable::ResizableState;
 use nohrs_core::config::{self, ConfigOverride};
 use nohrs_core::telemetry::logging::init_logging;
 use nohrs_pages::RootView;

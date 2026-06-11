@@ -4,8 +4,8 @@ use nohrs_ui::components::file_list::FileListDelegate;
 use gpui::{AppContext, Context, Window};
 use gpui_component::list::{List, ListEvent};
 
-use super::types::ResizingColumn;
 use super::ExplorerPane;
+use super::types::ResizingColumn;
 
 impl ExplorerPane {
     pub(crate) fn ensure_list_initialized(&mut self, window: &mut Window, cx: &mut Context<Self>) {
