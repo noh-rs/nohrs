@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use redb::{Database, TableDefinition, TableError};
+use redb::{Database, ReadableDatabase, TableDefinition, TableError};
 
 use crate::{KvOp, KvStore, Result, StoreLogConfig};
 
