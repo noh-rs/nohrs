@@ -63,7 +63,8 @@ pub fn render(
         .child(header::render(page, window, cx))
         .child(
             div().flex().flex_row().flex_grow().min_h(px(0.0)).child(
-                gpui_component::resizable::h_resizable("file-explorer").with_state(&page.resizable)
+                gpui_component::resizable::h_resizable("file-explorer")
+                    .with_state(&page.resizable)
                     .child(
                         // Keep the panel in the resizable's child list even when
                         // hidden (toggle via `.visible`), so the persisted panel

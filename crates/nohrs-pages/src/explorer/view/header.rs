@@ -25,9 +25,7 @@ pub fn render(
     let mut bc = Breadcrumb::new();
 
     if is_truncated {
-        bc = bc.child(
-            BreadcrumbItem::new("…").on_click(cx.listener(move |_this, _, _, _| {})),
-        );
+        bc = bc.child(BreadcrumbItem::new("…").on_click(cx.listener(move |_this, _, _, _| {})));
     }
 
     let start_idx = if is_truncated { parts.len() - 5 } else { 0 };
