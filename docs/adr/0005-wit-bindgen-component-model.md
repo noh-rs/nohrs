@@ -9,7 +9,7 @@
 
 しかし、ROADMAP の検討で以下の点が浮上した:
 
-- nohrs はまだ **既存ユーザーがいない** (v0.1.0、コミット 42 本)
+- nohrs はまだ **既存ユーザーがいない** (0.0.x、コミット 42 本)
 - MVP 期間に維持すべき後方互換性が存在しない
 - ユーザー (作者) が明示的に「**WASM Preview2 の仕様**」を要件として挙げている。Extism は Preview 2 (Component Model) を経由しない
 - 2026 年現在、Component Model は wasmtime 30+ で **stable**、実用段階

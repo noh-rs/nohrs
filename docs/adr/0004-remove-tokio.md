@@ -5,7 +5,7 @@
 
 ## Context
 
-v0.1.0 時点での tokio 使用箇所:
+0.0.x 時点 (single-crate 期) での tokio 使用箇所:
 
 - `#[tokio::main]` (`src/gui/main.rs`)
 - `tokio::task::spawn_blocking` (services / fs / search)

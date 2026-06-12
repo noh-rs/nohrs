@@ -5,7 +5,10 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-While Nohrs is pre-alpha (`0.x`), minor versions may include breaking changes.
+Versioning policy: before `0.1.0` (the `0.0.z` pre-MVP stream) there is no stability
+guarantee and any release may break. From `0.1.0` on, breaking changes are batched into
+the next minor (`x`) bump, which is cut when a roadmap phase completes; patch (`y`) bumps
+are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for details.
 
 ## [Unreleased]
 

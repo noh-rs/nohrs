@@ -1,11 +1,11 @@
+use super::ExplorerPane;
 use super::types::{SearchFileResult, SearchMatch, StatusLevel};
-use super::ExplorerPage;
 use gpui::{AppContext, AsyncApp, Context, Window};
 use nohrs_services::fs::listing::FileEntryDto;
 use nohrs_services::search::SearchResult;
 use std::collections::HashMap;
 
-impl ExplorerPage {
+impl ExplorerPane {
     pub(crate) fn trigger_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         // Invalidate any in-flight search; only the latest request may apply its
         // results (including the empty-query and degraded-mode early returns,
@@ -42,7 +42,7 @@ impl ExplorerPage {
         let scope = self.search_scope;
 
         cx.spawn(
-            move |this: gpui::WeakEntity<ExplorerPage>, cx: &mut AsyncApp| {
+            move |this: gpui::WeakEntity<ExplorerPane>, cx: &mut AsyncApp| {
                 let mut cx = cx.clone();
                 async move {
                     // `SearchService::search` is synchronous, and grouping plus

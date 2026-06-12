@@ -1,6 +1,6 @@
 use super::truncate_middle;
 
-use crate::explorer::ExplorerPage;
+use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::{Icon, IconName, ListItem};
@@ -9,11 +9,11 @@ use nohrs_ui::theme::theme;
 
 /// Renders a single listing row for the given entry at row index `ix`.
 pub fn render(
-    page: &ExplorerPage,
+    page: &ExplorerPane,
     item: &FileEntryDto,
     ix: usize,
-    cx: &mut Context<ExplorerPage>,
-) -> impl IntoElement {
+    cx: &mut Context<ExplorerPane>,
+) -> impl IntoElement + use<> {
     use nohrs_ui::components::file_list::{format_date, get_file_type, human_bytes};
 
     let icon_name = match item.kind.as_str() {
@@ -93,7 +93,7 @@ pub fn render(
 
     // ... rendering ...
     // Note: page.total_table_width() method is needed.
-    // I need to make `total_table_width` pub on ExplorerPage. I did make fields pub, but method?
+    // I need to make `total_table_width` pub on ExplorerPane. I did make fields pub, but method?
     // I should check if `total_table_width` is a method. Yes (line 347 in original).
     // I need to ensure that method is `pub` or copy logic.
     // Copying logic is safer: `page.col_name_width + ...`.

@@ -1,28 +1,25 @@
 mod entries;
 mod list_setup;
 mod navigation;
+/// The split-view container that owns one or more panes (`docs/explorer-essentials.md` §3).
+mod page;
 mod preview;
 mod search;
 mod state;
 mod types;
-/// Rendering of the explorer page: header, sidebar, listing, and preview.
+/// Rendering of a single explorer pane: header, sidebar, listing, and preview.
 pub mod view;
 
 #[cfg(test)]
 mod tests;
 
-pub use state::ExplorerPage;
+pub use page::ExplorerPage;
+pub use state::ExplorerPane;
 
-use gpui::{AnyElement, Context, IntoElement, Render, Window};
+use gpui::{Context, IntoElement, Render, Window};
 
-impl Render for ExplorerPage {
+impl Render for ExplorerPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         view::render(self, window, cx)
-    }
-}
-
-impl crate::Page for ExplorerPage {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        <Self as Render>::render(self, window, cx).into_any_element()
     }
 }

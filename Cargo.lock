@@ -4023,7 +4023,7 @@ dependencies = [
 
 [[package]]
 name = "nohrs"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "clap",
  "gpui",
@@ -4032,13 +4032,14 @@ dependencies = [
  "nohrs-models",
  "nohrs-pages",
  "nohrs-services",
+ "nohrs-store",
  "nohrs-ui",
  "tracing",
 ]
 
 [[package]]
 name = "nohrs-core"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "dirs 5.0.1",
  "insta",
@@ -4056,14 +4057,14 @@ dependencies = [
 
 [[package]]
 name = "nohrs-models"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "nohrs-pages"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -4072,6 +4073,7 @@ dependencies = [
  "nohrs-core",
  "nohrs-models",
  "nohrs-services",
+ "nohrs-store",
  "nohrs-ui",
  "serde",
  "serde_json",
@@ -4082,7 +4084,7 @@ dependencies = [
 
 [[package]]
 name = "nohrs-services"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
@@ -4105,7 +4107,7 @@ dependencies = [
 
 [[package]]
 name = "nohrs-store"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "redb",
  "rusqlite",
@@ -4116,7 +4118,7 @@ dependencies = [
 
 [[package]]
 name = "nohrs-ui"
-version = "0.2.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "gpui",

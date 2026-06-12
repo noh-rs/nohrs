@@ -1,5 +1,5 @@
 use crate::theme::theme;
-use gpui::{div, prelude::*, px, rgb, IntoElement};
+use gpui::{IntoElement, div, prelude::*, px, rgb};
 
 /// Non-functional tab bar (placeholder)
 pub fn tab_bar() -> impl IntoElement {
@@ -55,7 +55,7 @@ pub fn split_container<L: IntoElement, R: IntoElement>(left: L, right: R) -> imp
 #[cfg(test)]
 mod tests {
     use super::{split_container, tab_bar};
-    use gpui::{div, point, px, size, ParentElement, TestAppContext};
+    use gpui::{ParentElement, TestAppContext, div, point, px, size};
 
     #[gpui::test]
     async fn placeholders_lay_out_without_panicking(cx: &mut TestAppContext) {

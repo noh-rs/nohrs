@@ -17,6 +17,7 @@ path = "src/nohrs_pages.rs"
 nohrs-core     = { path = "../nohrs-core" }
 nohrs-models   = { path = "../nohrs-models" }
 nohrs-services = { path = "../nohrs-services", features = ["gui"] }
+nohrs-store    = { path = "../nohrs-store" }
 nohrs-ui       = { path = "../nohrs-ui" }
 gpui = "0.2"
 gpui-component = "0.3"

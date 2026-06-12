@@ -136,7 +136,7 @@ disallowed-methods = [
 ### `rustfmt.toml`
 
 ```toml
-edition = "2021"
+edition = "2024"
 imports_granularity = "Crate"
 group_imports = "StdExternalCrate"
 reorder_imports = true

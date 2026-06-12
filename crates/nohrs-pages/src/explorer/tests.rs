@@ -9,29 +9,57 @@
 // Test fixtures write files directly; the synchronous-fs ban targets app code.
 #![allow(clippy::disallowed_methods)]
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{point, px, AppContext, TestAppContext, WindowHandle};
+use gpui::{AppContext, TestAppContext, WindowHandle, point, px};
 use gpui_component::input::InputState;
 use gpui_component::resizable::ResizableState;
 use nohrs_core::config;
 use nohrs_services::fs::listing::FileEntryDto;
+use nohrs_store::{KvStore, RedbKvStore, StoreLogConfig};
+
+use nohrs_core::config::SplitDirection;
 
 use super::types::{SortKey, StatusLevel, ViewMode};
-use super::ExplorerPage;
+use super::{ExplorerPage, ExplorerPane};
 
-/// Build a real `ExplorerPage` inside a test window. The sub-entities
+/// Build a real `ExplorerPane` inside a test window. The sub-entities
 /// (`ResizableState`, `InputState`) are window-bound, so the page is
 /// constructed in the `add_window` build closure — the canonical pattern for
 /// views whose dependencies need a `Window`.
-fn new_explorer(cx: &mut TestAppContext) -> WindowHandle<ExplorerPage> {
+fn new_explorer(cx: &mut TestAppContext) -> WindowHandle<ExplorerPane> {
     // gpui-component installs the `Theme` global and input/list subsystems its
     // widgets rely on; initialize it once before building any window.
     cx.update(gpui_component::init);
     cx.add_window(|window, cx| {
         let resizable = ResizableState::new(cx);
         let search_input = cx.new(|cx| InputState::new(window, cx));
-        ExplorerPage::new(resizable, search_input, None, cx.focus_handle())
+        ExplorerPane::new(resizable, search_input, None, cx.focus_handle())
+    })
+}
+
+/// Build the split-view container (`ExplorerPage`), which owns its panes. No KV
+/// store, so session save/restore is inert.
+fn new_explorer_page(cx: &mut TestAppContext) -> WindowHandle<ExplorerPage> {
+    cx.update(gpui_component::init);
+    cx.add_window(|window, cx| {
+        let resizable = ResizableState::new(cx);
+        ExplorerPage::new(resizable, None, None, false, window, cx)
+    })
+}
+
+/// Build the container backed by a `store`, optionally restoring its session,
+/// for the persistence round-trip tests.
+fn new_explorer_page_with_store(
+    cx: &mut TestAppContext,
+    store: Arc<dyn KvStore>,
+    restore_tabs: bool,
+) -> WindowHandle<ExplorerPage> {
+    cx.update(gpui_component::init);
+    cx.add_window(|window, cx| {
+        let resizable = ResizableState::new(cx);
+        ExplorerPage::new(resizable, None, Some(store), restore_tabs, window, cx)
     })
 }
 
@@ -105,18 +133,20 @@ async fn apply_filter_hides_dotfiles_until_enabled(cx: &mut TestAppContext) {
 
             page.show_hidden = false;
             page.apply_filter();
-            assert!(page
-                .filtered_entries
-                .iter()
-                .all(|entry| entry.name != ".hidden"));
+            assert!(
+                page.filtered_entries
+                    .iter()
+                    .all(|entry| entry.name != ".hidden")
+            );
             assert_eq!(page.filtered_entries.len(), 2);
 
             page.show_hidden = true;
             page.apply_filter();
-            assert!(page
-                .filtered_entries
-                .iter()
-                .any(|entry| entry.name == ".hidden"));
+            assert!(
+                page.filtered_entries
+                    .iter()
+                    .any(|entry| entry.name == ".hidden")
+            );
             assert_eq!(page.filtered_entries.len(), 3);
         })
         .unwrap();
@@ -362,6 +392,477 @@ async fn reload_reports_error_for_unreadable_dir(cx: &mut TestAppContext) {
             let (_, is_error) = page.status_for_footer().expect("error status set");
             assert!(is_error);
             assert!(page.entries.is_empty());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn explorer_page_starts_with_single_pane(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .read_with(cx, |page, _cx| {
+            assert_eq!(page.pane_count(), 1);
+            assert_eq!(page.active_index(), 0);
+            assert!(!page.is_synced());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn split_opens_second_pane_then_reorients(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            assert_eq!(page.pane_count(), 2, "first split opens a second pane");
+            assert_eq!(page.active_index(), 1, "the new pane becomes active");
+            assert_eq!(page.direction(), SplitDirection::Vertical);
+
+            // The opposite split shortcut flips orientation without adding a pane
+            // (2-way cap, §3.1).
+            page.split(SplitDirection::Horizontal, window, cx);
+            assert_eq!(page.pane_count(), 2);
+            assert_eq!(page.direction(), SplitDirection::Horizontal);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn close_pane_keeps_at_least_one(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            assert_eq!(page.pane_count(), 2);
+
+            page.close_pane(1, window, cx);
+            assert_eq!(page.pane_count(), 1);
+            assert_eq!(page.active_index(), 0);
+
+            // The final pane can never be closed.
+            page.close_pane(0, window, cx);
+            assert_eq!(page.pane_count(), 1);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn set_active_selects_pane_in_bounds(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            page.set_active(0, window, cx);
+            assert_eq!(page.active_index(), 0);
+
+            // Out-of-range indices are ignored rather than panicking.
+            page.set_active(5, window, cx);
+            assert_eq!(page.active_index(), 0);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn panes_navigate_independently_by_default(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("left")).unwrap();
+    std::fs::create_dir(root.join("right")).unwrap();
+    let left = root.join("left").to_string_lossy().to_string();
+    let right = root.join("right").to_string_lossy().to_string();
+
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            let pane0 = page.pane(0);
+            let pane1 = page.pane(1);
+            pane0.update(cx, |pane, cx| pane.change_dir(left.clone(), window, cx));
+            pane1.update(cx, |pane, cx| pane.change_dir(right.clone(), window, cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .read_with(cx, |page, cx| {
+            assert_eq!(page.pane_cwd(0, cx).as_deref(), Some(left.as_str()));
+            assert_eq!(page.pane_cwd(1, cx).as_deref(), Some(right.as_str()));
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn synced_panes_mirror_navigation(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("shared")).unwrap();
+    let shared = root.join("shared").to_string_lossy().to_string();
+
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            let synced = config::Explorer {
+                split_direction: SplitDirection::Vertical,
+                synced_panes: true,
+                restore_tabs: true,
+            };
+            page.apply_config_explorer(&synced, cx);
+            assert!(page.is_synced());
+
+            let pane0 = page.pane(0);
+            pane0.update(cx, |pane, cx| pane.change_dir(shared.clone(), window, cx));
+        })
+        .unwrap();
+    // Navigation events are delivered on the next effect flush; mirror happens there.
+    cx.run_until_parked();
+    window
+        .read_with(cx, |page, cx| {
+            assert_eq!(page.pane_cwd(0, cx).as_deref(), Some(shared.as_str()));
+            assert_eq!(
+                page.pane_cwd(1, cx).as_deref(),
+                Some(shared.as_str()),
+                "sibling pane mirrors the active pane's path"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn synced_navigation_clears_stale_search_state(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("shared")).unwrap();
+    let shared = root.join("shared").to_string_lossy().to_string();
+
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            let synced = config::Explorer {
+                split_direction: SplitDirection::Vertical,
+                synced_panes: true,
+                restore_tabs: true,
+            };
+            page.apply_config_explorer(&synced, cx);
+
+            // Leave the mirrored pane with a stale filter and results from a
+            // prior search so the reset is actually exercised (not vacuous).
+            page.pane(1).update(cx, |pane, _cx| {
+                pane.search_query = "stale".to_string();
+                pane.search_visible = true;
+                pane.search_results = Some(Vec::new());
+            });
+            page.pane(0)
+                .update(cx, |pane, cx| pane.change_dir(shared.clone(), window, cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .read_with(cx, |page, cx| {
+            let pane1 = page.pane(1);
+            let pane1 = pane1.read(cx);
+            assert!(
+                pane1.search_query.is_empty(),
+                "stale filter cleared on sync"
+            );
+            assert!(!pane1.search_visible);
+            assert!(pane1.search_results.is_none());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn split_pane_inherits_applied_ui_config(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            let ui = config::Ui {
+                default_sort: config::SortOrder::Size,
+                show_hidden: true,
+                icon_pack: "default".to_string(),
+            };
+            page.apply_config_ui(&ui, cx);
+
+            // A pane opened by a later split should pick up the applied config
+            // rather than reverting to pane defaults.
+            page.split(SplitDirection::Vertical, window, cx);
+            let pane1 = page.pane(1);
+            let pane1 = pane1.read(cx);
+            assert!(pane1.show_hidden, "new pane inherits show_hidden");
+            assert!(pane1.sort_key == SortKey::Size, "new pane inherits sort");
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn root_pane_shows_sidebar_but_split_pane_hides_it(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            assert!(
+                page.pane(0).read(cx).sidebar_visible,
+                "the root pane shows its sidebar by default (§2)"
+            );
+
+            page.split(SplitDirection::Vertical, window, cx);
+            assert!(
+                !page.pane(1).read(cx).sidebar_visible,
+                "a pane opened by a split starts with the sidebar collapsed"
+            );
+            assert!(
+                page.pane(0).read(cx).sidebar_visible,
+                "splitting does not disturb the original pane's sidebar"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn toggle_sidebar_is_independent_per_pane(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            let pane0 = page.pane(0); // sidebar visible (root)
+            let pane1 = page.pane(1); // sidebar hidden (split)
+
+            pane1.update(cx, |pane, cx| pane.toggle_sidebar(cx));
+            assert!(pane1.read(cx).sidebar_visible, "pane 1 toggled on");
+            assert!(
+                pane0.read(cx).sidebar_visible,
+                "toggling pane 1 leaves pane 0 untouched"
+            );
+
+            pane0.update(cx, |pane, cx| pane.toggle_sidebar(cx));
+            assert!(!pane0.read(cx).sidebar_visible, "pane 0 toggled off");
+            assert!(pane1.read(cx).sidebar_visible, "pane 1 unchanged");
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn close_pane_keeps_subscriptions_aligned(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let shared = dir.path().join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    let shared = shared.to_string_lossy().to_string();
+
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            assert_eq!(page.pane_count(), 2);
+            assert_eq!(page.subscription_count(), 2, "one subscription per pane");
+
+            // Closing index 0 must drop the subscription at the same index so the
+            // Vec stays aligned with the surviving pane.
+            page.close_pane(0, window, cx);
+            assert_eq!(page.pane_count(), 1);
+            assert_eq!(page.subscription_count(), 1);
+
+            // Reuse the container: split again and enable sync. If the
+            // subscription Vec had desynced, the mirror below would target the
+            // wrong pane (or none).
+            page.split(SplitDirection::Vertical, window, cx);
+            assert_eq!(page.subscription_count(), 2);
+            let synced = config::Explorer {
+                split_direction: SplitDirection::Vertical,
+                synced_panes: true,
+                restore_tabs: true,
+            };
+            page.apply_config_explorer(&synced, cx);
+            page.pane(0)
+                .update(cx, |pane, cx| pane.change_dir(shared.clone(), window, cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .read_with(cx, |page, cx| {
+            assert_eq!(
+                page.pane_cwd(1, cx).as_deref(),
+                Some(shared.as_str()),
+                "the sibling still mirrors after a close/split cycle"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn new_tab_appends_and_activates(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            assert_eq!(page.tab_count(0), 1);
+            page.test_new_tab(0, window, cx);
+            assert_eq!(page.tab_count(0), 2, "a new tab is appended");
+            assert_eq!(page.active_tab(0), 1, "the new tab becomes active");
+            // A new tab defaults to home (§4).
+            if let Ok(home) = std::env::var("HOME") {
+                assert_eq!(page.tab_cwd(0, 1, cx).as_deref(), Some(home.as_str()));
+            }
+
+            // Switching back to the first tab makes it active again.
+            page.test_activate_tab(0, 0, window, cx);
+            assert_eq!(page.active_tab(0), 0);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn close_tab_keeps_pane_when_others_remain(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.test_new_tab(0, window, cx);
+            page.test_new_tab(0, window, cx);
+            assert_eq!(page.tab_count(0), 3);
+            page.test_close_tab(0, 1, window, cx);
+            assert_eq!(
+                page.tab_count(0),
+                2,
+                "closing a non-last tab keeps the pane"
+            );
+            assert_eq!(page.pane_count(), 1);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn closing_last_tab_closes_its_pane(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            page.split(SplitDirection::Vertical, window, cx);
+            assert_eq!(page.pane_count(), 2);
+            assert_eq!(page.tab_count(1), 1);
+
+            // Closing pane 1's only tab closes the pane (§3.1 / §4).
+            page.test_close_tab(1, 0, window, cx);
+            assert_eq!(page.pane_count(), 1);
+
+            // The final tab of the final pane is never closed.
+            page.test_close_tab(0, 0, window, cx);
+            assert_eq!(page.pane_count(), 1);
+            assert_eq!(page.tab_count(0), 1);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn reorder_tab_swaps_order_and_follows_active(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    std::fs::create_dir(&first).unwrap();
+    std::fs::create_dir(&second).unwrap();
+    let first = first.to_string_lossy().to_string();
+    let second = second.to_string_lossy().to_string();
+
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            // Tab 0 -> first, tab 1 (new, active) -> second.
+            page.pane(0)
+                .update(cx, |pane, _cx| pane.cwd = first.clone());
+            page.test_new_tab(0, window, cx);
+            page.pane(0)
+                .update(cx, |pane, _cx| pane.cwd = second.clone());
+            assert_eq!(page.tab_cwd(0, 0, cx).as_deref(), Some(first.as_str()));
+            assert_eq!(page.tab_cwd(0, 1, cx).as_deref(), Some(second.as_str()));
+            assert_eq!(page.active_tab(0), 1);
+
+            // Drag tab 0 to position 1; the active tab (second) follows its entity.
+            page.test_reorder_tab(0, 0, 1, cx);
+            assert_eq!(page.tab_cwd(0, 0, cx).as_deref(), Some(second.as_str()));
+            assert_eq!(page.tab_cwd(0, 1, cx).as_deref(), Some(first.as_str()));
+            assert_eq!(page.active_tab(0), 0, "the active tab follows the reorder");
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn subscriptions_track_every_tab(cx: &mut TestAppContext) {
+    let window = new_explorer_page(cx);
+    window
+        .update(cx, |page, window, cx| {
+            assert_eq!(page.subscription_count(), 1);
+            page.test_new_tab(0, window, cx);
+            assert_eq!(page.subscription_count(), 2, "one subscription per tab");
+            page.split(SplitDirection::Vertical, window, cx);
+            assert_eq!(page.subscription_count(), 3, "the split's pane adds a tab");
+            page.test_close_tab(0, 1, window, cx);
+            assert_eq!(
+                page.subscription_count(),
+                2,
+                "closing a tab drops its subscription"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn tabs_round_trip_through_the_store(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let alpha = dir.path().join("alpha");
+    std::fs::create_dir(&alpha).unwrap();
+    let alpha = alpha.to_string_lossy().to_string();
+    let store: Arc<dyn KvStore> =
+        Arc::new(RedbKvStore::open_in_memory(&StoreLogConfig::default()).unwrap());
+
+    // First session: open a second tab and navigate it, then let the debounced
+    // save fire and write to the store.
+    let window = new_explorer_page_with_store(cx, store.clone(), true);
+    window
+        .update(cx, |page, window, cx| {
+            page.test_new_tab(0, window, cx);
+            page.pane(0)
+                .update(cx, |pane, cx| pane.change_dir(alpha.clone(), window, cx));
+        })
+        .unwrap();
+    // Drive the debounce timer past `SAVE_DEBOUNCE`, then flush the spawned save.
+    cx.background_executor
+        .timer(Duration::from_millis(600))
+        .await;
+    cx.run_until_parked();
+
+    // Second session with the same store restores both tabs.
+    let restored = new_explorer_page_with_store(cx, store.clone(), true);
+    restored
+        .read_with(cx, |page, cx| {
+            assert_eq!(page.tab_count(0), 2, "both tabs are restored");
+            assert_eq!(page.tab_cwd(0, 1, cx).as_deref(), Some(alpha.as_str()));
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn restore_disabled_ignores_saved_session(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let beta = dir.path().join("beta");
+    std::fs::create_dir(&beta).unwrap();
+    let beta = beta.to_string_lossy().to_string();
+    let store: Arc<dyn KvStore> =
+        Arc::new(RedbKvStore::open_in_memory(&StoreLogConfig::default()).unwrap());
+
+    let window = new_explorer_page_with_store(cx, store.clone(), true);
+    window
+        .update(cx, |page, window, cx| {
+            page.test_new_tab(0, window, cx);
+            page.pane(0)
+                .update(cx, |pane, cx| pane.change_dir(beta.clone(), window, cx));
+        })
+        .unwrap();
+    cx.background_executor
+        .timer(Duration::from_millis(600))
+        .await;
+    cx.run_until_parked();
+
+    // With restore disabled, a fresh session starts with a single default tab.
+    let fresh = new_explorer_page_with_store(cx, store.clone(), false);
+    fresh
+        .read_with(cx, |page, _cx| {
+            assert_eq!(page.tab_count(0), 1, "restore disabled: no extra tabs");
+            assert_eq!(page.pane_count(), 1);
         })
         .unwrap();
 }
