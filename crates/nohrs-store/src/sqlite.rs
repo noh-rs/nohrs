@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::{
@@ -15,9 +16,9 @@ use crate::{
 /// Forward-only migrations, applied in order and recorded in `_migrations`.
 const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/001_init.sql"))];
 
-// rusqlite's `profile` hook takes a bare `fn` pointer (not a closure), so the
-// query-logging thresholds are kept in process-global atomics that the callback
-// reads. A nohrs process opens a single metadata store, so this global state is
+// rusqlite's `trace_v2` profile hook takes a bare `fn` pointer (not a closure),
+// so the query-logging thresholds are kept in process-global atomics that the
+// callback reads. A nohrs process opens a single metadata store, so this global state is
 // effectively per-store; the last `open` wins if several are created.
 static LOG_ALL_QUERIES: AtomicBool = AtomicBool::new(false);
 static SLOW_QUERY_MS: AtomicU64 = AtomicU64::new(0);
@@ -72,15 +73,28 @@ impl SqliteStore {
     }
 }
 
-/// Install (or not) the rusqlite profile hook based on `log`. When both
-/// thresholds are off the hook is left uninstalled so logging adds no overhead.
+/// Install (or not) the rusqlite `trace_v2` profile hook based on `log`. When
+/// both thresholds are off the hook is left uninstalled so logging adds no
+/// overhead.
 fn configure_query_logging(connection: &mut Connection, log: &StoreLogConfig) {
     LOG_ALL_QUERIES.store(log.log_all_queries, Ordering::Relaxed);
     SLOW_QUERY_MS.store(log.slow_query_ms, Ordering::Relaxed);
     if log.log_all_queries || log.slow_query_ms > 0 {
-        connection.profile(Some(profile_callback));
+        connection.trace_v2(
+            TraceEventCodes::SQLITE_TRACE_PROFILE,
+            Some(trace_profile_callback),
+        );
     } else {
-        connection.profile(None);
+        connection.trace_v2(TraceEventCodes::empty(), None);
+    }
+}
+
+// `trace_v2` multiplexes every trace event kind through one hook; we only enable
+// `SQLITE_TRACE_PROFILE`, so forward those to `profile_callback` and ignore the
+// rest.
+fn trace_profile_callback(event: TraceEvent<'_>) {
+    if let TraceEvent::Profile(statement, duration) = event {
+        profile_callback(statement.sql().as_ref(), duration);
     }
 }
 
