@@ -9,26 +9,26 @@
 
 use crate::explorer::ExplorerPage;
 use crate::{
-    extensions::ExtensionsPage, git::GitPage, s3::S3Page, settings::SettingsPage, PageKind,
+    PageKind, extensions::ExtensionsPage, git::GitPage, s3::S3Page, settings::SettingsPage,
 };
 use gpui::{
-    div, prelude::*, px, rgb, AnyElement, App, AsyncWindowContext, Context, Entity, FocusHandle,
-    Focusable, InteractiveElement, Render, WeakEntity, Window,
+    AnyElement, App, AsyncWindowContext, Context, Entity, FocusHandle, Focusable,
+    InteractiveElement, Render, WeakEntity, Window, div, prelude::*, px, rgb,
 };
-use gpui_component::input::InputState;
 use gpui_component::resizable::ResizableState;
 use gpui_component::{Icon, Root, Theme, ThemeMode as GpuiThemeMode};
 use nohrs_core::config::{self, Config, ConfigOverride, ConfigWatcher};
 use nohrs_core::telemetry::LogErr;
 use nohrs_services::search::SearchService;
-use nohrs_ui::components::layout::footer::{footer, FooterProps};
+use nohrs_store::KvStore;
+use nohrs_ui::components::layout::footer::{FooterProps, footer};
 use nohrs_ui::components::layout::unified_toolbar::{
-    unified_toolbar, AccountMenuAction, AccountMenuCommand, UnifiedToolbarProps,
+    AccountMenuAction, AccountMenuCommand, UnifiedToolbarProps, unified_toolbar,
 };
 use nohrs_ui::theme::theme;
 use std::path::PathBuf;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Duration;
 use tracing::info;
 
@@ -68,6 +68,7 @@ impl RootView {
     pub fn new(
         resizable: Entity<ResizableState>,
         search_service: Option<Arc<SearchService>>,
+        store: Option<Arc<dyn KvStore>>,
         config: Config,
         config_path: PathBuf,
         config_overrides: Vec<ConfigOverride>,
@@ -75,15 +76,17 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search_input = cx.new(|cx| InputState::new(window, cx));
         let focus_handle = cx.focus_handle();
 
+        let restore_tabs = config.explorer.restore_tabs;
         let explorer = cx.new(|cx| {
             ExplorerPage::new(
                 resizable,
-                search_input.clone(),
                 search_service.clone(),
-                cx.focus_handle(),
+                store,
+                restore_tabs,
+                window,
+                cx,
             )
         });
         let git = cx.new(|_cx| GitPage::new());
@@ -143,8 +146,11 @@ impl RootView {
         });
 
         let ui = config.ui.clone();
-        self.explorer
-            .update(cx, |page, cx| page.apply_config_ui(&ui, cx));
+        let explorer_cfg = config.explorer.clone();
+        self.explorer.update(cx, |page, cx| {
+            page.apply_config_ui(&ui, cx);
+            page.apply_config_explorer(&explorer_cfg, cx);
+        });
 
         self.config = config;
         cx.notify();
@@ -302,7 +308,7 @@ impl Render for RootView {
                     // transient status and is always shown as an error.
                     let (status_message, status_is_error) = match &self.config_status {
                         Some(message) => (Some(message.clone()), true),
-                        None => match self.explorer.read(cx).status_for_footer() {
+                        None => match self.explorer.read(cx).status_for_footer(cx) {
                             Some((text, is_error)) => (Some(text), is_error),
                             None => (None, false),
                         },
@@ -347,7 +353,7 @@ impl RootView {
         }
     }
 
-    fn render_navigation(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_navigation(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let active_page = self.current_page;
 
         div()
@@ -376,7 +382,7 @@ impl RootView {
         page: PageKind,
         active: bool,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         div()
             .id(("nav-btn", page as usize))
             .w(px(48.0))

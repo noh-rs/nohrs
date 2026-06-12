@@ -1,14 +1,14 @@
 use super::row;
+use crate::explorer::ExplorerPane;
 use crate::explorer::types::SortKey;
-use crate::explorer::ExplorerPage;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::{v_virtual_list, ListItem};
+use gpui_component::{ListItem, v_virtual_list};
 use nohrs_ui::theme::theme;
 use std::rc::Rc;
 
 /// Renders the file listing as a virtualized multi-column table.
-pub fn render(page: &mut ExplorerPage, cx: &mut Context<ExplorerPage>) -> AnyElement {
+pub fn render(page: &mut ExplorerPane, cx: &mut Context<ExplorerPane>) -> AnyElement {
     let table_width = page.total_table_width();
     let col_name = page.col_name_width;
     let col_type = page.col_type_width;
@@ -39,15 +39,15 @@ pub fn render(page: &mut ExplorerPage, cx: &mut Context<ExplorerPage>) -> AnyEle
 // them into a struct would not improve clarity here.
 #[allow(clippy::too_many_arguments)]
 fn render_table_with_header(
-    page: &mut ExplorerPage,
+    page: &mut ExplorerPane,
     table_width: f32,
     col_name: f32,
     col_type: f32,
     col_size: f32,
     col_modified: f32,
     col_action: f32,
-    cx: &mut Context<ExplorerPage>,
-) -> impl IntoElement {
+    cx: &mut Context<ExplorerPane>,
+) -> impl IntoElement + use<> {
     let entity = cx.entity().clone();
 
     let mut all_sizes = vec![gpui::size(px(table_width), px(48.0))];
@@ -93,15 +93,15 @@ fn render_table_with_header(
 
 #[allow(clippy::too_many_arguments)]
 fn render_header_row(
-    page: &ExplorerPage,
+    page: &ExplorerPane,
     table_width: f32,
     col_name: f32,
     col_type: f32,
     col_size: f32,
     col_modified: f32,
     col_action: f32,
-    cx: &mut Context<ExplorerPage>,
-) -> impl IntoElement {
+    cx: &mut Context<ExplorerPane>,
+) -> impl IntoElement + use<> {
     div()
         .w(px(table_width))
         .h(px(48.0))
@@ -152,22 +152,22 @@ fn render_header_row(
 }
 
 fn render_resizable_column_header(
-    page: &ExplorerPage,
+    page: &ExplorerPane,
     label: &str,
     key: SortKey,
     column_index: usize,
     width: f32,
-    cx: &mut Context<ExplorerPage>,
-) -> impl IntoElement {
+    cx: &mut Context<ExplorerPane>,
+) -> impl IntoElement + use<> {
     // We need to call page methods like start_column_resize which take &mut self.
-    // But `v_virtual_list` closure gives `view` (&mut ExplorerPage), so `page` here could be &mut?
+    // But `v_virtual_list` closure gives `view` (&mut ExplorerPane), so `page` here could be &mut?
     // In `render_table_with_header` closure, `view` is passed to `render_header_row`.
-    // So `page` is &mut ExplorerPage.
-    // I should change signature to &mut ExplorerPage if needed.
+    // So `page` is &mut ExplorerPane.
+    // I should change signature to &mut ExplorerPane if needed.
     // But `start_column_resize` is called in event handler which takes `this` (mut).
     // The `page` argument is used to bind listener.
     // So `page` doesn't need to be mut here, the lambda captures things?
-    // Wait, `cx.listener` callback receives `this: &mut V` (ExplorerPage).
+    // Wait, `cx.listener` callback receives `this: &mut V` (ExplorerPane).
     // So `page` is just used for rendering state (width etc).
     // `render_resizable_column_header` logic:
     // ... .child(render_column_header(...))
@@ -205,12 +205,12 @@ fn render_resizable_column_header(
 }
 
 fn render_column_header(
-    page: &ExplorerPage,
+    page: &ExplorerPane,
     label: &str,
     key: SortKey,
     key_idx: usize,
     flex: bool,
-    cx: &mut Context<ExplorerPage>,
+    cx: &mut Context<ExplorerPane>,
 ) -> gpui::Div {
     let is_active = page.sort_key == key;
     let label_str = label.to_string();

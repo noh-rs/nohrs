@@ -1,11 +1,11 @@
 use crate::theme::theme;
 use gpui::{
-    div, prelude::*, px, rgb, Action, Context, IntoElement, Pixels, Render, WindowControlArea,
+    Action, Context, IntoElement, Pixels, Render, WindowControlArea, div, prelude::*, px, rgb,
 };
 use gpui_component::{
+    Icon, IconName, Sizable, Size,
     button::{Button, ButtonRounded, ButtonVariant, ButtonVariants},
     popup_menu::PopupMenuExt,
-    Icon, IconName, Sizable, Size,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -37,7 +37,7 @@ impl Default for UnifiedToolbarProps {
 pub fn unified_toolbar<V: Render>(
     props: UnifiedToolbarProps,
     _cx: &mut Context<V>,
-) -> impl IntoElement {
+) -> impl IntoElement + use<V> {
     let UnifiedToolbarProps {
         account_name,
         account_plan,
@@ -261,7 +261,7 @@ impl Action for AccountMenuAction {
 
 #[cfg(test)]
 mod tests {
-    use super::{unified_toolbar, AccountMenuCommand, UnifiedToolbarProps};
+    use super::{AccountMenuCommand, UnifiedToolbarProps, unified_toolbar};
     use gpui::{IntoElement, Render, TestAppContext, Window};
     use serde_json::json;
 

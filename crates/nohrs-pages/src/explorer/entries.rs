@@ -19,11 +19,7 @@ pub fn sort_entries(entries: &mut [FileEntryDto], key: SortKey, asc: bool) {
                         ext_a.cmp(&ext_b)
                     }
                 };
-                if asc {
-                    order
-                } else {
-                    order.reverse()
-                }
+                if asc { order } else { order.reverse() }
             }
             kind_order => kind_order,
         }

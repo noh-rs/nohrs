@@ -37,6 +37,27 @@
       },
       "type": "object"
     },
+    "Explorer": {
+      "description": "Split-view and pane settings (see `docs/explorer-essentials.md` §3).",
+      "properties": {
+        "restore_tabs": {
+          "default": true,
+          "description": "When enabled, the previous session's tabs are restored on restart (§4).",
+          "type": "boolean"
+        },
+        "split_direction": {
+          "$ref": "#/$defs/SplitDirection",
+          "default": "vertical",
+          "description": "Orientation a fresh split uses unless overridden by the split shortcut."
+        },
+        "synced_panes": {
+          "default": false,
+          "description": "When enabled, navigating in one pane mirrors the path into the others.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "Indexing": {
       "description": "Filesystem indexing settings.",
       "properties": {
@@ -204,6 +225,21 @@
         }
       ]
     },
+    "SplitDirection": {
+      "description": "How a 2-way split arranges its panes.",
+      "oneOf": [
+        {
+          "const": "vertical",
+          "description": "Panes side by side, separated by a vertical divider (`Cmd+\\`).",
+          "type": "string"
+        },
+        {
+          "const": "horizontal",
+          "description": "Panes stacked, separated by a horizontal divider (`Cmd+Shift+\\`).",
+          "type": "string"
+        }
+      ]
+    },
     "Theme": {
       "description": "Appearance settings.",
       "properties": {
@@ -275,6 +311,15 @@
         }
       },
       "description": "Diagnostics / performance-logging settings."
+    },
+    "explorer": {
+      "$ref": "#/$defs/Explorer",
+      "default": {
+        "restore_tabs": true,
+        "split_direction": "vertical",
+        "synced_panes": false
+      },
+      "description": "Split-view and pane settings."
     },
     "indexing": {
       "$ref": "#/$defs/Indexing",

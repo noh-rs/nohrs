@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tantivy::schema::{Field, Schema, Term, Value, FAST, STORED, STRING, TEXT};
 use tantivy::TantivyDocument;
+use tantivy::schema::{FAST, Field, STORED, STRING, Schema, TEXT, Term, Value};
 use tantivy::{Index, IndexWriter}; // Import trait for add_text etc? No, TantivyDocument implements it.
 
 /// Owns the tantivy index and its writer, and performs full and incremental indexing.

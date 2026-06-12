@@ -5,7 +5,7 @@
 # `cargo fmt --check` on stable enforces only `edition` / `reorder_imports`. They
 # are kept here so a nightly `cargo fmt` reorganizes imports consistently and so
 # the intended policy is documented in one place.
-edition = "2021"
+edition = "2024"
 imports_granularity = "Crate"
 group_imports = "StdExternalCrate"
 reorder_imports = true

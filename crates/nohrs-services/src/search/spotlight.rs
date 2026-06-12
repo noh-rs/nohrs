@@ -1,5 +1,5 @@
-use super::backend::SearchBackend;
 use super::SearchResult;
+use super::backend::SearchBackend;
 use anyhow::{Context, Result};
 use nohrs_core::config::{SEARCH_MAX_LINE_LEN, SEARCH_MAX_MATCHES_PER_FILE};
 use std::fs::File;

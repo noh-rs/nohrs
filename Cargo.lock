@@ -4018,6 +4018,7 @@ dependencies = [
  "nohrs-models",
  "nohrs-pages",
  "nohrs-services",
+ "nohrs-store",
  "nohrs-ui",
  "tracing",
 ]
@@ -4058,6 +4059,7 @@ dependencies = [
  "nohrs-core",
  "nohrs-models",
  "nohrs-services",
+ "nohrs-store",
  "nohrs-ui",
  "serde",
  "serde_json",

@@ -1,5 +1,5 @@
-use super::backend::SearchBackend;
 use super::SearchResult;
+use super::backend::SearchBackend;
 use anyhow::{Context, Result};
 use grep::regex::RegexMatcher;
 use grep::searcher::{Searcher, Sink, SinkMatch};

@@ -1,4 +1,4 @@
-use gpui::{div, prelude::*, px, rgb, AnyElement, Context, Render, Window};
+use gpui::{AnyElement, Context, Render, Window, div, prelude::*, px, rgb};
 use nohrs_ui::theme::theme;
 
 /// The extensions page, a placeholder for a future extension store.

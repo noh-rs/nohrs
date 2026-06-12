@@ -1,5 +1,5 @@
 use super::super::types::ViewMode;
-use crate::explorer::ExplorerPage;
+use crate::explorer::ExplorerPane;
 use gpui::*;
 
 /// Grid-mode rendering of the listing.
@@ -14,9 +14,9 @@ pub mod search_bar;
 /// Renders the file listing in the active view mode, with the search bar when
 /// search is visible.
 pub fn render(
-    page: &mut ExplorerPage,
+    page: &mut ExplorerPane,
     window: &mut Window,
-    cx: &mut Context<ExplorerPage>,
+    cx: &mut Context<ExplorerPane>,
 ) -> AnyElement {
     page.ensure_list_initialized(window, cx);
 
