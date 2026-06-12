@@ -1,6 +1,6 @@
 use crate::theme::theme;
 use gpui::{ParentElement, Styled, Window, div, px, rgb};
-use gpui_component::list::{List, ListDelegate, ListItem};
+use gpui_component::list::{ListDelegate, ListItem, ListState};
 use gpui_component::{Icon, IconName, IndexPath};
 use nohrs_models::file_entry::FileEntryDto;
 use std::sync::Arc;
@@ -55,10 +55,10 @@ impl ListDelegate for FileListDelegate {
     }
 
     fn render_item(
-        &self,
+        &mut self,
         ix: IndexPath,
         _window: &mut Window,
-        _cx: &mut gpui::Context<List<Self>>,
+        _cx: &mut gpui::Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let item = self.items.get(ix.row)?;
 
@@ -180,7 +180,7 @@ impl ListDelegate for FileListDelegate {
         &mut self,
         ix: Option<IndexPath>,
         _window: &mut Window,
-        _cx: &mut gpui::Context<List<Self>>,
+        _cx: &mut gpui::Context<ListState<Self>>,
     ) {
         self.selected = ix;
     }
@@ -189,7 +189,7 @@ impl ListDelegate for FileListDelegate {
         &mut self,
         _secondary: bool,
         _window: &mut Window,
-        _cx: &mut gpui::Context<List<Self>>,
+        _cx: &mut gpui::Context<ListState<Self>>,
     ) {
         if let Some(ix) = self.selected {
             if let Some(item) = self.items.get(ix.row) {
@@ -254,7 +254,7 @@ mod tests {
     use super::{FileListDelegate, format_date, get_file_type, human_bytes};
     use gpui::TestAppContext;
     use gpui_component::IndexPath;
-    use gpui_component::list::{List, ListDelegate};
+    use gpui_component::list::{ListDelegate, ListState};
     use nohrs_models::file_entry::FileEntryDto;
     use proptest::prelude::*;
     use std::sync::{Arc, Mutex};
@@ -335,7 +335,7 @@ mod tests {
         }
     }
 
-    // GPUI tests: drive the delegate through a real `List<FileListDelegate>`
+    // GPUI tests: drive the delegate through a real `ListState<FileListDelegate>`
     // entity in a test window so the `ListDelegate` impl (including the
     // `render_item` element tree painted for the visible rows) actually runs.
 
@@ -349,7 +349,7 @@ mod tests {
             // A file, a directory, and an extensioned file exercise every arm of
             // `render_item` (icon choice, size column, type column).
             delegate.set_items(vec![entry("a.txt"), dir_entry("src"), entry("b.png")]);
-            List::new(delegate, window, cx)
+            ListState::new(delegate, window, cx)
         });
         // The maximized test window paints the rows on open.
         cx.run_until_parked();
@@ -384,7 +384,7 @@ mod tests {
             delegate.on_confirm = Some(Arc::new(move |item: &FileEntryDto| {
                 *sink.lock().unwrap() = Some(item.name.clone());
             }));
-            List::new(delegate, window, cx)
+            ListState::new(delegate, window, cx)
         });
 
         list.update_in(cx, |list, window, cx| {

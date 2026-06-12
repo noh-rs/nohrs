@@ -2,8 +2,9 @@ use crate::explorer::ExplorerPane;
 use crate::explorer::types::SearchType;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::input::TextInput;
-use gpui_component::{Icon, IconName, ListItem};
+use gpui_component::input::Input;
+use gpui_component::list::ListItem;
+use gpui_component::{Icon, IconName};
 use nohrs_services::search::SearchScope;
 use nohrs_ui::theme::theme;
 
@@ -130,7 +131,7 @@ pub fn render(page: &mut ExplorerPane, cx: &mut Context<ExplorerPane>) -> impl I
                                         }
                                     },
                                 ))
-                                .child(TextInput::new(&si))
+                                .child(Input::new(&si))
                         })
                         .child(
                             div()

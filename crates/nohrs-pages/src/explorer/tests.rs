@@ -33,7 +33,7 @@ fn new_explorer(cx: &mut TestAppContext) -> WindowHandle<ExplorerPane> {
     // widgets rely on; initialize it once before building any window.
     cx.update(gpui_component::init);
     cx.add_window(|window, cx| {
-        let resizable = ResizableState::new(cx);
+        let resizable = cx.new(|_| ResizableState::default());
         let search_input = cx.new(|cx| InputState::new(window, cx));
         ExplorerPane::new(resizable, search_input, None, cx.focus_handle())
     })
@@ -44,7 +44,7 @@ fn new_explorer(cx: &mut TestAppContext) -> WindowHandle<ExplorerPane> {
 fn new_explorer_page(cx: &mut TestAppContext) -> WindowHandle<ExplorerPage> {
     cx.update(gpui_component::init);
     cx.add_window(|window, cx| {
-        let resizable = ResizableState::new(cx);
+        let resizable = cx.new(|_| ResizableState::default());
         ExplorerPage::new(resizable, None, None, false, window, cx)
     })
 }
@@ -58,7 +58,7 @@ fn new_explorer_page_with_store(
 ) -> WindowHandle<ExplorerPage> {
     cx.update(gpui_component::init);
     cx.add_window(|window, cx| {
-        let resizable = ResizableState::new(cx);
+        let resizable = cx.new(|_| ResizableState::default());
         ExplorerPage::new(resizable, None, Some(store), restore_tabs, window, cx)
     })
 }

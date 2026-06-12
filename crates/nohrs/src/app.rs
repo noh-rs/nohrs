@@ -47,7 +47,7 @@ impl NohrsApp {
         // runtime needs to be entered here.
         Application::new().with_assets(Assets).run(move |app: &mut App| {
             gpui_component::init(app);
-            let resizable = ResizableState::new(app);
+            let resizable = app.new(|_| ResizableState::default());
             let bounds = Bounds::centered(
                 None,
                 size(px(config::WINDOW_WIDTH), px(config::WINDOW_HEIGHT)),
@@ -103,7 +103,7 @@ impl NohrsApp {
                             cx,
                         )
                     });
-                    cx.new(|cx| Root::new(view.into(), window, cx))
+                    cx.new(|cx| Root::new(view, window, cx))
                 }
             });
             if let Err(error) = opened {

@@ -3,7 +3,8 @@ use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
 use gpui_component::breadcrumb::{Breadcrumb, BreadcrumbItem};
-use gpui_component::{Icon, IconName, ListItem};
+use gpui_component::list::ListItem;
+use gpui_component::{Icon, IconName};
 use nohrs_ui::theme::theme;
 
 /// Renders the explorer header with navigation buttons, the breadcrumb path
@@ -24,8 +25,8 @@ pub fn render(
     let mut bc = Breadcrumb::new();
 
     if is_truncated {
-        bc = bc.item(
-            BreadcrumbItem::new("ellipsis", "…").on_click(cx.listener(move |_this, _, _, _| {})),
+        bc = bc.child(
+            BreadcrumbItem::new("…").on_click(cx.listener(move |_this, _, _, _| {})),
         );
     }
 
@@ -59,7 +60,7 @@ pub fn render(
             path_here = page.cwd.clone();
         }
 
-        bc = bc.item(BreadcrumbItem::new(("bc", actual_i), text).on_click(
+        bc = bc.child(BreadcrumbItem::new(text).on_click(
             cx.listener(move |this, _, window, cx| this.change_dir(path_here.clone(), window, cx)),
         ));
     }

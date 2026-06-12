@@ -5,7 +5,7 @@ use gpui::{
 use gpui_component::{
     Icon, IconName, Sizable, Size,
     button::{Button, ButtonRounded, ButtonVariant, ButtonVariants},
-    popup_menu::PopupMenuExt,
+    menu::DropdownMenu,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -59,37 +59,45 @@ pub fn unified_toolbar<V: Render>(
         .compact()
         .with_variant(ButtonVariant::Ghost)
         .with_size(Size::Small)
-        .popup_menu(move |menu, _window, _cx| {
+        .dropdown_menu(move |menu, _window, _cx| {
             let header_name = account_name.clone();
             let header_plan = account_plan.clone();
 
             let mut menu = menu
                 .min_w(px(220.0))
-                .menu_element_with_icon_and_disabled(
-                    Icon::new(IconName::CircleUser)
-                        .size_4()
-                        .text_color(rgb(theme::FG_SECONDARY)),
+                .menu_element_with_disabled(
                     AccountMenuAction::boxed(AccountMenuCommand::ProfileSummary),
                     true,
                     move |_, _| {
                         div()
-                            .flex_col()
-                            .items_start()
-                            .gap_y(px(2.0))
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                Icon::new(IconName::CircleUser)
+                                    .size_4()
+                                    .text_color(rgb(theme::FG_SECONDARY)),
+                            )
                             .child(
                                 div()
-                                    .text_sm()
-                                    .text_color(rgb(theme::FG))
-                                    .child(header_name.clone()),
+                                    .flex_col()
+                                    .items_start()
+                                    .gap_y(px(2.0))
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(rgb(theme::FG))
+                                            .child(header_name.clone()),
+                                    )
+                                    .when(!header_plan.is_empty(), |this| {
+                                        this.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(rgb(theme::FG_SECONDARY))
+                                                .child(header_plan.clone()),
+                                        )
+                                    }),
                             )
-                            .when(!header_plan.is_empty(), |this| {
-                                this.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(rgb(theme::FG_SECONDARY))
-                                        .child(header_plan.clone()),
-                                )
-                            })
                     },
                 )
                 .separator();

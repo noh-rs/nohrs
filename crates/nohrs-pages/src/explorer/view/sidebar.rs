@@ -1,7 +1,8 @@
 use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::{Icon, IconName, ListItem};
+use gpui_component::list::ListItem;
+use gpui_component::{Icon, IconName};
 use nohrs_ui::theme::theme; // Assuming theme is accessible
 
 /// Renders the explorer sidebar listing quick-access locations.

@@ -1,6 +1,6 @@
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::input::{InputState, RopeExt, TextInput};
+use gpui_component::input::{Input, InputState, RopeExt};
 use std::sync::Once;
 
 actions!(
@@ -104,7 +104,7 @@ impl Render for PreviewEditor {
         div()
             .size_full()
             .child(
-                TextInput::new(&self.editor_state)
+                Input::new(&self.editor_state)
                     .size_full()
                     .h_full()
                     .focus_bordered(false) // Remove black focus border

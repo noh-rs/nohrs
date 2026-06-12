@@ -3,7 +3,8 @@ use crate::explorer::ExplorerPane;
 use crate::explorer::types::SortKey;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::{ListItem, v_virtual_list};
+use gpui_component::list::ListItem;
+use gpui_component::v_virtual_list;
 use nohrs_ui::theme::theme;
 use std::rc::Rc;
 

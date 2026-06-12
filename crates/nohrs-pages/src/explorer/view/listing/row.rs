@@ -3,7 +3,8 @@ use super::truncate_middle;
 use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::{Icon, IconName, ListItem};
+use gpui_component::list::ListItem;
+use gpui_component::{Icon, IconName};
 use nohrs_services::fs::listing::FileEntryDto;
 use nohrs_ui::theme::theme;
 

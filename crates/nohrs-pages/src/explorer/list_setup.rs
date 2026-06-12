@@ -2,7 +2,7 @@ use nohrs_core::config;
 use nohrs_ui::components::file_list::FileListDelegate;
 
 use gpui::{AppContext, Context, Window};
-use gpui_component::list::{List, ListEvent};
+use gpui_component::list::{ListEvent, ListState};
 
 use super::ExplorerPane;
 use super::types::ResizingColumn;
@@ -12,7 +12,7 @@ impl ExplorerPane {
         if self.list.is_none() {
             let mut delegate = FileListDelegate::new();
             delegate.set_items(self.filtered_entries.clone());
-            let list = cx.new(|cx| List::new(delegate, window, cx).no_query());
+            let list = cx.new(|cx| ListState::new(delegate, window, cx));
             let sub = cx.subscribe_in(
                 &list,
                 window,

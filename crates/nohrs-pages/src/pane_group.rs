@@ -467,9 +467,11 @@ impl<T: PaneItem> PaneGroup<T> {
             let first = self.render_pane(0, cx, callbacks);
             let second = self.render_pane(1, cx, callbacks);
             let group = match self.direction {
-                SplitDirection::Vertical => h_resizable("pane-group", self.pane_resizable.clone()),
+                SplitDirection::Vertical => {
+                    h_resizable("pane-group").with_state(&self.pane_resizable)
+                }
                 SplitDirection::Horizontal => {
-                    v_resizable("pane-group", self.pane_resizable.clone())
+                    v_resizable("pane-group").with_state(&self.pane_resizable)
                 }
             };
             group

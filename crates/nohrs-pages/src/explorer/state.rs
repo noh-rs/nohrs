@@ -7,7 +7,7 @@ use nohrs_ui::components::file_list::FileListDelegate;
 use gpui::{AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, Window, px, size};
 use gpui_component::VirtualListScrollHandle;
 use gpui_component::input::InputState;
-use gpui_component::list::List;
+use gpui_component::list::ListState;
 use gpui_component::resizable::ResizableState;
 use std::{rc::Rc, sync::Arc, time::Instant};
 
@@ -52,7 +52,7 @@ pub struct ExplorerPane {
     /// State of the resizable split between listing and preview.
     pub resizable: Entity<ResizableState>,
     /// The listing's virtualized list entity, once initialized.
-    pub list: Option<Entity<List<FileListDelegate>>>,
+    pub list: Option<Entity<ListState<FileListDelegate>>>,
     /// GPUI subscriptions kept alive for the lifetime of the page.
     pub subs: Vec<gpui::Subscription>,
     /// Path of the file currently shown in the preview pane.
@@ -154,7 +154,7 @@ impl ExplorerPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let resizable = ResizableState::new(cx);
+        let resizable = cx.new(|_| ResizableState::default());
         let search_input = cx.new(|cx| InputState::new(window, cx));
         Self::new(resizable, search_input, search_service, cx.focus_handle())
     }
