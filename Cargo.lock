@@ -4043,7 +4043,7 @@ version = "0.0.1"
 dependencies = [
  "dirs 5.0.1",
  "insta",
- "notify 7.0.0",
+ "notify 8.2.0",
  "schemars",
  "serde",
  "serde_json",
@@ -4094,7 +4094,7 @@ dependencies = [
  "ignore",
  "nohrs-core",
  "nohrs-models",
- "notify 7.0.0",
+ "notify 8.2.0",
  "notify-debouncer-mini",
  "postage",
  "serde",
