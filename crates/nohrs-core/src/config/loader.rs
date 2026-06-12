@@ -7,7 +7,7 @@
 //! peek-version → backup → overwrite shape is in place so future bumps slot in
 //! without reworking callers (config.md §7).
 
-use super::settings::{Config, CURRENT_SCHEMA_VERSION};
+use super::settings::{CURRENT_SCHEMA_VERSION, Config};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -117,9 +117,11 @@ mod tests {
             std::fs::read_to_string(&backup_path).unwrap(),
             "schema_version = 1\nmangled"
         );
-        assert!(std::fs::read_to_string(&path)
-            .unwrap()
-            .starts_with("#:schema"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .starts_with("#:schema")
+        );
     }
 
     #[test]
@@ -172,9 +174,11 @@ mod tests {
         let path = dir.path().join("config.toml");
         let backup_path = reset(&path).unwrap();
         assert!(backup_path.is_none());
-        assert!(std::fs::read_to_string(&path)
-            .unwrap()
-            .starts_with("#:schema"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .starts_with("#:schema")
+        );
     }
 
     #[test]

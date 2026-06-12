@@ -1,5 +1,5 @@
 use crate::theme::theme;
-use gpui::{div, px, rgb, ParentElement, Styled, Window};
+use gpui::{ParentElement, Styled, Window, div, px, rgb};
 use gpui_component::list::{List, ListDelegate, ListItem};
 use gpui_component::{Icon, IconName, IndexPath};
 use nohrs_models::file_entry::FileEntryDto;
@@ -220,8 +220,8 @@ pub fn human_bytes(size: u64) -> String {
 
 /// Format a Unix timestamp (seconds) as a `year/month/day` date, or `-` if invalid.
 pub fn format_date(timestamp: &u64) -> String {
-    use time::macros::format_description;
     use time::OffsetDateTime;
+    use time::macros::format_description;
 
     let format = format_description!("[year]/[month]/[day]");
     match OffsetDateTime::from_unix_timestamp(*timestamp as i64) {
@@ -251,10 +251,10 @@ pub fn get_file_type(name: &str, kind: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_date, get_file_type, human_bytes, FileListDelegate};
+    use super::{FileListDelegate, format_date, get_file_type, human_bytes};
     use gpui::TestAppContext;
-    use gpui_component::list::{List, ListDelegate};
     use gpui_component::IndexPath;
+    use gpui_component::list::{List, ListDelegate};
     use nohrs_models::file_entry::FileEntryDto;
     use proptest::prelude::*;
     use std::sync::{Arc, Mutex};

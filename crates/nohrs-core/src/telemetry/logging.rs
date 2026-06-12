@@ -1,5 +1,5 @@
 use super::LogErr;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 /// Install the global `tracing` subscriber, writing logs to stderr and honoring
 /// `RUST_LOG` (defaulting to `info`). A no-op if a subscriber is already set.

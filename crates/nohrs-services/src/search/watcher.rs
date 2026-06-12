@@ -1,6 +1,6 @@
 use anyhow::Result;
 use notify::RecursiveMode;
-use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
+use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 use std::path::PathBuf;
 use std::time::Duration;
 // `notify` / `notify-debouncer-mini` are runtime-agnostic (they drive their own

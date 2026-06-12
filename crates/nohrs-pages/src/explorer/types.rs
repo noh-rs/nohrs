@@ -67,3 +67,11 @@ pub struct StatusMessage {
     pub text: String,
     pub level: StatusLevel,
 }
+
+/// Events a single pane emits to its containing split view, so the container can
+/// mirror navigation across panes when `synced_panes` is enabled (§3.2).
+#[derive(Clone)]
+pub enum PaneEvent {
+    /// The pane navigated to a new directory (carries the new absolute path).
+    Navigated(String),
+}

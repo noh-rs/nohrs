@@ -1,5 +1,5 @@
 use crate::theme::theme;
-use gpui::{div, prelude::*, px, rgb, Context, IntoElement};
+use gpui::{Context, IntoElement, div, prelude::*, px, rgb};
 use gpui_component::{Icon, IconName};
 
 /// Properties controlling the contents of the footer status bar.
@@ -43,7 +43,10 @@ impl Default for FooterProps {
 }
 
 /// A VSCode-like footer (status bar)
-pub fn footer<V: gpui::Render>(props: FooterProps, cx: &mut Context<V>) -> impl IntoElement {
+pub fn footer<V: gpui::Render>(
+    props: FooterProps,
+    cx: &mut Context<V>,
+) -> impl IntoElement + use<V> {
     div()
         .h(px(28.0))
         .w_full()
@@ -206,7 +209,7 @@ fn truncate_path(path: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{footer, truncate_path, FooterProps};
+    use super::{FooterProps, footer, truncate_path};
     use gpui::{IntoElement, Render, TestAppContext, Window};
 
     #[test]

@@ -14,6 +14,11 @@ expression: parsed
             show_hidden: true,
             icon_pack: "default",
         },
+        explorer: Explorer {
+            split_direction: Vertical,
+            synced_panes: false,
+            restore_tabs: true,
+        },
         keybindings: Keybindings {
             bindings: {},
         },

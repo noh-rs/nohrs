@@ -15,6 +15,8 @@ metadata:
 
 End-to-end flow for turning the current change into a pull request that passes
 this repo's automated quality gate, fixing review feedback in a loop until green.
+When green, it also flags changes worth a blog post and offers to file a blog
+issue (Phase 6).
 
 The quality gate here is **not** classic GitHub Actions (there are none yet). It
 is:
@@ -174,6 +176,67 @@ Phase 5 for what to do if still blocked).
   or access you need from them. Don't keep pushing speculative fixes — repeated
   no-op pushes spam the reviewers and burn CI.
 
+## Phase 6 — Blog-worthy? (propose, don't auto-write)
+
+Once the PR is green and reported (Phase 5 "Green"), judge whether the change
+holds a lesson worth a blog post — then **propose** it. Don't write the article
+and don't file anything without the user's go-ahead. Skip this entirely on the
+escalate path (a still-blocked PR isn't ready to write up).
+
+**The bar (propose only if it clears it).** This repo's blog is for design
+stories and instructive findings (see #154, #157), not changelog entries.
+Propose when the PR contains one of:
+
+- A non-obvious **design decision / architectural shift** with real tradeoffs
+  (e.g. #154 — removing tokio for consistency, not speed).
+- A **subtle bug** whose root cause generalizes — teaches something beyond this
+  codebase.
+- A **surprising discovery** about a tool, library, or platform behavior (GPUI
+  quirks, build/runtime gotchas).
+
+Do **not** propose for routine feature adds, mechanical refactors, dependency
+bumps, docs-only changes, or trivial fixes. One proposal max — if the user
+declines, drop it (don't nag on later pushes).
+
+**If it clears the bar:** give the user a 1–2 line pitch (the angle/thesis, not
+"added X") and ask if they want a blog issue filed. The blog engine (#99) isn't
+built yet, so blog topics live as GitHub issues following the #154/#157
+convention.
+
+**On approval**, file the issue while the diff is fresh — the `path:line`
+references are the most valuable part to capture now:
+
+```bash
+gh issue create \
+  --title "Blog: <topic>" \
+  --label "type:docs,area:docs,area:web" \
+  --body "$(cat <<'EOF'
+関連: PR #<this-pr> / #99 (blog エンジン) / <related issues>
+
+## 目標
+<the design story / lesson — what other developers learn, not "got faster">
+
+## 記事の角度（draft）
+- <thesis / angle>
+
+## アウトライン（draft）
+- [ ] <section>
+- [ ] <section>
+
+## 引用したい実コード（PR #<this-pr>）
+- `crates/.../foo.rs:NN` — <why this line matters>
+
+## 完了条件
+- <topic> の記事が blog で公開される
+
+## 参照
+- <docs/ADR links>
+EOF
+)"
+```
+
+Match the existing issues' Japanese section headings. Title may be Japanese.
+
 ---
 
 ## Reference
@@ -188,6 +251,7 @@ Phase 5 for what to do if still blocked).
 | Gate report | `.claude/skills/pull-request/scripts/review-status.sh [PR#]` |
 | Publish screenshots | `.claude/skills/pull-request/scripts/attach-screenshots.sh <slug> <png...>` |
 | PR review threads (raw) | `gh api repos/{owner}/{repo}/pulls/{n}/comments` |
+| Blog issue convention | `gh issue list --label type:docs` (template: #154, #157) |
 
 **AI reviewer bots** treated as the gate: `coderabbitai[bot]`, `cubic-dev-ai[bot]`.
 Override with the `PR_REVIEW_BOTS` env var (space-separated) if the set changes.

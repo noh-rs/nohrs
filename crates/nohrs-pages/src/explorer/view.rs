@@ -1,4 +1,5 @@
-use crate::explorer::ExplorerPage;
+use crate::explorer::ExplorerPane;
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use nohrs_ui::theme::theme;
 
@@ -13,10 +14,10 @@ pub mod sidebar;
 
 /// Renders the explorer page: header, sidebar, listing, and preview panes.
 pub fn render(
-    page: &mut ExplorerPage,
+    page: &mut ExplorerPane,
     window: &mut Window,
-    cx: &mut Context<ExplorerPage>,
-) -> impl IntoElement {
+    cx: &mut Context<ExplorerPane>,
+) -> impl IntoElement + use<> {
     page.ensure_loaded();
     page.update_editor_search(window, cx);
     if !page.focus_requested {
@@ -33,11 +34,11 @@ pub fn render(
         .track_focus(&page.focus_handle)
         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
             let key_lc = event.keystroke.key.to_lowercase();
+            let with_modifier =
+                event.keystroke.modifiers.platform || event.keystroke.modifiers.control;
             let is_f = key_lc == "f" || event.keystroke.key == "KeyF";
-            let toggle_with_modifier =
-                is_f && (event.keystroke.modifiers.platform || event.keystroke.modifiers.control);
             let close_with_escape = key_lc == "escape" && this.search_visible;
-            if toggle_with_modifier || close_with_escape {
+            if (is_f && with_modifier) || close_with_escape {
                 this.toggle_search(window, cx);
                 cx.stop_propagation();
             }
@@ -64,17 +65,24 @@ pub fn render(
             div().flex().flex_row().flex_grow().min_h(px(0.0)).child(
                 gpui_component::resizable::h_resizable("file-explorer", page.resizable.clone())
                     .child(
+                        // Keep the panel in the resizable's child list even when
+                        // hidden (toggle via `.visible`), so the persisted panel
+                        // sizes/indices stay stable; dropping the child outright
+                        // would make the listing inherit the sidebar's slot.
                         gpui_component::resizable::resizable_panel()
                             .size(px(180.0))
                             .size_range(px(180.0)..px(360.0))
-                            .child(
-                                div()
-                                    .size_full()
-                                    .overflow_hidden()
-                                    .border_r_1()
-                                    .border_color(rgb(theme::BORDER))
-                                    .child(sidebar::render(page, window, cx)),
-                            ),
+                            .visible(page.sidebar_visible)
+                            .when(page.sidebar_visible, |panel| {
+                                panel.child(
+                                    div()
+                                        .size_full()
+                                        .overflow_hidden()
+                                        .border_r_1()
+                                        .border_color(rgb(theme::BORDER))
+                                        .child(sidebar::render(page, window, cx)),
+                                )
+                            }),
                     )
                     .child(
                         gpui_component::resizable::resizable_panel().child(
