@@ -3,6 +3,8 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use nohrs_ui::theme::theme;
 
+/// Modal dialogs for file operations (permanent-delete confirm, paste conflict).
+mod dialogs;
 /// The explorer header with navigation controls and the path bar.
 pub mod header;
 /// The main file listing, in list or grid mode, with the search bar.

@@ -79,8 +79,6 @@ pub fn render(
         Vec::new()
     };
 
-    // When this row is being renamed inline, the name cell shows a text field
-    // instead of the label (§1, §6).
     let rename_input = page
         .renaming
         .as_ref()

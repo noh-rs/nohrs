@@ -12,7 +12,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{AppContext, Entity, TestAppContext, WindowHandle, point, px};
+use gpui::{AppContext, ClipboardItem, Entity, TestAppContext, WindowHandle, point, px};
 use gpui_component::Root;
 use gpui_component::input::InputState;
 use gpui_component::resizable::ResizableState;
@@ -1227,5 +1227,151 @@ async fn new_folder_picks_a_unique_name(cx: &mut TestAppContext) {
     assert!(
         root.join("New Folder (2)").is_dir(),
         "a new folder avoids colliding with the existing one"
+    );
+}
+
+#[gpui::test]
+async fn copy_selection_reports_status(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.txt"), "A").unwrap();
+    let window = open_pane_at(cx, root);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.select_all();
+            pane.copy_selection(cx);
+            assert_eq!(
+                pane.status_for_footer(),
+                Some(("1 item(s) copied".to_string(), false))
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn paste_copy_into_same_directory_duplicates(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.txt"), "A").unwrap();
+    let window = open_pane_at(cx, root);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.select_all();
+            pane.copy_selection(cx);
+            // Pasting back into the same directory duplicates without a dialog.
+            let has_pending = pane.prepare_paste(cx);
+            assert!(!has_pending);
+            pane.execute_paste_plan(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "A");
+    assert_eq!(
+        std::fs::read_to_string(root.join("a (2).txt")).unwrap(),
+        "A"
+    );
+}
+
+#[gpui::test]
+async fn prepare_paste_without_clipboard_is_noop(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let window = open_pane_at(cx, dir.path());
+    window
+        .update(cx, |pane, _window, cx| {
+            assert!(!pane.prepare_paste(cx));
+            assert!(pane.paste_plan.is_none());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn trash_selection_removes_from_source(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.txt"), "A").unwrap();
+    std::fs::write(root.join("b.txt"), "B").unwrap();
+    let window = open_pane_at(cx, root);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.select_single(0); // a.txt
+            pane.trash_selection(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        !root.join("a.txt").exists(),
+        "trashed file leaves the source"
+    );
+    assert!(root.join("b.txt").exists());
+}
+
+#[gpui::test]
+async fn delete_permanent_reports_failure_in_status(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let window = open_pane_at(cx, dir.path());
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.delete_permanent_paths(vec!["/no/such/path/xyzzy".to_string()], cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .read_with(cx, |pane, _cx| {
+            let (text, is_error) = pane.status_for_footer().expect("a status was set");
+            assert!(is_error);
+            assert!(text.contains("1 of 1"), "got: {text}");
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn rename_to_invalid_name_reports_error(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.txt"), "A").unwrap();
+    let window = open_pane_at(cx, root);
+    window
+        .update(cx, |pane, window, cx| {
+            pane.begin_rename(0, window, cx);
+            let input = pane.renaming.as_ref().unwrap().input.clone();
+            // A name with a path separator is rejected by `rename_in_place`.
+            input.update(cx, |state, cx| state.set_value("bad/name", window, cx));
+            pane.commit_rename(window, cx);
+        })
+        .unwrap();
+    window
+        .read_with(cx, |pane, _cx| {
+            let (text, is_error) = pane.status_for_footer().expect("a status was set");
+            assert!(is_error);
+            assert!(text.contains("Rename failed"), "got: {text}");
+        })
+        .unwrap();
+    assert!(root.join("a.txt").exists(), "the original is untouched");
+}
+
+#[gpui::test]
+async fn paste_falls_back_to_system_clipboard_paths(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::create_dir(&dst).unwrap();
+    std::fs::write(src.join("x.txt"), "X").unwrap();
+    let src_path = src.join("x.txt").to_string_lossy().to_string();
+    let window = open_pane_at(cx, &dst);
+    window
+        .update(cx, |pane, _window, cx| {
+            // No internal clipboard set; a bare path on the system clipboard is
+            // read back as a copy source.
+            cx.write_to_clipboard(ClipboardItem::new_string(src_path));
+            let has_pending = pane.prepare_paste(cx);
+            assert!(!has_pending);
+            pane.execute_paste_plan(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        dst.join("x.txt").exists(),
+        "pasted from the system clipboard path"
     );
 }

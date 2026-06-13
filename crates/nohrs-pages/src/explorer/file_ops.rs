@@ -12,12 +12,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::WindowExt as _;
-use gpui_component::button::{Button, ButtonVariant, ButtonVariants as _};
-use gpui_component::checkbox::Checkbox;
-use gpui_component::dialog::DialogButtonProps;
 use gpui_component::input::{InputEvent, InputState};
 use nohrs_core::errors::Result;
 use nohrs_services::fs::ops::{self, ConflictResolution};
@@ -64,20 +59,21 @@ pub(crate) struct RenameState {
 /// actual copy / move runs once every conflict has a resolution.
 pub(crate) struct PastePlan {
     mode: ClipMode,
-    dest_dir: PathBuf,
+    // Read by the conflict dialog (in the `view` module) to label the prompt.
+    pub(crate) dest_dir: PathBuf,
     // Sources with no destination collision: copied / moved as-is.
     clear: Vec<PathBuf>,
     // Conflicting sources still awaiting a user decision (the front is shown).
-    pending: VecDeque<PathBuf>,
+    pub(crate) pending: VecDeque<PathBuf>,
     // Conflicting sources the user has already decided on.
     resolved: Vec<(PathBuf, ConflictResolution)>,
     // When ticked, the next choice in the dialog applies to every remaining
     // `pending` entry at once (§1.2 "Apply to all").
-    apply_to_all: bool,
+    pub(crate) apply_to_all: bool,
 }
 
 // The display name (final path component) of `path`, if it has one.
-fn file_name_of(path: &Path) -> Option<String> {
+pub(crate) fn file_name_of(path: &Path) -> Option<String> {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
 }
@@ -88,6 +84,37 @@ fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
         ClipMode::Copy => ops::copy_path(src, dst),
         ClipMode::Cut => ops::move_path(src, dst).map(|_| ()),
     }
+}
+
+// Overwrites `dst` with `src` without risking data loss on failure: the existing
+// destination is moved aside first, and only deleted once the paste succeeds;
+// if the paste fails, the original is rolled back into place. Staging aside (vs.
+// deleting upfront) also makes a directory a clean replace rather than a merge.
+fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
+    use nohrs_core::telemetry::LogErr as _;
+    if !ops::would_conflict(dst) {
+        return apply_one(mode, src, dst);
+    }
+    let backup = backup_path(dst);
+    ops::move_path(dst, &backup)?;
+    match apply_one(mode, src, dst) {
+        Ok(()) => {
+            ops::delete_permanent(&backup).log_err();
+            Ok(())
+        }
+        Err(error) => {
+            ops::move_path(&backup, dst).log_err();
+            Err(error)
+        }
+    }
+}
+
+// A sibling path of `dst` that does not yet exist, used to stage the existing
+// destination aside during an overwrite.
+fn backup_path(dst: &Path) -> PathBuf {
+    let parent = dst.parent().unwrap_or_else(|| Path::new("."));
+    let name = file_name_of(dst).unwrap_or_default();
+    parent.join(ops::unique_name(parent, &format!(".{name}.nohrs-tmp")))
 }
 
 impl ExplorerPane {
@@ -143,43 +170,6 @@ impl ExplorerPane {
                 }
             }
             errors
-        });
-    }
-
-    /// Opens a confirmation dialog before permanently deleting the selection
-    /// (§1.1 — permanent delete is the one operation undo cannot reverse, so it
-    /// is gated behind a confirm).
-    pub(crate) fn request_permanent_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = self.selected_paths();
-        if paths.is_empty() {
-            return;
-        }
-        let count = paths.len();
-        let title = if count == 1 {
-            let name = file_name_of(Path::new(&paths[0])).unwrap_or_else(|| paths[0].clone());
-            format!("Permanently delete \u{201c}{name}\u{201d}?")
-        } else {
-            format!("Permanently delete {count} items?")
-        };
-        let weak = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _window, _cx| {
-            let weak = weak.clone();
-            let paths = paths.clone();
-            dialog
-                .confirm()
-                .title(title.clone())
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Delete")
-                        .ok_variant(ButtonVariant::Danger),
-                )
-                .child("This can't be undone.")
-                .on_ok(move |_, _window, cx| {
-                    let paths = paths.clone();
-                    weak.update(cx, |pane, cx| pane.delete_permanent_paths(paths, cx))
-                        .ok();
-                    true
-                })
         });
     }
 
@@ -353,6 +343,12 @@ impl ExplorerPane {
             resolved,
             ..
         } = plan;
+        // Skips do nothing, so drop them before counting — otherwise the success
+        // message would claim more items were pasted than actually were.
+        let resolved: Vec<(PathBuf, ConflictResolution)> = resolved
+            .into_iter()
+            .filter(|(_, resolution)| *resolution != ConflictResolution::Skip)
+            .collect();
         let total = clear.len() + resolved.len();
         if total == 0 {
             return;
@@ -385,20 +381,14 @@ impl ExplorerPane {
                     continue;
                 };
                 let result = match resolution {
-                    ConflictResolution::Skip => Ok(()),
+                    // Filtered out above; kept for exhaustiveness without panicking.
+                    ConflictResolution::Skip => continue,
                     ConflictResolution::Rename => {
                         let unique = ops::unique_name(&dest_dir, &name);
                         apply_one(mode, &src, &dest_dir.join(unique))
                     }
                     ConflictResolution::Overwrite => {
-                        let dst = dest_dir.join(&name);
-                        // Remove the existing destination first so directories are
-                        // replaced rather than merged.
-                        if let Err(error) = ops::delete_permanent(&dst) {
-                            errors.push(format!("{}: {error}", dst.display()));
-                            continue;
-                        }
-                        apply_one(mode, &src, &dst)
+                        overwrite_apply(mode, &src, &dest_dir.join(&name))
                     }
                 };
                 if let Err(error) = result {
@@ -406,63 +396,6 @@ impl ExplorerPane {
                 }
             }
             errors
-        });
-    }
-
-    fn open_conflict_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let weak = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _window, cx| {
-            let weak = weak.clone();
-            let Some(pane) = weak.upgrade() else {
-                return dialog;
-            };
-            let Some((name, dest_name, remaining, apply_to_all)) = pane.read_with(cx, |pane, _| {
-                let plan = pane.paste_plan.as_ref()?;
-                let current = plan.pending.front()?;
-                let name = file_name_of(current).unwrap_or_default();
-                let dest_name = file_name_of(&plan.dest_dir)
-                    .unwrap_or_else(|| plan.dest_dir.display().to_string());
-                Some((name, dest_name, plan.pending.len() - 1, plan.apply_to_all))
-            }) else {
-                return dialog;
-            };
-
-            let checkbox_weak = weak.clone();
-            dialog
-                .title(format!(
-                    "\u{201c}{name}\u{201d} already exists in \u{201c}{dest_name}\u{201d}"
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child("Choose how to resolve the name conflict.")
-                        .when(remaining > 0, |this| {
-                            this.child(
-                                Checkbox::new("apply-to-all")
-                                    .label(format!(
-                                        "Apply to all remaining conflicts ({remaining} more)"
-                                    ))
-                                    .checked(apply_to_all)
-                                    .on_click(move |checked, _window, cx| {
-                                        checkbox_weak
-                                            .update(cx, |pane, cx| {
-                                                pane.set_apply_to_all(*checked, cx)
-                                            })
-                                            .ok();
-                                    }),
-                            )
-                        }),
-                )
-                .footer(move |_ok, _cancel, _window, _cx| {
-                    vec![
-                        conflict_button(&weak, "skip", "Skip", ConflictResolution::Skip),
-                        conflict_button(&weak, "rename", "Rename", ConflictResolution::Rename),
-                        cancel_button(&weak),
-                        overwrite_button(&weak),
-                    ]
-                })
         });
     }
 
@@ -572,46 +505,4 @@ impl ExplorerPane {
             }
         }
     }
-}
-
-// Builds one of the conflict dialog's resolution buttons.
-fn conflict_button(
-    weak: &WeakEntity<ExplorerPane>,
-    id: &'static str,
-    label: &'static str,
-    choice: ConflictResolution,
-) -> Button {
-    let weak = weak.clone();
-    Button::new(id).label(label).on_click(move |_, window, cx| {
-        let Some(pane) = weak.upgrade() else {
-            return;
-        };
-        let done = pane.update(cx, |pane, cx| pane.resolve_current_conflict(choice, cx));
-        if done {
-            window.close_dialog(cx);
-            pane.update(cx, |pane, cx| pane.execute_paste_plan(cx));
-        }
-    })
-}
-
-fn overwrite_button(weak: &WeakEntity<ExplorerPane>) -> Button {
-    // Right-most and danger-coloured to keep it away from the safe defaults
-    // (§1.2 mock).
-    conflict_button(
-        weak,
-        "overwrite",
-        "Overwrite",
-        ConflictResolution::Overwrite,
-    )
-    .danger()
-}
-
-fn cancel_button(weak: &WeakEntity<ExplorerPane>) -> Button {
-    let weak = weak.clone();
-    Button::new("cancel-paste")
-        .label("Cancel")
-        .on_click(move |_, window, cx| {
-            window.close_dialog(cx);
-            weak.update(cx, |pane, cx| pane.cancel_paste(cx)).ok();
-        })
 }
