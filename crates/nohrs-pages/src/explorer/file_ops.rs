@@ -103,7 +103,20 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
             Ok(())
         }
         Err(error) => {
-            ops::move_path(&backup, dst).log_err();
+            // The failed paste may have left a partial entry at `dst`; remove it
+            // first so the original can be moved back rather than stranded in the
+            // backup. If the restore itself fails, log loudly — the data still
+            // exists at `backup`, but the destination is now wrong.
+            if ops::would_conflict(dst) {
+                ops::delete_permanent(dst).log_err();
+            }
+            if let Err(restore_error) = ops::move_path(&backup, dst) {
+                tracing::error!(
+                    "failed to restore {} after a failed overwrite (original kept at {}): {restore_error}",
+                    dst.display(),
+                    backup.display(),
+                );
+            }
             Err(error)
         }
     }
@@ -263,6 +276,10 @@ impl ExplorerPane {
         let mut clear = Vec::new();
         let mut pending = VecDeque::new();
         let mut resolved = Vec::new();
+        // Destination names already claimed by an earlier source in this same
+        // batch, so two sources sharing a basename (possible via the system
+        // clipboard) don't silently overwrite each other.
+        let mut claimed = std::collections::HashSet::new();
         for src in sources {
             let Some(name) = src.file_name() else {
                 continue;
@@ -278,6 +295,10 @@ impl ExplorerPane {
             }
             if ops::would_conflict(&dst) {
                 pending.push_back(src);
+            } else if !claimed.insert(dst) {
+                // Another source already targets this name; number it instead of
+                // letting the later paste clobber the earlier one.
+                resolved.push((src, ConflictResolution::Rename));
             } else {
                 clear.push(src);
             }

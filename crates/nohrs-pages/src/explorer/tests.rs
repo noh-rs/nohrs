@@ -1375,3 +1375,39 @@ async fn paste_falls_back_to_system_clipboard_paths(cx: &mut TestAppContext) {
         "pasted from the system clipboard path"
     );
 }
+
+#[gpui::test]
+async fn paste_numbers_same_basename_sources(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a");
+    let b = dir.path().join("b");
+    let dst = dir.path().join("dst");
+    for d in [&a, &b, &dst] {
+        std::fs::create_dir(d).unwrap();
+    }
+    std::fs::write(a.join("foo.txt"), "A1").unwrap();
+    std::fs::write(b.join("foo.txt"), "B1").unwrap();
+    let window = open_pane_at(cx, &dst);
+    window
+        .update(cx, |pane, _window, cx| {
+            // Two sources with the same basename from different directories.
+            let paths = format!(
+                "{}\n{}",
+                a.join("foo.txt").display(),
+                b.join("foo.txt").display()
+            );
+            cx.write_to_clipboard(ClipboardItem::new_string(paths));
+            let has_pending = pane.prepare_paste(cx);
+            assert!(!has_pending, "batch collisions are numbered, not prompted");
+            pane.execute_paste_plan(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    // Both land instead of one clobbering the other.
+    let mut got = vec![
+        std::fs::read_to_string(dst.join("foo.txt")).unwrap(),
+        std::fs::read_to_string(dst.join("foo (2).txt")).unwrap(),
+    ];
+    got.sort();
+    assert_eq!(got, vec!["A1".to_string(), "B1".to_string()]);
+}
