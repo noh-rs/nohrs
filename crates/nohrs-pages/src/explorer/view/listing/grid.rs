@@ -2,6 +2,7 @@ use super::truncate_middle;
 use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::input::Input;
 use gpui_component::{Icon, IconName};
 use nohrs_services::fs::listing::FileEntryDto;
 use nohrs_ui::theme::theme;
@@ -36,7 +37,7 @@ pub fn render(
 }
 
 fn render_grid_item(
-    _page: &mut ExplorerPane,
+    page: &mut ExplorerPane,
     item: FileEntryDto,
     ix: usize,
     selected: bool,
@@ -44,6 +45,12 @@ fn render_grid_item(
     cx: &mut Context<ExplorerPane>,
 ) -> AnyElement {
     use nohrs_ui::components::file_list::{format_date, get_file_type, human_bytes};
+
+    let rename_input = page
+        .renaming
+        .as_ref()
+        .filter(|state| state.index == ix)
+        .map(|state| state.input.clone());
 
     let icon_name = match item.kind.as_str() {
         "dir" => IconName::Folder,
@@ -113,16 +120,18 @@ fn render_grid_item(
                 .size_6()
                 .text_color(rgb(theme::GRAY_600)),
         )
-        .child(
-            div()
+        .child(match rename_input {
+            Some(input) => div().w_full().child(Input::new(&input)).into_any_element(),
+            None => div()
                 .text_sm()
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(rgb(theme::FG))
                 .overflow_hidden()
                 .text_ellipsis()
                 .whitespace_nowrap()
-                .child(name),
-        )
+                .child(name)
+                .into_any_element(),
+        })
         .child(
             div()
                 .text_xs()

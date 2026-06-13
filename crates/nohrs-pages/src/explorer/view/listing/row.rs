@@ -3,6 +3,7 @@ use super::truncate_middle;
 use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::input::Input;
 use gpui_component::list::ListItem;
 use gpui_component::{Icon, IconName};
 use nohrs_services::fs::listing::FileEntryDto;
@@ -77,6 +78,14 @@ pub fn render(
     } else {
         Vec::new()
     };
+
+    // When this row is being renamed inline, the name cell shows a text field
+    // instead of the label (§1, §6).
+    let rename_input = page
+        .renaming
+        .as_ref()
+        .filter(|state| state.index == ix)
+        .map(|state| state.input.clone());
 
     let query = page.search_query.clone();
     let path_for_toggle = item.path.clone();
@@ -184,16 +193,22 @@ pub fn render(
                                 })
                                 .when(!has_content_matches, |this| this.child(div().w(px(20.0))))
                                 .child(Icon::new(icon_name).size_4().text_color(icon_color))
-                                .child(
-                                    div()
+                                .child(match rename_input {
+                                    Some(input) => div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .child(Input::new(&input))
+                                        .into_any_element(),
+                                    None => div()
                                         .text_sm()
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(rgb(theme::FG))
                                         .overflow_hidden()
                                         .text_ellipsis()
                                         .whitespace_nowrap()
-                                        .child(styled_name),
-                                ),
+                                        .child(styled_name)
+                                        .into_any_element(),
+                                }),
                         )
                         .child(
                             div()

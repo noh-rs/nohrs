@@ -12,11 +12,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{AppContext, TestAppContext, WindowHandle, point, px};
+use gpui::{AppContext, Entity, TestAppContext, WindowHandle, point, px};
+use gpui_component::Root;
 use gpui_component::input::InputState;
 use gpui_component::resizable::ResizableState;
 use nohrs_core::config;
 use nohrs_services::fs::listing::FileEntryDto;
+use nohrs_services::fs::ops::ConflictResolution;
 use nohrs_store::{KvStore, RedbKvStore, StoreLogConfig};
 
 use nohrs_core::config::SplitDirection;
@@ -962,4 +964,268 @@ async fn apply_filter_resets_stale_selection(cx: &mut TestAppContext) {
             assert_eq!(page.active_index, None);
         })
         .unwrap();
+}
+
+// Opens a pane rooted at a real directory and loads its listing, so the file
+// operation tests can act on actual files. Mirrors how `reload` is driven
+// elsewhere, but anchored at a temp dir instead of the cwd.
+fn open_pane_at(cx: &mut TestAppContext, root: &std::path::Path) -> WindowHandle<ExplorerPane> {
+    let window = new_explorer(cx);
+    window
+        .update(cx, |pane, _window, _cx| {
+            pane.cwd = root.to_string_lossy().to_string();
+            pane.reload();
+        })
+        .unwrap();
+    window
+}
+
+// Builds an `ExplorerPane` wrapped in a `gpui_component::Root`, the way the real
+// app mounts it. Operations that open a dialog (paste conflicts, permanent
+// delete) or render a focused inline-rename input go through `Root`, so they
+// need the Root layer present — a bare-pane window panics otherwise. Returns the
+// pane entity so tests can drive it within the window's `Window`.
+fn new_explorer_in_root(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<ExplorerPane>) {
+    cx.update(gpui_component::init);
+    let mut pane = None;
+    let window = cx.add_window(|window, cx| {
+        let resizable = cx.new(|_| ResizableState::default());
+        let search_input = cx.new(|cx| InputState::new(window, cx));
+        let entity =
+            cx.new(|cx| ExplorerPane::new(resizable, search_input, None, cx.focus_handle()));
+        pane = Some(entity.clone());
+        Root::new(entity, window, cx)
+    });
+    (window, pane.expect("Root::new build closure ran"))
+}
+
+#[gpui::test]
+async fn permanent_delete_removes_only_the_selected(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        std::fs::write(root.join(name), name).unwrap();
+    }
+    let window = open_pane_at(cx, root);
+    window
+        .update(cx, |pane, _window, cx| {
+            // Sorted rows: a=0, b=1, c=2. Delete a and c.
+            pane.select_single(0);
+            pane.toggle_select(2);
+            let paths = pane.selected_paths();
+            pane.delete_permanent_paths(paths, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(!root.join("a.txt").exists());
+    assert!(root.join("b.txt").exists(), "unselected file survives");
+    assert!(!root.join("c.txt").exists());
+}
+
+// Sets up `src` (copied/cut from) and `dst` (pasted into) each containing
+// `foo.txt`, so pasting always collides.
+fn paste_fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::create_dir(&dst).unwrap();
+    std::fs::write(src.join("foo.txt"), "SRC").unwrap();
+    std::fs::write(dst.join("foo.txt"), "DST").unwrap();
+    (dir, src, dst)
+}
+
+#[gpui::test]
+async fn paste_copy_with_rename_keeps_both(cx: &mut TestAppContext) {
+    let (_dir, src, dst) = paste_fixture();
+    let window = new_explorer(cx);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_all();
+            pane.copy_selection(cx);
+
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            // `prepare_paste` is the dialog-free half of `paste_into_cwd`; the
+            // dialog plumbing itself is covered by GUI verification.
+            let has_pending = pane.prepare_paste(cx);
+            assert!(has_pending, "the name collision is queued");
+            let done = pane.resolve_current_conflict(ConflictResolution::Rename, cx);
+            assert!(done, "only one conflict to resolve");
+            pane.execute_paste_plan(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(dst.join("foo.txt")).unwrap(), "DST");
+    assert_eq!(
+        std::fs::read_to_string(dst.join("foo (2).txt")).unwrap(),
+        "SRC",
+        "rename keeps the existing file and adds a numbered copy"
+    );
+}
+
+#[gpui::test]
+async fn paste_copy_with_overwrite_replaces(cx: &mut TestAppContext) {
+    let (_dir, src, dst) = paste_fixture();
+    let window = new_explorer(cx);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_all();
+            pane.copy_selection(cx);
+
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.prepare_paste(cx);
+            pane.resolve_current_conflict(ConflictResolution::Overwrite, cx);
+            pane.execute_paste_plan(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(dst.join("foo.txt")).unwrap(), "SRC");
+    assert!(!dst.join("foo (2).txt").exists());
+}
+
+#[gpui::test]
+async fn paste_copy_with_skip_leaves_destination(cx: &mut TestAppContext) {
+    let (_dir, src, dst) = paste_fixture();
+    let window = new_explorer(cx);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_all();
+            pane.copy_selection(cx);
+
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.prepare_paste(cx);
+            pane.resolve_current_conflict(ConflictResolution::Skip, cx);
+            pane.execute_paste_plan(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(dst.join("foo.txt")).unwrap(), "DST");
+    assert!(!dst.join("foo (2).txt").exists());
+    assert!(
+        src.join("foo.txt").exists(),
+        "a copy leaves the source intact"
+    );
+}
+
+#[gpui::test]
+async fn paste_apply_to_all_resolves_every_conflict_at_once(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::create_dir(&dst).unwrap();
+    std::fs::write(src.join("foo.txt"), "S1").unwrap();
+    std::fs::write(src.join("bar.txt"), "S2").unwrap();
+    std::fs::write(dst.join("foo.txt"), "D1").unwrap();
+    std::fs::write(dst.join("bar.txt"), "D2").unwrap();
+    let window = new_explorer(cx);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_all();
+            pane.copy_selection(cx);
+
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.prepare_paste(cx);
+            // Two conflicts queued; one Overwrite choice with "apply to all" set
+            // resolves both.
+            pane.set_apply_to_all(true, cx);
+            let done = pane.resolve_current_conflict(ConflictResolution::Overwrite, cx);
+            assert!(done, "apply-to-all clears every remaining conflict");
+            pane.execute_paste_plan(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(dst.join("foo.txt")).unwrap(), "S1");
+    assert_eq!(std::fs::read_to_string(dst.join("bar.txt")).unwrap(), "S2");
+}
+
+#[gpui::test]
+async fn cut_paste_without_conflict_moves_the_source(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::create_dir(&dst).unwrap();
+    std::fs::write(src.join("x.txt"), "X").unwrap();
+    let window = new_explorer(cx);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_all();
+            pane.cut_selection(cx);
+        })
+        .unwrap();
+    window
+        .update(cx, |pane, window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            // No collision, so the paste executes immediately with no dialog.
+            pane.paste_into_cwd(window, cx);
+            assert!(pane.paste_plan.is_none());
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(dst.join("x.txt").exists());
+    assert!(!src.join("x.txt").exists(), "a cut removes the source");
+}
+
+#[gpui::test]
+async fn rename_collision_falls_back_to_numbering(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.txt"), "a").unwrap();
+    std::fs::write(root.join("b.txt"), "b").unwrap();
+    let window = open_pane_at(cx, root);
+    window
+        .update(cx, |pane, window, cx| {
+            // Rename b.txt (row 1) to the already-taken "a.txt".
+            pane.begin_rename(1, window, cx);
+            let input = pane.renaming.as_ref().unwrap().input.clone();
+            input.update(cx, |state, cx| state.set_value("a.txt", window, cx));
+            pane.commit_rename(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "a");
+    assert_eq!(
+        std::fs::read_to_string(root.join("a (2).txt")).unwrap(),
+        "b",
+        "the conflicting rename is numbered rather than overwriting"
+    );
+    assert!(!root.join("b.txt").exists());
+}
+
+#[gpui::test]
+async fn new_folder_picks_a_unique_name(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("New Folder")).unwrap();
+    let (window, pane) = new_explorer_in_root(cx);
+    window
+        .update(cx, |_root, window, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.cwd = root.to_string_lossy().to_string();
+                pane.reload();
+                pane.create_new_folder(window, cx);
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        root.join("New Folder (2)").is_dir(),
+        "a new folder avoids colliding with the existing one"
+    );
 }

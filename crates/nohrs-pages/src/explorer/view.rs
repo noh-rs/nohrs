@@ -43,6 +43,63 @@ pub fn render(
                 cx.stop_propagation();
                 return;
             }
+            // File operations (§1, canonical keys in §6). Each arm consumes the
+            // event; anything unmatched falls through to the selection model below.
+            let shift = modifiers.shift;
+            match key_lc.as_str() {
+                "delete" if shift => {
+                    this.request_permanent_delete(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "delete" => {
+                    this.trash_selection(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                // macOS also trashes on Backspace (§6); on Linux only Delete does.
+                "backspace" if cfg!(target_os = "macos") && !shift => {
+                    this.trash_selection(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "c" if with_modifier && !shift => {
+                    this.copy_selection(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "x" if with_modifier && !shift => {
+                    this.cut_selection(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "v" if with_modifier && !shift => {
+                    this.paste_into_cwd(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "n" if with_modifier && shift => {
+                    this.create_new_folder(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                // Rename: F2 everywhere, plus Enter on macOS (§6).
+                "f2" => {
+                    if let Some(index) = this.active_index {
+                        this.begin_rename(index, window, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                "enter" if cfg!(target_os = "macos") && !with_modifier => {
+                    if let Some(index) = this.active_index {
+                        this.begin_rename(index, window, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
+            }
             // Selection model (§5). Escape while searching is handled above, so
             // here it only clears the selection.
             match key_lc.as_str() {
