@@ -79,7 +79,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Regenerate JSON Schema
         run: cargo run -p nohrs-core --example schema --locked > docs/config.schema.json
@@ -114,7 +114,7 @@ jobs:
           components: clippy
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # `unwrap_used` / `expect_used` are enforced as warn-level workspace lints
       # (see [workspace.lints.clippy] in Cargo.toml), promoted to errors here by
@@ -142,7 +142,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Test
         run: cargo test ${{ matrix.args }} --locked
@@ -169,7 +169,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Build
         run: cargo build ${{ matrix.args }} --locked
@@ -242,7 +242,7 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # `-p nohrs-core` scopes the "core" tier to the foundational crate the 80%
       # target refers to (models/services are covered by the overall tier). Runs
       # the tests under instrumentation; the HTML report and threshold check below
@@ -303,7 +303,7 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # `--all-features` pulls in gpui (Metal backend on macOS); the GUI crates
       # are instrumented and `#[gpui::test]` runs headlessly via `TestAppContext`.
       - name: Generate Cobertura XML
