@@ -4,9 +4,16 @@
 Used by the agent UI-verification flow so screenshots can be produced without
 ImageMagick / ffmpeg installed. See docs/agent-ui-verification.md.
 
-Usage: python3 script/xwd2png.py input.xwd output.png
+Usage: python3 script/xwd2png.py input.xwd output.png [--fail-if-uniform]
+
+`--fail-if-uniform` still writes the PNG but exits with UNIFORM_EXIT when every
+sampled pixel is the same color, which is how a window that has never presented
+a frame looks. `ui-run.sh launch` polls on this to decide when the GUI is up.
 """
 import sys, struct, zlib
+
+UNIFORM_EXIT = 3
+SAMPLE_STEP = 7
 
 
 def read_xwd(path):
@@ -79,9 +86,37 @@ def write_png(path, w, h, raw):
         f.write(sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b""))
 
 
+def is_uniform(width, height, raw):
+    """Whether every sampled pixel of a scanline buffer has the same color.
+
+    `raw` is in PNG scanline layout: one filter byte per row, then RGB triples.
+    """
+    stride = width * 3 + 1
+    reference = None
+    for y in range(0, height, SAMPLE_STEP):
+        row = raw[y * stride + 1:(y + 1) * stride]
+        for x in range(0, width, SAMPLE_STEP):
+            pixel = row[x * 3:x * 3 + 3]
+            if reference is None:
+                reference = pixel
+            elif pixel != reference:
+                return False
+    return True
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        sys.exit("usage: xwd2png.py input.xwd output.png")
-    w, h, raw = read_xwd(sys.argv[1])
-    write_png(sys.argv[2], w, h, raw)
-    print(f"wrote {sys.argv[2]} {w}x{h}")
+    arguments = sys.argv[1:]
+    fail_if_uniform = "--fail-if-uniform" in arguments
+    paths = [argument for argument in arguments if not argument.startswith("--")]
+    unknown = [
+        argument
+        for argument in arguments
+        if argument.startswith("--") and argument != "--fail-if-uniform"
+    ]
+    if len(paths) != 2 or unknown:
+        sys.exit("usage: xwd2png.py input.xwd output.png [--fail-if-uniform]")
+    width, height, raw = read_xwd(paths[0])
+    write_png(paths[1], width, height, raw)
+    print(f"wrote {paths[1]} {width}x{height}")
+    if fail_if_uniform and is_uniform(width, height, raw):
+        sys.exit(UNIFORM_EXIT)
