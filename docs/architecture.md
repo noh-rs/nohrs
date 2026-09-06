@@ -41,6 +41,7 @@ nohrs/
 resolver = "2"
 members = [
   "crates/nohrs",
+  "crates/nohrs-cli",
   "crates/nohrs-core",
   "crates/nohrs-models",
   "crates/nohrs-services",
@@ -66,6 +67,7 @@ authors      = ["nohrs contributors"]
 
 [workspace.dependencies]
 anyhow            = "1"
+clap              = { version = "4", features = ["derive"] }
 thiserror         = "1"
 tracing           = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
