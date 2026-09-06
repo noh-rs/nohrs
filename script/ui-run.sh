@@ -30,6 +30,11 @@ pause() {
   perl -e 'select(undef, undef, undef, $ARGV[0])' "$1"
 }
 
+report_failure() {
+  echo "$1; tail of $LOG:" >&2
+  tail -5 "$LOG" >&2
+}
+
 setup() {
   mkdir -p "$DEVLIBS"
   # gpui links these; create unversioned symlinks to the runtime .so (no dev packages / root needed).
@@ -68,9 +73,14 @@ nudge() {
   geometry="$(DISPLAY="$disp" xdotool getwindowgeometry --shell "$window")" || return 1
   width="$(sed -n 's/^WIDTH=//p' <<< "$geometry")"
   height="$(sed -n 's/^HEIGHT=//p' <<< "$geometry")"
-  case "$width$height" in
-    *[!0-9]* | "") echo "could not read geometry of window $window" >&2; return 1 ;;
-  esac
+  # Each dimension on its own, and at least 2 so the shrink below stays positive:
+  # checking the two concatenated would accept a missing or zero WIDTH.
+  case "$width" in ''|*[!0-9]*) width=0 ;; esac
+  case "$height" in ''|*[!0-9]*) height=0 ;; esac
+  if [ "$width" -lt 2 ] || [ "$height" -lt 2 ]; then
+    echo "no usable geometry for window $window (got ${width}x${height})" >&2
+    return 1
+  fi
   DISPLAY="$disp" xdotool windowsize "$window" "$((width - 1))" "$((height - 1))" || return 1
   pause 1
   DISPLAY="$disp" xdotool windowsize "$window" "$width" "$height" || return 1
@@ -96,8 +106,10 @@ capture() {   # capture <out.png> <display> <root|window-id> [xwd2png.py flags..
 # capture non-uniform, so a blank nohrs window would read as rendered.
 window_frame_status() {
   local disp="$1" window="$2"
-  local probe="$TMP/ui-frame-probe.$$.png"
-  capture "$probe" "$disp" "$window" --fail-if-uniform >/dev/null 2>&1
+  local probe; probe="$(mktemp "$TMP/ui-frame-probe.XXXXXX.png")" || return 1
+  # Only stdout is dropped (the "wrote ..." line): on the uniform path nothing is
+  # written to stderr, so letting it through surfaces real capture failures.
+  capture "$probe" "$disp" "$window" --fail-if-uniform >/dev/null
   local status=$?
   rm -f "$probe"
   return "$status"
@@ -106,7 +118,18 @@ window_frame_status() {
 launch() {
   local disp; disp="$(resolve_display)" || return 1
   [ -x "$BIN" ] || { echo "binary not built: $BIN" >&2; return 1; }
-  pkill -x nohrs 2>/dev/null   # never use 'pkill -f' here: it matches this script's own path.
+  # never use 'pkill -f' here: it matches this script's own path.
+  if pkill -x nohrs 2>/dev/null; then
+    # Wait for it to actually go. `pkill` only signals, and the poll below matches
+    # by process name: an outgoing instance still winding down would be picked up
+    # as the new one, handing back its about-to-be-destroyed window id.
+    local dying
+    for dying in $(seq 1 40); do
+      pgrep -x nohrs >/dev/null || break
+      pause 0.25
+    done
+    pgrep -x nohrs >/dev/null && { echo "a previous nohrs will not exit" >&2; return 1; }
+  fi
   : > "$LOG"
   DISPLAY="$disp" setsid "$BIN" > "$LOG" 2>&1 < /dev/null &
 
@@ -119,26 +142,32 @@ launch() {
     elif [ "$seen_process" = true ]; then
       # Gone after having been seen: a real crash, not the startup race between
       # backgrounding `setsid` and the binary appearing under its own name.
-      echo "nohrs exited during startup; tail of $LOG:" >&2
-      tail -5 "$LOG" >&2
+      report_failure "nohrs exited during startup"
       return 1
     fi
     pause 0.5
   done
-  [ -n "$window" ] || { echo "window id not found; tail of $LOG:" >&2; tail -5 "$LOG" >&2; return 1; }
+  [ -n "$window" ] || { report_failure "window id not found"; return 1; }
 
   # Software (llvmpipe) rendering plus the no-damage problem above: the only reliable
   # readiness signal is the window's own pixels no longer being a single flat color.
+  local status
   for attempt in $(seq 1 "$REDRAW_ATTEMPTS"); do
-    nudge "$disp" "$window" || return 1
+    pgrep -x nohrs >/dev/null || { report_failure "nohrs exited while waiting for a frame"; return 1; }
+    nudge "$disp" "$window" || { report_failure "could not resize the window to force a redraw"; return 1; }
     pause 1.5
-    if window_frame_status "$disp" "$window"; then
-      echo "WINDOW=$window DISPLAY=$disp PID=$(pgrep -x nohrs | head -1)"
-      return 0
-    fi
+    window_frame_status "$disp" "$window"
+    status=$?
+    case "$status" in
+      0) echo "WINDOW=$window DISPLAY=$disp PID=$(pgrep -x nohrs | head -1)"; return 0 ;;
+      "$UNIFORM_EXIT") ;;   # still one flat color: nudge again
+      # Anything else is the capture path failing (a dead or hung display, a
+      # destroyed window), not the app being slow to paint. Say so now rather
+      # than burning the remaining attempts and blaming the app at the end.
+      *) report_failure "capturing window $window failed (exit $status)"; return 1 ;;
+    esac
   done
-  echo "window still blank after $REDRAW_ATTEMPTS redraw attempts; tail of $LOG:" >&2
-  tail -5 "$LOG" >&2
+  report_failure "window still blank after $REDRAW_ATTEMPTS redraw attempts"
   return 1
 }
 
