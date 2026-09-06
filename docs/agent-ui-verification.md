@@ -109,10 +109,16 @@ for you.
 - **With no window manager the window stays black forever.** Nothing damages the window after it
   is mapped, so gpui presents no further frame — waiting does not help (still all-black after 45s
   on `Xvfb`, `xwininfo` reporting `Map State: IsViewable` the whole time). A one-pixel resize and
-  back forces the redraw. `ui-run.sh launch` does this and then polls the framebuffer until it is
-  no longer a single flat color; if you start the binary by hand, do the nudge yourself:
-  `xdotool windowsize $WIN 1279 779; xdotool sleep 1; xdotool windowsize $WIN 1280 780`.
-  Once a frame is out, ordinary interaction repaints normally.
+  back forces the redraw. `ui-run.sh launch` does this and then polls the window's own pixels
+  until they are no longer a single flat color. Once a frame is out, ordinary interaction
+  repaints normally. If you start the binary by hand, do the nudge yourself — read the size back
+  rather than hardcoding one, since the window is not the same size as the screen:
+  ```bash
+  DISP=$(./script/ui-run.sh display); WIN=$(./script/ui-run.sh win)
+  eval "$(DISPLAY=$DISP xdotool getwindowgeometry --shell "$WIN")"   # sets WIDTH / HEIGHT
+  DISPLAY=$DISP xdotool windowsize "$WIN" $((WIDTH - 1)) $((HEIGHT - 1)) \
+    sleep 1 windowsize "$WIN" "$WIDTH" "$HEIGHT"
+  ```
 - **Do not wait for the `Refreshing every` log line.** gpui only logs it when the RandR mode
   reports a non-zero dot clock. `Xvfb` reports zero, gpui silently falls back to 16ms, and the line
   never appears — so waiting on it just times out. `ui-run.sh` watches the pixels instead.

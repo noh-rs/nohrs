@@ -76,13 +76,30 @@ nudge() {
   DISPLAY="$disp" xdotool windowsize "$window" "$width" "$height" || return 1
 }
 
-capture() {   # capture <out.png> <display> [xwd2png.py flags...]
-  local out="$1" disp="$2"; shift 2
+capture() {   # capture <out.png> <display> <root|window-id> [xwd2png.py flags...]
+  local out="$1" disp="$2" target="$3"; shift 3
+  local -a selector
+  if [ "$target" = root ]; then selector=(-root); else selector=(-id "$target"); fi
   local dump; dump="$(mktemp "$TMP/ui-shot.XXXXXX.xwd")" || return 1
-  DISPLAY="$disp" xwd -root -silent -out "$dump" || { rm -f "$dump"; echo "xwd failed" >&2; return 1; }
+  DISPLAY="$disp" xwd "${selector[@]}" -silent -out "$dump" \
+    || { rm -f "$dump"; echo "xwd failed" >&2; return 1; }
   python3 "$ROOT/script/xwd2png.py" "$dump" "$out" "$@"
   local status=$?
   rm -f "$dump"
+  return "$status"
+}
+
+# Exit status of a --fail-if-uniform capture of the app's OWN window: 0 = it has
+# presented a real frame, UNIFORM_EXIT = still one flat color, anything else = the
+# capture itself failed. Probing the root window instead would be wrong on any
+# display that has a desktop or other windows on it: those pixels alone make the
+# capture non-uniform, so a blank nohrs window would read as rendered.
+window_frame_status() {
+  local disp="$1" window="$2"
+  local probe="$TMP/ui-frame-probe.$$.png"
+  capture "$probe" "$disp" "$window" --fail-if-uniform >/dev/null 2>&1
+  local status=$?
+  rm -f "$probe"
   return "$status"
 }
 
@@ -93,29 +110,33 @@ launch() {
   : > "$LOG"
   DISPLAY="$disp" setsid "$BIN" > "$LOG" 2>&1 < /dev/null &
 
-  local window="" attempt
+  local window="" attempt seen_process=false
   for attempt in $(seq 1 "$WINDOW_POLLS"); do
-    pgrep -x nohrs >/dev/null \
-      || { echo "nohrs exited during startup; tail of $LOG:" >&2; tail -5 "$LOG" >&2; return 1; }
-    window="$(win_id)"
-    [ -n "$window" ] && break
+    if pgrep -x nohrs >/dev/null; then
+      seen_process=true
+      window="$(win_id)"
+      [ -n "$window" ] && break
+    elif [ "$seen_process" = true ]; then
+      # Gone after having been seen: a real crash, not the startup race between
+      # backgrounding `setsid` and the binary appearing under its own name.
+      echo "nohrs exited during startup; tail of $LOG:" >&2
+      tail -5 "$LOG" >&2
+      return 1
+    fi
     pause 0.5
   done
   [ -n "$window" ] || { echo "window id not found; tail of $LOG:" >&2; tail -5 "$LOG" >&2; return 1; }
 
   # Software (llvmpipe) rendering plus the no-damage problem above: the only reliable
-  # readiness signal is the framebuffer itself no longer being a single flat color.
-  local probe="$TMP/ui-launch-probe.$$.png"
+  # readiness signal is the window's own pixels no longer being a single flat color.
   for attempt in $(seq 1 "$REDRAW_ATTEMPTS"); do
-    nudge "$disp" "$window" || { rm -f "$probe"; return 1; }
+    nudge "$disp" "$window" || return 1
     pause 1.5
-    if capture "$probe" "$disp" --fail-if-uniform >/dev/null 2>&1; then
-      rm -f "$probe"
+    if window_frame_status "$disp" "$window"; then
       echo "WINDOW=$window DISPLAY=$disp PID=$(pgrep -x nohrs | head -1)"
       return 0
     fi
   done
-  rm -f "$probe"
   echo "window still blank after $REDRAW_ATTEMPTS redraw attempts; tail of $LOG:" >&2
   tail -5 "$LOG" >&2
   return 1
@@ -125,14 +146,17 @@ shot() {
   local out="${1:?usage: ui-run.sh shot <out.png>}"
   local disp; disp="$(resolve_display)" || return 1
   pgrep -x nohrs >/dev/null || launch >/dev/null || return 1
-  capture "$out" "$disp" --fail-if-uniform
-  local status=$?
-  if [ "$status" -eq "$UNIFORM_EXIT" ]; then
-    echo "warning: $out is one flat color -- the window has not presented a frame." >&2
-    echo "         re-run './script/ui-run.sh launch' to force the redraw." >&2
-    return 0
+  # The PNG is the whole screen, so its pixel coordinates match the ones you drive
+  # xdotool with; the blank check below still has to look at the window alone.
+  capture "$out" "$disp" root || return 1
+  local window; window="$(win_id)"
+  if [ -n "$window" ]; then
+    window_frame_status "$disp" "$window"
+    if [ $? -eq "$UNIFORM_EXIT" ]; then
+      echo "warning: the nohrs window in $out is one flat color -- it has not presented a frame." >&2
+      echo "         re-run './script/ui-run.sh launch' to force the redraw." >&2
+    fi
   fi
-  return "$status"
 }
 
 case "${1:-}" in
