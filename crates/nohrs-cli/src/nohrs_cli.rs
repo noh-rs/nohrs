@@ -1,8 +1,8 @@
-//! `nohrs-cli`: the terminal side of nohrs, exposing the same file operations
+//! `noh`: the terminal side of nohrs, exposing the same file operations
 //! the GUI performs (`nohrs-services::fs::ops`) as shell commands.
 //!
 //! The first command is [`rm`], a `rm(1)` work-alike that moves its operands to
-//! the trash by default. It can be called by name (`nohrs-cli rm notes.txt`) or
+//! the trash by default. It can be called by name (`noh rm notes.txt`) or
 //! installed *in front of* the system `rm` by symlinking the binary under that
 //! name earlier on `PATH`; [`Invocation`] picks the entry point from argv[0].
 
@@ -24,7 +24,7 @@ const RM_APPLET_EXE: &str = "rm.exe";
 /// Command-line entry point when the binary is called by its own name.
 #[derive(Parser, Debug)]
 #[command(
-    name = "nohrs-cli",
+    name = "noh",
     version,
     about = "Terminal companion to the nohrs file workspace"
 )]
@@ -34,7 +34,7 @@ pub struct Cli {
     pub command: Command,
 }
 
-/// The subcommands `nohrs-cli` understands.
+/// The subcommands `noh` understands.
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Remove files and directories, moving them to the trash unless
@@ -59,7 +59,7 @@ pub struct RmCli {
 /// Which entry point an argument vector selects.
 #[derive(Debug)]
 pub enum Invocation {
-    /// Called by its own name: `nohrs-cli <command> ...`.
+    /// Called by its own name: `noh <command> ...`.
     Direct(Cli),
     /// Called through an `rm` symlink: `rm -rf build/`.
     Rm(RmCli),
@@ -159,8 +159,7 @@ mod tests {
 
     #[test]
     fn other_program_names_keep_the_subcommand_entry_point() {
-        let invocation =
-            Invocation::try_parse_from(argv(&["nohrs-cli", "rm", "notes.txt"])).unwrap();
+        let invocation = Invocation::try_parse_from(argv(&["noh", "rm", "notes.txt"])).unwrap();
         assert!(matches!(invocation, Invocation::Direct(_)));
 
         // Names that merely start with or contain `rm` are not the applet: a
@@ -200,7 +199,7 @@ mod tests {
     #[test]
     fn permanent_has_a_short_flag_and_a_no_trash_alias() {
         for spelling in ["-P", "--permanent", "--no-trash"] {
-            let args = rm_args(&["nohrs-cli", "rm", spelling, "secret.key"]);
+            let args = rm_args(&["noh", "rm", spelling, "secret.key"]);
             assert!(args.permanent, "{spelling} did not request a real delete");
         }
     }
@@ -214,7 +213,7 @@ mod tests {
 
     #[test]
     fn an_unknown_flag_is_rejected() {
-        assert!(Invocation::try_parse_from(argv(&["nohrs-cli", "rm", "--yolo", "x"])).is_err());
+        assert!(Invocation::try_parse_from(argv(&["noh", "rm", "--yolo", "x"])).is_err());
         assert!(Invocation::try_parse_from(argv(&["rm", "--yolo", "x"])).is_err());
     }
 

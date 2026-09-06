@@ -16,7 +16,9 @@ name = "nohrs_cli"
 path = "src/nohrs_cli.rs"
 
 [[bin]]
-name = "nohrs-cli"
+# The crate keeps the `nohrs-*` family name; the command itself is short
+# because it is typed constantly.
+name = "noh"
 path = "src/main.rs"
 
 [dependencies]

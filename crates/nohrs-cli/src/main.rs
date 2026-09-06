@@ -1,4 +1,4 @@
-//! The `nohrs-cli` binary: picks the entry point from the program name (see
+//! The `noh` binary: picks the entry point from the program name (see
 //! `nohrs_cli::Invocation`) and runs the requested command.
 
 use std::io::{self, Write};
@@ -14,11 +14,11 @@ fn main() -> ExitCode {
 }
 
 // `Invocation::run` only fails when writing its own report failed — a closed
-// pipe (`nohrs-cli rm -v ... | head`), typically. Announcing that can fail for
+// pipe (`noh rm -v ... | head`), typically. Announcing that can fail for
 // the very same reason, so the diagnostic is best effort and the exit code is
 // what actually carries the outcome.
 fn report_failure(error: &io::Error) -> ExitCode {
-    match writeln!(io::stderr(), "nohrs-cli: {error}") {
+    match writeln!(io::stderr(), "noh: {error}") {
         Ok(()) | Err(_) => ExitCode::FAILURE,
     }
 }

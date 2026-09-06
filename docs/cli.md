@@ -1,15 +1,15 @@
-# CLI — `nohrs-cli`
+# CLI — `noh`
 
 > Status: Draft (P2 で `rm` を実装、以降コマンドを追加)
 > Related: [`ROADMAP.md`](./ROADMAP.md), [`explorer-essentials.md`](./explorer-essentials.md), [`architecture.md`](./architecture.md)
 
-`nohrs-cli` は nohrs の**ターミナル側の入口**です。GUI (`nohrs` バイナリ) と同じファイル操作
+`noh` (crate としては `nohrs-cli`) は nohrs の**ターミナル側の入口**です。GUI (`nohrs` バイナリ) と同じファイル操作
 (`nohrs-services::fs::ops`) をシェルから使えるようにするもので、gpui に依存しないため
 `default-members` に含まれ Linux CI でもビルド・テストされます。
 
 ---
 
-## 1. `nohrs-cli rm`
+## 1. `noh rm`
 
 標準の `rm(1)` の**手前に置く**ことを目的とした削除コマンドです。既定では対象を OS のゴミ箱へ
 移動し、`--permanent` を付けたときだけ本当に削除します。GUI 側の Delete / Delete Permanently
@@ -22,14 +22,14 @@
 ```sh
 cargo build --release -p nohrs-cli
 mkdir -p ~/.local/bin
-ln -sf "$PWD/target/release/nohrs-cli" ~/.local/bin/rm
+ln -sf "$PWD/target/release/noh" ~/.local/bin/rm
 # ~/.local/bin が /bin より先に来ていること
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
 argv[0] が `rm` (Windows では `rm.exe`) のときは全引数を `rm` サブコマンドのものとして解釈するため、
 `rm -rf build/` のような既存のコマンドライン・シェルスクリプトがそのまま通り、削除物はゴミ箱に入ります。
-symlink を使わない場合は `nohrs-cli rm ...` と明示的に呼べます。
+symlink を使わない場合は `noh rm ...` と明示的に呼べます。
 
 ### 1.2 フラグ
 

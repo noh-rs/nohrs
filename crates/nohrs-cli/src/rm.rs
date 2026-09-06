@@ -1,4 +1,4 @@
-//! `nohrs-cli rm` — a drop-in replacement for `rm(1)` that moves its operands to
+//! `noh rm` — a drop-in replacement for `rm(1)` that moves its operands to
 //! the trash instead of unlinking them.
 //!
 //! The flag surface mirrors POSIX `rm` (`-r`, `-d`, `-f`, `-i`, `-v`, `--`) so
@@ -156,7 +156,7 @@ impl<'a> Session<'a> {
             // variable in a script does not abort it.
             if !self.args.force {
                 self.summary.failed += 1;
-                writeln!(self.errors, "nohrs rm: missing operand")?;
+                writeln!(self.errors, "noh rm: missing operand")?;
             }
             return Ok(self.summary);
         }
@@ -253,7 +253,7 @@ impl<'a> Session<'a> {
 
     fn fail(&mut self, path: &Path, message: &str) -> io::Result<()> {
         self.summary.failed += 1;
-        writeln!(self.errors, "nohrs rm: {}: {message}", path.display())
+        writeln!(self.errors, "noh rm: {}: {message}", path.display())
     }
 }
 
@@ -691,7 +691,7 @@ mod tests {
     fn no_operands_is_an_error_unless_forced() {
         let run = execute(&Args::default());
         assert_eq!(run.summary.failed, 1);
-        assert_eq!(run.stderr, "nohrs rm: missing operand\n");
+        assert_eq!(run.stderr, "noh rm: missing operand\n");
 
         let run = execute(&Args {
             force: true,
