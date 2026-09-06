@@ -29,6 +29,12 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 ### Added
 
+- `nohrs-cli`, a toolkit-free CLI crate, with its first command: `nohrs-cli rm`.
+  It removes files the way `rm(1)` does (`-r`/`-R`, `-d`, `-f`, `-i`, `-v`, `--`)
+  but moves them to the trash instead of unlinking them; `--permanent` opts back
+  into a real delete. Symlinking the binary as `rm` earlier on `PATH` puts it in
+  front of the system `rm`, so an existing `rm -rf` becomes recoverable. See
+  [`docs/cli.md`](docs/cli.md).
 - OSS hygiene baseline: CI workflow, Dependabot config, issue/PR templates,
   `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, and this changelog.
 - Package metadata (`description`, `repository`, `homepage`, `license`,

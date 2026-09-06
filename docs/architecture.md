@@ -15,6 +15,7 @@ nohrs/
 ├── rust-toolchain.toml
 ├── crates/
 │   ├── nohrs/                # main binary (P1)
+│   ├── nohrs-cli/            # nohrs-cli binary — rm 等の CLI (P2)
 │   ├── nohrs-core/           # errors / config / telemetry (P1)
 │   ├── nohrs-models/         # FileEntry など pure data types (P1)
 │   ├── nohrs-services/       # fs / search / syntax (P1)
@@ -126,6 +127,7 @@ expect_used  = "warn"
 | crate | 主な責務 | 依存 |
 |-------|---------|------|
 | **nohrs (bin)** | GUI エントリ、CLI サブコマンド、起動シーケンス | 全 crate |
+| **nohrs-cli (bin)** | ターミナル用エントリ (`rm` ほか)。GUI を開かない toolkit-free バイナリ。詳細は [`docs/cli.md`](./cli.md) | `core`, `services` |
 | **nohrs-pages** | explorer / settings / git / s3 などのページ | `ui`, `services`, `models`, `core`, (P2) `store` |
 | **nohrs-launcher** (P3) | ランチャー window、Command trait、結果リスト | `ui`, `services`, `core`, `store`, (P4) `plugin-host` |
 | **nohrs-plugin-host** (P4) | wasmtime + wasmtime-wasi + WIT host、permission ガード、専用 tokio runtime (隔離) | `core`, `store`, `services`, `models` |

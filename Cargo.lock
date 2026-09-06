@@ -4057,6 +4057,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nohrs-cli"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "nohrs-core",
+ "nohrs-services",
+ "tempfile",
+]
+
+[[package]]
 name = "nohrs-core"
 version = "0.0.1"
 dependencies = [

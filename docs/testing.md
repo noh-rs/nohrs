@@ -97,7 +97,9 @@ HTML レポート artifact を **併用**。外部 SaaS (Codecov / Coveralls) �
 ファイル単位ゲートは「単体テストが本質的に不能なコード」を `--ignore-filename-regex` で除外した上で
 適用する。除外対象は **明示列挙** (regex を読めば一目で分かる) し、平均で薄める運用はしない:
 
-- gpui バイナリのエントリポイント (`nohrs/src/{app,cli,main}.rs`)
+- gpui バイナリのエントリポイント (`nohrs/src/{app,cli,main}.rs`) と CLI バイナリのそれ
+  (`nohrs-cli/src/main.rs`)。CLI の argv ディスパッチと `rm` エンジンは lib 側
+  (`nohrs_cli.rs` / `rm.rs`) にあり、そちらは除外せず gate 対象
 - 純粋な描画 / view・ウィンドウ chrome (`explorer/view*`, `assets.rs`, `window.rs` 等)
 - `components/layout/unified_toolbar.rs` — popup メニューの本体はメニューを開いたときのみ実行され、
   headless な draw では到達しないため除外 (toolbar 本体の描画は `#[gpui::test]` でカバー済み)

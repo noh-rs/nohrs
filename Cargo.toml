@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "crates/nohrs",
+  "crates/nohrs-cli",
   "crates/nohrs-core",
   "crates/nohrs-models",
   "crates/nohrs-services",
@@ -21,6 +22,7 @@ exclude = ["web"]
 # nohrs) are still workspace members and build with `--workspace`, `-p`, or on
 # macOS. This mirrors the previous single-crate `default = []` / `gui` feature.
 default-members = [
+  "crates/nohrs-cli",
   "crates/nohrs-core",
   "crates/nohrs-models",
   "crates/nohrs-services",
@@ -38,6 +40,7 @@ authors      = ["nohrs contributors"]
 
 [workspace.dependencies]
 anyhow             = "1"
+clap               = { version = "4", features = ["derive"] }
 thiserror          = "1"
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

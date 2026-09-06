@@ -58,7 +58,7 @@ SemVer の `0.x.y` を使い、刻みは次の基準で決める。
 
 ---
 
-## 参照ドキュメント (16)
+## 参照ドキュメント (17)
 
 ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキュメントを参照します。各ドキュメントは骨子を P1 で作成し、対応フェーズで詳細化します。
 
@@ -79,6 +79,7 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
 | [`docs/plugin-permissions.md`](./plugin-permissions.md) | P4 | 権限マニフェスト・同意フロー・2 層サンドボックス |
 | [`docs/plugin-distribution.md`](./plugin-distribution.md) | P4→P5 | インストール (user/repo, URL, local)・更新・Plugin Store 連携 |
 | [`docs/plugin-templates.md`](./plugin-templates.md) | P4 | Rust/TS/Python テンプレ・`nohrs plugin` CLI・AI agent skills/MCP |
+| [`docs/cli.md`](./cli.md) | P2 | `nohrs-cli` バイナリ・`rm` (既定でゴミ箱)・標準コマンドの手前に置く運用 |
 | [`docs/os-integration.md`](./os-integration.md) | P2 | Finder 代替の OS 統合 (`public.folder`/`NSFileViewer`/Apple Event/Quick Look/LaunchServices)・Linux 等価 |
 
 加えて [`docs/adr/`](./adr/) に短文の Architecture Decision Records を蓄積します。
