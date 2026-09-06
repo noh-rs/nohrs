@@ -21,6 +21,7 @@ LOG="${NOHRS_LOG:-/tmp/nohrs.log}"
 DEVLIBS="$HOME/.local/devlibs"
 LIBDIR="${LIBDIR:-/usr/lib/x86_64-linux-gnu}"
 TMP="${TMPDIR:-/tmp}"
+STARTUP_POLLS=20       # x 0.5s: how long to give the process to appear at all
 WINDOW_POLLS=120       # x 0.5s: how long to wait for the X window to be created
 REDRAW_ATTEMPTS=20     # x ~2.5s: how long to keep nudging before giving up on a frame
 UNIFORM_EXIT=3         # xwd2png.py --fail-if-uniform: captured frame is one flat color
@@ -144,6 +145,12 @@ launch() {
       # backgrounding `setsid` and the binary appearing under its own name.
       report_failure "nohrs exited during startup"
       return 1
+    elif [ "$attempt" -ge "$STARTUP_POLLS" ]; then
+      # Never appeared under its own name at all, so it died before or during
+      # exec. The rest of the window budget is for a slow first window on a live
+      # process; spending it here would just delay the report.
+      report_failure "nohrs did not start"
+      return 1
     fi
     pause 0.5
   done
@@ -179,13 +186,19 @@ shot() {
   # xdotool with; the blank check below still has to look at the window alone.
   capture "$out" "$disp" root || return 1
   local window; window="$(win_id)"
-  if [ -n "$window" ]; then
-    window_frame_status "$disp" "$window"
-    if [ $? -eq "$UNIFORM_EXIT" ]; then
+  [ -n "$window" ] || { echo "nohrs is running but has no window: $out cannot show it" >&2; return 1; }
+  window_frame_status "$disp" "$window"
+  local status=$?
+  case "$status" in
+    0) ;;
+    # Written and usable, but say what is in it: the caller asked for a shot of
+    # the app and got a picture of an unpainted window.
+    "$UNIFORM_EXIT")
       echo "warning: the nohrs window in $out is one flat color -- it has not presented a frame." >&2
       echo "         re-run './script/ui-run.sh launch' to force the redraw." >&2
-    fi
-  fi
+      ;;
+    *) echo "could not inspect the nohrs window (exit $status): $out may not show it" >&2; return 1 ;;
+  esac
 }
 
 case "${1:-}" in
