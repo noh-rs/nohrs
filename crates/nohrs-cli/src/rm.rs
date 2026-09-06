@@ -272,10 +272,18 @@ fn ends_in_dot_segment(path: &Path) -> bool {
 }
 
 fn is_empty_dir(path: &Path) -> io::Result<bool> {
-    Ok(std::fs::read_dir(path)?.next().is_none())
+    // A failure to read the first entry is reported as such: folding it into
+    // `false` would surface as a misleading "directory not empty".
+    match std::fs::read_dir(path)?.next() {
+        None => Ok(true),
+        Some(Ok(_)) => Ok(false),
+        Some(Err(error)) => Err(error),
+    }
 }
 
 #[cfg(test)]
+// The fixtures build real directory trees, so they need the synchronous
+// filesystem calls that app code routes through `nohrs-services` instead.
 #[allow(clippy::unwrap_used, clippy::disallowed_methods)]
 mod tests {
     use std::fs;

@@ -9,7 +9,7 @@
 /// `rm`: trash-by-default removal.
 pub mod rm;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::Path;
 
@@ -17,6 +17,9 @@ use clap::{Parser, Subcommand};
 
 /// The program name a symlink must have to be treated as the `rm` applet.
 const RM_APPLET: &str = "rm";
+
+/// The Windows spelling of [`RM_APPLET`].
+const RM_APPLET_EXE: &str = "rm.exe";
 
 /// Command-line entry point when the binary is called by its own name.
 #[derive(Parser, Debug)]
@@ -74,13 +77,7 @@ impl Invocation {
         I: IntoIterator<Item = OsString>,
     {
         let args: Vec<OsString> = args.into_iter().collect();
-        // `file_stem` rather than `file_name` so a Windows `rm.exe` also matches.
-        let invoked_as_rm = args.first().is_some_and(|program| {
-            Path::new(program)
-                .file_stem()
-                .is_some_and(|stem| stem == RM_APPLET)
-        });
-        if invoked_as_rm {
+        if args.first().is_some_and(|program| is_rm_applet(program)) {
             RmCli::try_parse_from(args).map(Invocation::Rm)
         } else {
             Cli::try_parse_from(args).map(Invocation::Direct)
@@ -108,6 +105,15 @@ impl Invocation {
             | Invocation::Rm(RmCli { args }) => run_rm(args),
         }
     }
+}
+
+/// Whether argv[0] names the `rm` applet. The file name has to be exactly `rm`
+/// (or `rm.exe`): a copy or backup of the binary called `rm.old` is not a
+/// request to behave as `rm`.
+fn is_rm_applet(program: &OsStr) -> bool {
+    Path::new(program)
+        .file_name()
+        .is_some_and(|name| name == OsStr::new(RM_APPLET) || name == OsStr::new(RM_APPLET_EXE))
 }
 
 fn run_rm(args: &rm::Args) -> io::Result<u8> {
@@ -157,8 +163,14 @@ mod tests {
             Invocation::try_parse_from(argv(&["nohrs-cli", "rm", "notes.txt"])).unwrap();
         assert!(matches!(invocation, Invocation::Direct(_)));
 
-        // A program whose name merely contains `rm` is not the applet.
-        assert!(Invocation::try_parse_from(argv(&["/opt/bin/rmdir", "notes.txt"])).is_err());
+        // Names that merely start with or contain `rm` are not the applet: a
+        // copy of the binary must not silently take over for `rm`.
+        for program in ["/opt/bin/rmdir", "rm.backup", "rm.", "trm"] {
+            assert!(
+                !is_rm_applet(OsStr::new(program)),
+                "{program} was treated as the rm applet"
+            );
+        }
     }
 
     #[test]
