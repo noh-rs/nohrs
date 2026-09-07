@@ -18,8 +18,9 @@ use std::path::{Component, Path, PathBuf};
 pub enum MoveKind {
     /// The move stayed on a single filesystem and used `rename(2)`.
     Rename,
-    /// Source and destination were on different filesystems, so the move was
-    /// performed as a recursive copy followed by deleting the source.
+    /// The move was carried out as a recursive copy followed by deleting the
+    /// source: source and destination are on different filesystems, or — for
+    /// [`move_path_no_replace`] — no no-replace rename was available.
     CrossVolume,
 }
 
@@ -179,27 +180,22 @@ pub fn move_path(src: &Path, dst: &Path) -> Result<MoveKind> {
 /// destroyed. Restoring from the trash writes to a path the user last saw empty
 /// minutes or days ago, which is exactly when something else may have taken it.
 ///
-/// On Linux and macOS the rename itself carries the no-replace flag, so nothing
-/// can slip in. Elsewhere — and on filesystems that reject the flag — this
-/// degrades to the check-then-move it replaces, which is still no worse.
+/// On Linux and macOS the rename itself carries the no-replace flag, so the
+/// whole move is atomic against a concurrent create. Elsewhere — and on
+/// filesystems that reject the flag — it falls back to [`copy_path_no_replace`]
+/// plus deleting the source, which claims the destination atomically too; a
+/// check followed by a replacing `rename` would not, which is the very hole this
+/// function exists to close.
 pub fn move_path_no_replace(src: &Path, dst: &Path) -> Result<MoveKind> {
     match rename_no_replace(src, dst) {
         Some(Ok(())) => return Ok(MoveKind::Rename),
-        Some(Err(error)) if is_cross_device(&error) => {
-            copy_path_no_replace(src, dst)?;
-            delete_permanent(src)?;
-            return Ok(MoveKind::CrossVolume);
-        }
-        Some(Err(error)) => return Err(Error::Io(error)),
-        None => {}
+        Some(Err(error)) if !is_cross_device(&error) => return Err(Error::Io(error)),
+        // Cross-device, or no no-replace rename to be had: copy and delete.
+        Some(Err(_)) | None => {}
     }
-    if path_occupied(dst) {
-        return Err(Error::Io(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            format!("{} already exists", dst.display()),
-        )));
-    }
-    move_path(src, dst)
+    copy_path_no_replace(src, dst)?;
+    delete_permanent(src)?;
+    Ok(MoveKind::CrossVolume)
 }
 
 /// `rename(2)` with the platform's no-replace flag, or `None` where the
@@ -228,6 +224,9 @@ fn rename_no_replace(_src: &Path, _dst: &Path) -> Option<std::io::Result<()>> {
 // `create_dir` for a directory both fail if the name is taken, so the
 // destination is claimed atomically before any byte is written.
 fn copy_path_no_replace(src: &Path, dst: &Path) -> Result<()> {
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
     if fs::symlink_metadata(src)?.is_dir() {
         fs::create_dir(dst)?;
         copy_dir_all(src, dst)
@@ -469,21 +468,29 @@ mod tests {
     }
 
     #[test]
-    fn move_path_no_replace_copies_a_tree_when_the_destination_is_free() {
-        // Exercises the cross-volume half directly: one filesystem in a test
-        // means `rename` never returns `EXDEV`, so call the copy itself.
+    fn the_fallback_move_claims_the_destination_before_writing_to_it() {
+        // Exercised directly: a test has one filesystem, so `rename` never
+        // returns `EXDEV` and the copy path is otherwise unreachable here. It
+        // is what runs wherever no no-replace rename exists, so it has to be as
+        // refusing as the rename is.
         let dir = tempdir().unwrap();
         let src = dir.path().join("src");
         fs::create_dir(&src).unwrap();
         fs::write(src.join("top.txt"), "top").unwrap();
-        let dst = dir.path().join("dst");
+        let dst = dir.path().join("nested").join("dst");
 
+        // A missing parent is created, the way `copy_path` does it.
         copy_path_no_replace(&src, &dst).unwrap();
         assert_eq!(fs::read_to_string(dst.join("top.txt")).unwrap(), "top");
 
-        // And refuses once the name is taken, which is what keeps the fallback
-        // path as safe as the rename.
         assert!(copy_path_no_replace(&src, &dst).is_err());
+
+        let file = dir.path().join("file.txt");
+        fs::write(&file, "mine").unwrap();
+        let taken = dir.path().join("taken.txt");
+        fs::write(&taken, "theirs").unwrap();
+        assert!(copy_path_no_replace(&file, &taken).is_err());
+        assert_eq!(fs::read_to_string(&taken).unwrap(), "theirs");
     }
 
     #[test]

@@ -689,7 +689,11 @@ mod tests {
         assert_eq!(entry.size, 0, "a directory's own byte count is meaningless");
     }
 
-    #[cfg(unix)]
+    // Not on macOS: APFS and HFS+ reject an invalid-UTF-8 name outright
+    // (`EILSEQ`), so the fixture cannot even be created there. The guard still
+    // matters on macOS for paths on a mounted volume that does allow one — that
+    // case just cannot be built in a test.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn capture_refuses_a_path_it_could_only_record_by_mangling_it() {
         use std::os::unix::ffi::OsStrExt;
