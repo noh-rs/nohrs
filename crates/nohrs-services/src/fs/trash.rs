@@ -585,17 +585,36 @@ fn is_collision_suffix(suffix: &str) -> bool {
     if !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()) {
         return true;
     }
-    let Some((clock, meridiem)) = suffix.split_once(' ') else {
+    match suffix.split_once(' ') {
+        Some((clock, "AM" | "PM")) => is_clock(clock),
+        _ => false,
+    }
+}
+
+/// Whether `clock` is a wall-clock time the trash could have written: a 12-hour
+/// hour, then two-digit minutes and seconds. Checked to the value, not just the
+/// shape — `99.99.99 AM` is a name someone chose, not one the trash produced,
+/// and treating it as one puts that file at risk of being restored over or
+/// purged in another's place.
+fn is_clock(clock: &str) -> bool {
+    let mut parts = clock.split('.');
+    let (Some(hour), Some(minute), Some(second), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
         return false;
     };
-    if !matches!(meridiem, "AM" | "PM") {
-        return false;
-    }
-    let mut parts = clock.split('.');
-    let parsed = [parts.next(), parts.next(), parts.next()].map(|part| {
-        part.is_some_and(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-    });
-    parts.next().is_none() && parsed.iter().all(|part| *part)
+    // Parsed by hand rather than with `str::parse`, which also accepts a `+`.
+    let value = |part: &str, digits: std::ops::RangeInclusive<usize>| {
+        (digits.contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_digit())).then(
+            || {
+                part.bytes()
+                    .fold(0u32, |value, byte| value * 10 + u32::from(byte - b'0'))
+            },
+        )
+    };
+    matches!(value(hour, 1..=2), Some(1..=12))
+        && matches!(value(minute, 2..=2), Some(0..=59))
+        && matches!(value(second, 2..=2), Some(0..=59))
 }
 
 #[cfg(test)]
@@ -1066,6 +1085,25 @@ mod tests {
         assert!(!is_collision_suffix("10.30.15.20 AM"));
         assert!(!is_collision_suffix("10.30.15 XM"));
         assert!(!is_collision_suffix("10..15 AM"));
+    }
+
+    #[test]
+    fn a_clock_suffix_has_to_be_a_time_a_clock_could_show() {
+        assert!(is_clock("1.05.00"));
+        assert!(is_clock("12.59.59"));
+        assert!(is_clock("01.05.00"));
+
+        // Digits in the right places are not enough: a name shaped like a time
+        // but reading as none is a file someone named that way.
+        assert!(!is_clock("99.99.99"));
+        assert!(!is_clock("0.30.15"));
+        assert!(!is_clock("13.30.15"));
+        assert!(!is_clock("10.60.15"));
+        assert!(!is_clock("10.30.60"));
+        assert!(!is_clock("10.3.15"));
+        assert!(!is_clock("10.030.15"));
+        assert!(!is_clock("+1.30.15"));
+        assert!(is_collision_suffix("10.30.15 PM"));
     }
 
     #[test]

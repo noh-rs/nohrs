@@ -167,6 +167,11 @@ fn copy_dir_all(src: &Path, dst: &Path, links: Links) -> Result<()> {
             fs::copy(&from, &to)?;
         }
     }
+    // `create_dir_all` derives the mode from the umask, so a private `0700`
+    // directory would otherwise arrive world-readable and expose what it holds.
+    // Applied last: a directory the source made unwritable must not become
+    // unwritable here until everything is inside it.
+    fs::set_permissions(dst, fs::metadata(src)?.permissions())?;
     Ok(())
 }
 
@@ -248,16 +253,18 @@ fn copy_path_no_replace(src: &Path, dst: &Path) -> Result<()> {
         return symlink_no_replace(&fs::read_link(src)?, dst);
     }
     if metadata.is_dir() {
+        // `create_dir` rather than the `create_dir_all` inside `copy_dir_all`,
+        // so an existing destination is refused; the recursion then fills it in
+        // and applies the source's mode to it and to every directory below.
         fs::create_dir(dst)?;
-        copy_dir_all(src, dst, Links::Preserve)?;
-    } else {
-        let mut source = fs::File::open(src)?;
-        let mut destination = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(dst)?;
-        std::io::copy(&mut source, &mut destination)?;
+        return copy_dir_all(src, dst, Links::Preserve);
     }
+    let mut source = fs::File::open(src)?;
+    let mut destination = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst)?;
+    std::io::copy(&mut source, &mut destination)?;
     // After the contents, so a read-only mode cannot stop the copy that has to
     // happen first.
     fs::set_permissions(dst, metadata.permissions())?;
@@ -511,6 +518,35 @@ mod tests {
             fs::metadata(&moved_script).unwrap().permissions().mode() & 0o777,
             0o755,
             "an executable must not come back from the trash unexecutable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_fallback_move_keeps_a_private_directory_private_at_every_depth() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // `create_dir_all` takes its mode from the umask, so without carrying
+        // the source's across, a restored `0700` directory would come back
+        // readable by anyone with an account on the machine.
+        let dir = tempdir().unwrap();
+        let outer = dir.path().join("secrets");
+        let inner = outer.join("deeper");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("key.txt"), "private").unwrap();
+        fs::set_permissions(&inner, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&outer, fs::Permissions::from_mode(0o750)).unwrap();
+
+        let moved = dir.path().join("moved-secrets");
+        copy_path_no_replace(&outer, &moved).unwrap();
+
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&moved), 0o750);
+        assert_eq!(mode(&moved.join("deeper")), 0o700);
+        assert_eq!(
+            fs::read_to_string(moved.join("deeper").join("key.txt")).unwrap(),
+            "private",
+            "the contents still have to arrive, mode applied last"
         );
     }
 
