@@ -20,6 +20,21 @@ BIN="$ROOT/target/debug/nohrs"
 LOG="${NOHRS_LOG:-/tmp/nohrs.log}"
 DEVLIBS="$HOME/.local/devlibs"
 LIBDIR="${LIBDIR:-/usr/lib/x86_64-linux-gnu}"
+TMP="${TMPDIR:-/tmp}"
+STARTUP_POLLS=20       # x 0.5s: how long to give the process to appear at all
+WINDOW_POLLS=120       # x 0.5s: how long to wait for the X window to be created
+REDRAW_ATTEMPTS=20     # x ~2.5s: how long to keep nudging before giving up on a frame
+UNIFORM_EXIT=3         # xwd2png.py --fail-if-uniform: captured frame is one flat color
+
+pause() {
+  # The 'sleep' binary is blocked in some agent shells; this is not.
+  perl -e 'select(undef, undef, undef, $ARGV[0])' "$1"
+}
+
+report_failure() {
+  echo "$1; tail of $LOG:" >&2
+  tail -5 "$LOG" >&2
+}
 
 setup() {
   mkdir -p "$DEVLIBS"
@@ -51,30 +66,139 @@ win_id() {
   DISPLAY="$(resolve_display)" xdotool search --pid "$pid" 2>/dev/null | head -1
 }
 
+# Force a redraw. Under a bare X server (no window manager) nothing ever damages the
+# window after it is mapped, so gpui presents no further frame and the surface stays
+# black indefinitely -- waiting does not help. A one-pixel resize and back does.
+nudge() {
+  local disp="$1" window="$2" geometry width height
+  geometry="$(DISPLAY="$disp" xdotool getwindowgeometry --shell "$window")" || return 1
+  width="$(sed -n 's/^WIDTH=//p' <<< "$geometry")"
+  height="$(sed -n 's/^HEIGHT=//p' <<< "$geometry")"
+  # Each dimension on its own, and at least 2 so the shrink below stays positive:
+  # checking the two concatenated would accept a missing or zero WIDTH.
+  case "$width" in ''|*[!0-9]*) width=0 ;; esac
+  case "$height" in ''|*[!0-9]*) height=0 ;; esac
+  if [ "$width" -lt 2 ] || [ "$height" -lt 2 ]; then
+    echo "no usable geometry for window $window (got ${width}x${height})" >&2
+    return 1
+  fi
+  DISPLAY="$disp" xdotool windowsize "$window" "$((width - 1))" "$((height - 1))" || return 1
+  pause 1
+  DISPLAY="$disp" xdotool windowsize "$window" "$width" "$height" || return 1
+}
+
+capture() {   # capture <out.png> <display> <root|window-id> [xwd2png.py flags...]
+  local out="$1" disp="$2" target="$3"; shift 3
+  local -a selector
+  if [ "$target" = root ]; then selector=(-root); else selector=(-id "$target"); fi
+  local dump; dump="$(mktemp "$TMP/ui-shot.XXXXXX.xwd")" || return 1
+  DISPLAY="$disp" xwd "${selector[@]}" -silent -out "$dump" \
+    || { rm -f "$dump"; echo "xwd failed" >&2; return 1; }
+  python3 "$ROOT/script/xwd2png.py" "$dump" "$out" "$@"
+  local status=$?
+  rm -f "$dump"
+  return "$status"
+}
+
+# Exit status of a --fail-if-uniform capture of the app's OWN window: 0 = it has
+# presented a real frame, UNIFORM_EXIT = still one flat color, anything else = the
+# capture itself failed. Probing the root window instead would be wrong on any
+# display that has a desktop or other windows on it: those pixels alone make the
+# capture non-uniform, so a blank nohrs window would read as rendered.
+window_frame_status() {
+  local disp="$1" window="$2"
+  local probe; probe="$(mktemp "$TMP/ui-frame-probe.XXXXXX.png")" || return 1
+  # Only stdout is dropped (the "wrote ..." line): on the uniform path nothing is
+  # written to stderr, so letting it through surfaces real capture failures.
+  capture "$probe" "$disp" "$window" --fail-if-uniform >/dev/null
+  local status=$?
+  rm -f "$probe"
+  return "$status"
+}
+
 launch() {
   local disp; disp="$(resolve_display)" || return 1
   [ -x "$BIN" ] || { echo "binary not built: $BIN" >&2; return 1; }
-  pkill -x nohrs 2>/dev/null   # never use 'pkill -f' here: it matches this script's own path.
+  # never use 'pkill -f' here: it matches this script's own path.
+  if pkill -x nohrs 2>/dev/null; then
+    # Wait for it to actually go. `pkill` only signals, and the poll below matches
+    # by process name: an outgoing instance still winding down would be picked up
+    # as the new one, handing back its about-to-be-destroyed window id.
+    local dying
+    for dying in $(seq 1 40); do
+      pgrep -x nohrs >/dev/null || break
+      pause 0.25
+    done
+    pgrep -x nohrs >/dev/null && { echo "a previous nohrs will not exit" >&2; return 1; }
+  fi
   : > "$LOG"
   DISPLAY="$disp" setsid "$BIN" > "$LOG" 2>&1 < /dev/null &
-  # Software (llvmpipe) rendering: the window is black until the first real frame.
-  # Wait for the steady-state render marker (poll, don't busy-spin), then let UI/fonts settle.
-  timeout 30 bash -c "until grep -q 'Refreshing every' '$LOG' 2>/dev/null; do sleep 0.2; done" \
-    || { echo "render marker not seen; tail of $LOG:" >&2; tail -5 "$LOG" >&2; return 1; }
-  perl -e 'select(undef,undef,undef,4)'   # 'sleep' may be blocked in some agent shells; this is not.
-  local w; w="$(win_id)"
-  [ -n "$w" ] || { echo "window id not found; tail of $LOG:" >&2; tail -5 "$LOG" >&2; return 1; }
-  echo "WINDOW=$w DISPLAY=$disp PID=$(pgrep -x nohrs | head -1)"
+
+  local window="" attempt seen_process=false
+  for attempt in $(seq 1 "$WINDOW_POLLS"); do
+    if pgrep -x nohrs >/dev/null; then
+      seen_process=true
+      window="$(win_id)"
+      [ -n "$window" ] && break
+    elif [ "$seen_process" = true ]; then
+      # Gone after having been seen: a real crash, not the startup race between
+      # backgrounding `setsid` and the binary appearing under its own name.
+      report_failure "nohrs exited during startup"
+      return 1
+    elif [ "$attempt" -ge "$STARTUP_POLLS" ]; then
+      # Never appeared under its own name at all, so it died before or during
+      # exec. The rest of the window budget is for a slow first window on a live
+      # process; spending it here would just delay the report.
+      report_failure "nohrs did not start"
+      return 1
+    fi
+    pause 0.5
+  done
+  [ -n "$window" ] || { report_failure "window id not found"; return 1; }
+
+  # Software (llvmpipe) rendering plus the no-damage problem above: the only reliable
+  # readiness signal is the window's own pixels no longer being a single flat color.
+  local status
+  for attempt in $(seq 1 "$REDRAW_ATTEMPTS"); do
+    pgrep -x nohrs >/dev/null || { report_failure "nohrs exited while waiting for a frame"; return 1; }
+    nudge "$disp" "$window" || { report_failure "could not resize the window to force a redraw"; return 1; }
+    pause 1.5
+    window_frame_status "$disp" "$window"
+    status=$?
+    case "$status" in
+      0) echo "WINDOW=$window DISPLAY=$disp PID=$(pgrep -x nohrs | head -1)"; return 0 ;;
+      "$UNIFORM_EXIT") ;;   # still one flat color: nudge again
+      # Anything else is the capture path failing (a dead or hung display, a
+      # destroyed window), not the app being slow to paint. Say so now rather
+      # than burning the remaining attempts and blaming the app at the end.
+      *) report_failure "capturing window $window failed (exit $status)"; return 1 ;;
+    esac
+  done
+  report_failure "window still blank after $REDRAW_ATTEMPTS redraw attempts"
+  return 1
 }
 
 shot() {
   local out="${1:?usage: ui-run.sh shot <out.png>}"
   local disp; disp="$(resolve_display)" || return 1
   pgrep -x nohrs >/dev/null || launch >/dev/null || return 1
-  local xwd="/tmp/ui-shot.$$.xwd"
-  DISPLAY="$disp" xwd -root -silent -out "$xwd" || { echo "xwd failed" >&2; return 1; }
-  python3 "$ROOT/script/xwd2png.py" "$xwd" "$out" || { rm -f "$xwd"; echo "xwd2png failed" >&2; return 1; }
-  rm -f "$xwd"
+  # The PNG is the whole screen, so its pixel coordinates match the ones you drive
+  # xdotool with; the blank check below still has to look at the window alone.
+  capture "$out" "$disp" root || return 1
+  local window; window="$(win_id)"
+  [ -n "$window" ] || { echo "nohrs is running but has no window: $out cannot show it" >&2; return 1; }
+  window_frame_status "$disp" "$window"
+  local status=$?
+  case "$status" in
+    0) ;;
+    # Written and usable, but say what is in it: the caller asked for a shot of
+    # the app and got a picture of an unpainted window.
+    "$UNIFORM_EXIT")
+      echo "warning: the nohrs window in $out is one flat color -- it has not presented a frame." >&2
+      echo "         re-run './script/ui-run.sh launch' to force the redraw." >&2
+      ;;
+    *) echo "could not inspect the nohrs window (exit $status): $out may not show it" >&2; return 1 ;;
+  esac
 }
 
 case "${1:-}" in
