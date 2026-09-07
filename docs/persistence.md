@@ -35,24 +35,30 @@
 
 ### 1.2 SQLite を残すかは P3 で再評価する
 
-§1.1 の基準は「SQL 表現力を実際に使うものだけ SQLite に置く」と言っているが、**P2 時点でその表現力は一度も使われていない**。`nohrs-store` の SQL を数えると次のとおり。
+§1.1 の基準は「SQL 表現力を実際に使うものだけ SQLite に置く」と言っているが、**P2 時点でその表現力は一度も使われていない**。数える対象は `crates/nohrs-store/src/sqlite.rs` の実行時 SQL と `crates/nohrs-store/migrations/001_init.sql` のスキーマ文 (P2 時点で存在する唯一のマイグレーション) の 2 つ。
 
-| 指標 | P2 時点 |
-|------|---------|
-| SQL ステートメント総数 | 15 |
-| `JOIN` / `GROUP BY` / `HAVING` / `UNION` | **0** |
-| サブクエリ | `_migrations` の `EXISTS` 1 件のみ |
+| 対象 | 文数 | 内訳 |
+|------|------|------|
+| 実行時 SQL (`sqlite.rs`) | **13** | `PRAGMA journal_mode=WAL` 1 / `_migrations` の作成・照会・記録 3 / `files` 7 / `history` 2 |
+| スキーマ (`001_init.sql`) | **5** | `CREATE TABLE` 2 / `CREATE INDEX` 3 |
+| うち `JOIN` / `GROUP BY` / `HAVING` / `UNION` | **0** | 両方の対象を合わせて 0 |
+| うちサブクエリ | **1** | 実行時の `SELECT EXISTS(SELECT 1 FROM _migrations …)` のみ |
 
 全クエリが「点引き」「インデックス付き等価スキャン」「順序付き範囲スキャン」のいずれかで、クエリプランナが仕事をする場面が無い。一方で SQLite は次のコストを持ち込んでいる。
 
 - `sqlite3.c` は **9.1 MB の C ソース**、`libsqlite3-sys` の再ビルドに **約 40 秒**
 - 非 Rust ツールチェーンへの依存。実例として `libsqlite3-sys 0.38` は `cfg_select!` を要求するため、rustc が古い環境ではクレートがビルドできない
 
-つまり現状は「B-tree と順序と ACID のためだけに SQL エンジンを積んでいる」状態で、これは redb で置き換えられる。redb のキーは順序を持ち範囲スキャンができるので、`trash` は `(trashed_at, id)`、`history` は `(kind, occurred_at)` を連結キーにすれば SQL 無しで同じ順序が出る。`files` だけは二次インデックス (`parent_path` / `inode` / `mtime_ns`) を自前でトランザクション内整合させる必要がある。
+つまり現状は「B-tree と順序と ACID のためだけに SQL エンジンを積んでいる」状態で、これは redb で置き換えられる。redb のキーは順序を持ち範囲スキャンができるため、`history` は連結キーで表現できる。ただし**キーの一意性は自分で担保する必要がある**: `(kind, occurred_at)` は一意ではなく (`history.id` が主キー、`occurred_at` は同一値を取りうる)、これをキーにすると同 kind・同時刻の 2 件が上書きで消える。したがって
+
+- キーは `(kind, occurred_at, id)` とし、`id` は SQLite の `INTEGER PRIMARY KEY` が担っていた**単調増加の採番を redb 側に持たせる** (採番用テーブルに次の値を持ち、書き込みと同一トランザクションで進める)。`HistoryEntry` は現状 `id` を持たないので、この採番を追加するのが移行の前提になる
+- `list` の「新しい順」は `range((kind, i64::MIN, 0)..=(kind, i64::MAX, i64::MAX))` を `.rev()` で走査して満たす。同時刻のタイブレークは `id` の降順、すなわち後に記録された方が先に来る (SQLite の `ORDER BY occurred_at DESC` + 挿入順と同じ意味)
+
+`files` は二次インデックス (`parent_path` / `inode` / `mtime_ns`) を自前でトランザクション内整合させる必要がある。
 
 **それでも P2 では変更しない。** 理由は 2 つ。
 
-1. **この判断は可逆で、既に隔離されている。** `MetadataStore` / `HistoryStore` / `TrashLedger` はいずれも trait で、呼び出し側は `Arc<dyn _>` を受け取る。バックエンド差し替えは `nohrs-store` に閉じるため、急いで決める必要が無い。
+1. **この判断は可逆で、バックエンドは trait の裏に隠れている。** `MetadataQuery` / `MetadataStore` / `HistoryStore` / `KvStore` はいずれも trait として宣言されており、差し替えは `nohrs-store` に閉じる。ただし P2 時点で実際に `Arc<dyn _>` として呼び出し側へ配線されているのは `KvStore` だけで (`nohrs/src/app.rs`)、メタデータと履歴はまだ利用側が無い。**利用側が増える前に決めるほど差し替えは安い**、というのがここでの含意。
 2. **本命のワークロードがまだ無い。** この DB を本気で叩くのは P3 のメタデータインデクサで、数十万エントリの更新において自前二次インデックスが SQLite の B-tree に勝つかは、そのコード無しには測れない。いま決めるのは目隠しで決めること。
 
 **P3 のインデクサ実装後に、以下を実測したうえで再検討する。**
@@ -71,10 +77,11 @@
 
 ```toml
 [dependencies]
-rusqlite = { version = "0.31", features = ["bundled", "blob"] }
+rusqlite = { version = "0.40", features = ["bundled", "blob", "trace"] }
 ```
 
 - `bundled` で SQLite 自体を vendoring (システム SQLite に依存しない、docker/nix 安定)
+- `trace` は §5 の遅いクエリ検出 (`StoreLogConfig::slow_query_ms`) が使う
 - WAL モード (`PRAGMA journal_mode=WAL`) で single writer + many readers
 - `cx.background_spawn` 経由で UI 層から async に見せる
 - tokio 依存なし
@@ -172,7 +179,7 @@ fn migrate(conn: &Connection) -> Result<()> {
 
 ```toml
 [dependencies]
-redb = "2"
+redb = "4"
 ```
 
 - ACID + MVCC、SQLite と同じく WAL 風 crash recovery
