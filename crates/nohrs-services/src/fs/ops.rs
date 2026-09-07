@@ -128,7 +128,7 @@ pub fn unique_name(dir: &Path, name: &str) -> String {
 pub fn copy_path(src: &Path, dst: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(src)?;
     if metadata.is_dir() {
-        copy_dir_all(src, dst)
+        copy_dir_all(src, dst, Links::Follow)
     } else {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
@@ -138,18 +138,31 @@ pub fn copy_path(src: &Path, dst: &Path) -> Result<()> {
     }
 }
 
+/// What a recursive copy does with a symbolic link it meets. Neither option
+/// recurses into one, so neither can loop.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Links {
+    /// Copy what the link points at, which is what [`copy_path`] has always
+    /// done and what a user dragging a folder in the explorer expects.
+    Follow,
+    /// Recreate the link itself. A move must hand back what it was given, so
+    /// this is what [`move_path_no_replace`] copies with.
+    Preserve,
+}
+
 // Recursively copies the contents of directory `src` into `dst`, creating
-// `dst` and any intermediate directories. Symlinks are copied via `fs::copy`
-// (following the link) rather than recursed into, to avoid cycles.
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+// `dst` and any intermediate directories.
+fn copy_dir_all(src: &Path, dst: &Path, links: Links) -> Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_all(&from, &to)?;
+        if file_type.is_symlink() && links == Links::Preserve {
+            symlink_no_replace(&fs::read_link(&from)?, &to)?;
+        } else if file_type.is_dir() {
+            copy_dir_all(&from, &to, links)?;
         } else {
             fs::copy(&from, &to)?;
         }
@@ -236,7 +249,7 @@ fn copy_path_no_replace(src: &Path, dst: &Path) -> Result<()> {
     }
     if metadata.is_dir() {
         fs::create_dir(dst)?;
-        copy_dir_all(src, dst)?;
+        copy_dir_all(src, dst, Links::Preserve)?;
     } else {
         let mut source = fs::File::open(src)?;
         let mut destination = fs::OpenOptions::new()
@@ -478,6 +491,16 @@ mod tests {
         copy_path_no_replace(&link, &moved_link).unwrap();
         assert!(fs::symlink_metadata(&moved_link).unwrap().is_symlink());
         assert_eq!(fs::read_link(&moved_link).unwrap(), target);
+
+        // And the same for one nested inside a moved directory.
+        let tree = dir.path().join("tree");
+        fs::create_dir(&tree).unwrap();
+        std::os::unix::fs::symlink(&target, tree.join("inner-link.txt")).unwrap();
+        let moved_tree = dir.path().join("moved-tree");
+        copy_path_no_replace(&tree, &moved_tree).unwrap();
+        let inner = moved_tree.join("inner-link.txt");
+        assert!(fs::symlink_metadata(&inner).unwrap().is_symlink());
+        assert_eq!(fs::read_link(&inner).unwrap(), target);
 
         let script = dir.path().join("script.sh");
         fs::write(&script, "#!/bin/sh\n").unwrap();
