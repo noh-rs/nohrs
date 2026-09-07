@@ -21,9 +21,9 @@ gui = ["dep:gpui", "dep:syntect"]
 [dependencies]
 nohrs-core   = { path = "../nohrs-core" }
 nohrs-models = { path = "../nohrs-models" }
+nohrs-store  = { path = "../nohrs-store" }
 anyhow.workspace  = true
 serde.workspace   = true
-serde_json.workspace = true
 tracing.workspace = true
 time.workspace    = true
 async-channel = "2"

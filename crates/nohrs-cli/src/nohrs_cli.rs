@@ -8,6 +8,8 @@
 
 /// `doctor`: check that the pieces `noh rm` relies on are in place.
 pub mod doctor;
+/// Opening the trash ledger the CLI writes to and restores from.
+pub mod ledger;
 /// `rm`: trash-by-default removal.
 pub mod rm;
 /// `shim`: install and remove the symlinks that shadow a system command.

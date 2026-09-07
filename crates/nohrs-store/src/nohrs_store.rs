@@ -4,9 +4,10 @@
 //! question: *does the data ever need to be queried by anything other than an
 //! exact key?*
 //!
-//! * **SQLite** ([`SqliteStore`]) — file metadata and history, which need
-//!   range/diff/ordered queries. Implements [`MetadataQuery`], [`MetadataStore`],
-//!   and [`HistoryStore`]. Uses bundled SQLite in WAL mode.
+//! * **SQLite** ([`SqliteStore`]) — file metadata, history, and the trash
+//!   ledger, which need range/diff/ordered queries. Implements
+//!   [`MetadataQuery`], [`MetadataStore`], [`HistoryStore`], and [`TrashLedger`].
+//!   Uses bundled SQLite in WAL mode.
 //! * **redb** ([`RedbKvStore`]) — host key/value state (window position,
 //!   tab/session restore, dynamic settings): pure `key -> blob`. Implements
 //!   [`KvStore`].
@@ -160,6 +161,61 @@ pub struct HistoryEntry {
     pub payload: String,
     /// When the event occurred, in nanoseconds since the Unix epoch.
     pub occurred_at: i64,
+}
+
+/// Primary key of a row in the `trash` table.
+pub type TrashId = i64;
+
+/// What to record about an item on its way to the trash.
+///
+/// The metadata describes the item at its *original* location, captured before
+/// the move: that is what lets it be found again inside a trash directory that
+/// does not record where anything came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrashEntry {
+    /// Absolute path the item occupied before it was trashed.
+    pub original_path: PathBuf,
+    /// The item's file name, stored separately because the trash renames an
+    /// item whose name is already taken.
+    pub file_name: String,
+    /// Size in bytes at the time of the move (`0` for directories).
+    pub size: u64,
+    /// Modification time in nanoseconds since the Unix epoch, when the
+    /// filesystem reports one.
+    pub modified_ns: Option<i64>,
+    /// When the item was trashed, in nanoseconds since the Unix epoch.
+    pub trashed_at: i64,
+    /// Whether the item was a directory.
+    pub is_dir: bool,
+}
+
+/// A row read back from the `trash` table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrashRecord {
+    /// Stable row identifier, used to forget the row once the item leaves the
+    /// trash.
+    pub id: TrashId,
+    /// What was recorded when the item was trashed.
+    pub entry: TrashEntry,
+}
+
+/// A record of what was moved to the trash and where it came from.
+///
+/// macOS keeps that information inside Finder's private `.DS_Store` and exposes
+/// no trash index at all, so restoring there depends entirely on this table.
+/// Linux and Windows record it in the trash themselves, and nothing writes here
+/// (see `nohrs-services::fs::ops::trash_path`).
+pub trait TrashLedger: Send + Sync {
+    /// Record one trashed item, returning its row id.
+    ///
+    /// Named `append` rather than `record` because `SqliteStore` also implements
+    /// [`HistoryStore`], whose `record` would otherwise be ambiguous at every
+    /// call site.
+    fn append(&self, entry: &TrashEntry) -> Result<TrashId>;
+    /// Every recorded item, most recently trashed first.
+    fn entries(&self) -> Result<Vec<TrashRecord>>;
+    /// Drop the rows with these ids, returning how many were removed.
+    fn forget(&self, ids: &[TrashId]) -> Result<usize>;
 }
 
 /// A single operation in a [`KvStore::batch`] call, applied atomically.

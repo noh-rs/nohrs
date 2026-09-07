@@ -9,12 +9,13 @@
 
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use nohrs_core::config::paths;
 use nohrs_services::fs::trash;
-use nohrs_services::fs::trash_ledger::{self, TrashLedger};
+use nohrs_store::TrashLedger;
 
-use crate::shim;
+use crate::{ledger, shim};
 
 /// How a single check came out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +61,7 @@ impl Check {
 
 /// Everything the checks inspect, gathered up so they can run against a
 /// temporary directory under test instead of the developer's own machine.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Environment {
     /// The running binary, if the OS will say.
     pub current_exe: Option<PathBuf>,
@@ -70,8 +71,11 @@ pub struct Environment {
     pub shim_dir: PathBuf,
     /// The trash directory items from the home volume land in.
     pub trash_dir: Option<PathBuf>,
-    /// The record of what nohrs trashed.
-    pub ledger: TrashLedger,
+    /// The record of what nohrs trashed, when this platform uses one and it
+    /// could be opened.
+    pub ledger: Option<Arc<dyn TrashLedger>>,
+    /// Where that record lives, reported whether or not it opened.
+    pub ledger_path: PathBuf,
     /// Whether restores on this platform go through the ledger rather than an
     /// OS trash index. Injected rather than read from the target so both cases
     /// can be checked on any machine.
@@ -84,21 +88,17 @@ impl Environment {
     /// Read the environment from this machine. Anything that cannot be resolved
     /// becomes a failing check rather than a failure to run at all.
     pub fn detect() -> Self {
-        let ledger_in_use = !trash::OS_INDEX_AVAILABLE;
         Self {
             current_exe: std::env::current_exe().ok(),
             path_entries: shim::path_entries(),
             shim_dir: shim::default_dir().unwrap_or_default(),
-            trash_dir: trash_ledger::home_trash_dir().ok(),
-            // Opened (which creates the data directory) only where the ledger is
-            // actually used; otherwise the path is named but nothing is made.
-            // A failure to open leaves the path too, and `check_ledger` reports
-            // the read failure that follows.
-            ledger: match ledger_in_use.then(TrashLedger::open_default) {
-                Some(Ok(ledger)) => ledger,
-                Some(Err(_)) | None => TrashLedger::at(TrashLedger::default_path()),
-            },
-            ledger_in_use,
+            trash_dir: trash::home_trash_dir().ok(),
+            // Opening it (which creates the database) is skipped entirely where
+            // the ledger is not used; a failure to open becomes a failing check
+            // rather than a failure to run.
+            ledger: ledger::open_if_needed().unwrap_or_default(),
+            ledger_path: ledger::path(),
+            ledger_in_use: ledger::required(),
             config_file: paths::config_file(),
         }
     }
@@ -228,13 +228,20 @@ fn check_ledger(environment: &Environment) -> Check {
             "not used on this platform: the OS trash index records where items came from",
         );
     }
-    match environment.ledger.records() {
+    let path = environment.ledger_path.display();
+    let Some(ledger) = &environment.ledger else {
+        return Check::new(
+            "ledger",
+            Status::Error,
+            format!("{path} could not be opened; `noh restore` will not find anything"),
+        );
+    };
+    match ledger.entries() {
         Ok(records) => Check::new(
             "ledger",
             Status::Ok,
             format!(
-                "{} ({} {})",
-                environment.ledger.path().display(),
+                "{path} ({} {})",
                 records.len(),
                 if records.len() == 1 {
                     "item recorded"
@@ -246,10 +253,7 @@ fn check_ledger(environment: &Environment) -> Check {
         Err(error) => Check::new(
             "ledger",
             Status::Error,
-            format!(
-                "{} cannot be read ({error}); `noh restore` will not find anything",
-                environment.ledger.path().display()
-            ),
+            format!("{path} cannot be read ({error}); `noh restore` will not find anything"),
         ),
     }
 }
@@ -296,9 +300,14 @@ fn check_config(environment: &Environment) -> Check {
 mod tests {
     use std::fs;
 
+    use nohrs_store::{SqliteStore, StoreLogConfig};
     use tempfile::{TempDir, tempdir};
 
     use super::*;
+
+    fn open_ledger() -> Arc<dyn TrashLedger> {
+        Arc::new(SqliteStore::open_in_memory(&StoreLogConfig::default()).unwrap())
+    }
 
     struct Fixture {
         root: TempDir,
@@ -328,7 +337,8 @@ mod tests {
                 path_entries: vec![shim_dir.clone(), system_bin],
                 shim_dir,
                 trash_dir: Some(trash_dir),
-                ledger: TrashLedger::at(root.path().join("ledger.jsonl")),
+                ledger: Some(open_ledger()),
+                ledger_path: root.path().join("db.sqlite"),
                 // The macOS case, where restores go through the ledger; the
                 // other one has its own test.
                 ledger_in_use: true,
@@ -430,20 +440,40 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_ledger_is_an_error() {
+    fn a_ledger_that_would_not_open_is_an_error() {
         let fixture = Fixture::new();
         let mut environment = fixture.environment.clone();
-        // A directory where the ledger file should be: opening it fails with
-        // something other than "not found".
-        let path = fixture.root.path().join("ledger-dir");
-        fs::create_dir(&path).unwrap();
-        environment.ledger = TrashLedger::at(path);
+        environment.ledger = None;
 
         let ledger = check(&environment);
         let ledger = find(&ledger, "ledger");
 
         assert_eq!(ledger.status, Status::Error);
         assert!(ledger.detail.contains("noh restore"), "{}", ledger.detail);
+        assert_eq!(rendered(&check(&environment)).1, 1);
+    }
+
+    #[test]
+    fn the_ledger_check_counts_what_is_recorded() {
+        let fixture = Fixture::new();
+        let ledger = open_ledger();
+        ledger
+            .append(&nohrs_store::TrashEntry {
+                original_path: fixture.root.path().join("notes.txt"),
+                file_name: "notes.txt".to_string(),
+                size: 7,
+                modified_ns: None,
+                trashed_at: 1,
+                is_dir: false,
+            })
+            .unwrap();
+        let mut environment = fixture.environment.clone();
+        environment.ledger = Some(ledger);
+
+        let checks = check(&environment);
+
+        let detail = &find(&checks, "ledger").detail;
+        assert!(detail.contains("1 item recorded"), "{detail}");
     }
 
     #[test]
@@ -451,10 +481,8 @@ mod tests {
         let fixture = Fixture::new();
         let mut environment = fixture.environment.clone();
         environment.ledger_in_use = false;
-        // Unreadable, and it does not matter: nothing writes it here.
-        let path = fixture.root.path().join("ledger-dir");
-        fs::create_dir(&path).unwrap();
-        environment.ledger = TrashLedger::at(path);
+        // Not opened at all, and it does not matter: nothing writes it here.
+        environment.ledger = None;
 
         let checks = check(&environment);
 

@@ -14,9 +14,11 @@
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use nohrs_core::errors::Result;
 use nohrs_services::fs::ops;
+use nohrs_store::TrashLedger;
 
 /// Operands and flags for the `rm` subcommand.
 #[derive(clap::Args, Debug, Default, Clone)]
@@ -81,12 +83,25 @@ pub trait Backend {
 }
 
 /// The [`Backend`] used in production, delegating to `nohrs-services`.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct OsBackend;
+#[derive(Default, Clone)]
+pub struct OsBackend {
+    ledger: Option<Arc<dyn TrashLedger>>,
+}
+
+impl OsBackend {
+    /// A backend that records what it trashes in `ledger`.
+    ///
+    /// Pass `None` where the OS trash keeps that record itself — see
+    /// [`nohrs_services::fs::trash::OS_INDEX_AVAILABLE`] and
+    /// [`ops::trash_path`].
+    pub fn new(ledger: Option<Arc<dyn TrashLedger>>) -> Self {
+        Self { ledger }
+    }
+}
 
 impl Backend for OsBackend {
     fn trash(&mut self, path: &Path) -> Result<()> {
-        ops::trash_path(path)
+        ops::trash_path(path, self.ledger.as_deref())
     }
 
     fn delete(&mut self, path: &Path) -> Result<()> {
@@ -422,7 +437,7 @@ mod tests {
             permanent: true,
             ..args_for([file.clone()])
         };
-        let mut backend = OsBackend;
+        let mut backend = OsBackend::default();
         let mut confirm = ScriptedConfirm::new(&[]);
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();

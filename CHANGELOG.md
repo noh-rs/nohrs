@@ -42,12 +42,13 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 - `noh trash list` / `purge` / `empty` inspect the trash and empty it, with
   `--older-than` for stale items, `--json` for scripting, and a confirmation
   before every irreversible delete unless `--force` is given.
-- A trash ledger (`nohrs-services::fs::trash_ledger`) recording what nohrs
-  trashed and where it came from. macOS keeps that information in Finder's
-  private `.DS_Store` and exposes no trash index, so restoring there needs
-  nohrs's own record; Linux and Windows keep using the OS index, and the ledger
-  is not written where nothing reads it. `fs::ops::trash_path` writes it, so
-  items deleted in the GUI can be restored from the CLI and vice versa.
+- A trash ledger: the `trash` table of the metadata database, behind
+  `nohrs_store::TrashLedger` (migration `002_trash.sql`). It records what nohrs
+  trashed and where it came from, because macOS keeps that information in
+  Finder's private `.DS_Store` and exposes no trash index of its own. Linux and
+  Windows keep using the OS index, and the ledger is neither written nor even
+  opened there. `fs::ops::trash_path` writes it, so items deleted in the GUI can
+  be restored from the CLI and vice versa.
 - `noh shim install` / `uninstall` / `status`, which manage the symlinks that put
   `noh` in front of a system command. Unlike a hand-written `ln -sf`, they never
   replace a regular file and only remove a link that points back at this binary.

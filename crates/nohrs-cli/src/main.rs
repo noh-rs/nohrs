@@ -8,7 +8,7 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use nohrs_cli::{Cli, Command, Invocation, RmCli, doctor, rm, shim, trash};
+use nohrs_cli::{Cli, Command, Invocation, RmCli, doctor, ledger, rm, shim, trash};
 
 fn main() -> ExitCode {
     match run(&Invocation::parse_from(std::env::args_os())) {
@@ -54,10 +54,24 @@ fn run_command(command: &Command) -> io::Result<u8> {
 }
 
 fn run_rm(args: &rm::Args) -> io::Result<u8> {
-    let mut backend = rm::OsBackend;
-    let mut confirm = rm::StdinConfirm;
     let mut output = io::stdout().lock();
     let mut errors = io::stderr().lock();
+    // A ledger that will not open is not a reason to refuse to delete — `rm`
+    // has to work — but it does cost the ability to restore, so say so instead
+    // of quietly dropping the record.
+    let ledger = match ledger::open_if_needed() {
+        Ok(ledger) => ledger,
+        Err(error) => {
+            writeln!(
+                errors,
+                "noh rm: the trash ledger could not be opened ({}); these deletions will not be restorable",
+                nohrs_cli::message(&error)
+            )?;
+            None
+        }
+    };
+    let mut backend = rm::OsBackend::new(ledger);
+    let mut confirm = rm::StdinConfirm;
     let summary =
         rm::Session::new(args, &mut backend, &mut confirm, &mut output, &mut errors).run()?;
     Ok(summary.exit_code())
@@ -72,7 +86,7 @@ where
 {
     let mut output = io::stdout().lock();
     let mut errors = io::stderr().lock();
-    let mut store = match nohrs_services::fs::trash::default_store() {
+    let mut store = match nohrs_services::fs::trash::default_store(ledger::open) {
         Ok(store) => store,
         Err(error) => {
             writeln!(errors, "noh: {}", nohrs_cli::message(&error))?;

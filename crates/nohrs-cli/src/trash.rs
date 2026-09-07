@@ -8,6 +8,7 @@
 //! what makes the platform difference — Linux and Windows have an OS trash
 //! index, macOS does not — invisible here.
 
+use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -183,7 +184,7 @@ impl<'a> Session<'a> {
             Ok(items) => items,
             Err(error) => return self.abort(&error),
         };
-        items.sort_by(|left, right| right.deleted_at_unix.cmp(&left.deleted_at_unix));
+        items.sort_by_key(|item| Reverse(item.deleted_at_unix));
         if let Some(older_than) = args.older_than {
             let cutoff = self.now_unix - seconds_of(older_than);
             items.retain(|item| item.deleted_at_unix <= cutoff);
@@ -336,7 +337,7 @@ impl<'a> Session<'a> {
         force: bool,
     ) -> io::Result<Vec<Item>> {
         let mut pool: Vec<Item> = items.to_vec();
-        pool.sort_by(|left, right| right.deleted_at_unix.cmp(&left.deleted_at_unix));
+        pool.sort_by_key(|item| Reverse(item.deleted_at_unix));
         if let Some(older_than) = older_than {
             let cutoff = self.now_unix - seconds_of(older_than);
             pool.retain(|item| item.deleted_at_unix <= cutoff);
@@ -483,8 +484,9 @@ mod tests {
     use std::fs;
 
     use nohrs_core::errors::Result;
-    use nohrs_services::fs::trash::LedgerStore;
-    use nohrs_services::fs::trash_ledger::{TrashLedger, TrashRecord};
+    use nohrs_services::fs::trash::{LedgerStore, capture};
+    use nohrs_store::{SqliteStore, StoreLogConfig, TrashLedger};
+    use std::sync::Arc;
     use tempfile::{TempDir, tempdir};
 
     use super::*;
@@ -494,7 +496,7 @@ mod tests {
     /// tests cover the platform path macOS actually takes.
     struct Fixture {
         home: TempDir,
-        ledger: TrashLedger,
+        ledger: Arc<dyn TrashLedger>,
         trash_dir: PathBuf,
     }
 
@@ -503,26 +505,32 @@ mod tests {
             let home = tempdir().unwrap();
             let trash_dir = home.path().join("Trash");
             fs::create_dir(&trash_dir).unwrap();
-            let ledger = TrashLedger::at(home.path().join("ledger.jsonl"));
+            let ledger = SqliteStore::open_in_memory(&StoreLogConfig::default()).unwrap();
             Self {
                 home,
-                ledger,
+                ledger: Arc::new(ledger),
                 trash_dir,
             }
         }
 
         fn trash_file(&self, name: &str, contents: &str) -> PathBuf {
+            self.trash_file_as(name, contents, name)
+        }
+
+        /// Move a file into the trash under `trash_name`, which differs from
+        /// `name` when the trash had to rename it on the way in.
+        fn trash_file_as(&self, name: &str, contents: &str, trash_name: &str) -> PathBuf {
             let origin = self.home.path().join("work").join(name);
             fs::create_dir_all(origin.parent().unwrap()).unwrap();
             fs::write(&origin, contents).unwrap();
-            let record = TrashRecord::capture(&origin).unwrap();
-            fs::rename(&origin, self.trash_dir.join(name)).unwrap();
-            self.ledger.append(&record).unwrap();
+            let entry = capture(&origin).unwrap();
+            fs::rename(&origin, self.trash_dir.join(trash_name)).unwrap();
+            self.ledger.append(&entry).unwrap();
             origin
         }
 
         fn store(&self) -> LedgerStore {
-            LedgerStore::new(self.ledger.clone(), self.trash_dir.clone())
+            LedgerStore::new(Arc::clone(&self.ledger), self.trash_dir.clone())
         }
     }
 
@@ -636,9 +644,9 @@ mod tests {
         fixture.trash_file("notes.txt", "payload");
         let directory = fixture.home.path().join("work").join("project");
         fs::create_dir_all(&directory).unwrap();
-        let record = TrashRecord::capture(&directory).unwrap();
+        let entry = capture(&directory).unwrap();
         fs::rename(&directory, fixture.trash_dir.join("project")).unwrap();
-        fixture.ledger.append(&record).unwrap();
+        fixture.ledger.append(&entry).unwrap();
         let mut store = fixture.store();
 
         let args = ListArgs {
@@ -775,11 +783,7 @@ mod tests {
         let fixture = Fixture::new();
         fixture.trash_file("notes.txt", "one");
         // A second file of the same name, which the trash had to rename.
-        let origin = fixture.home.path().join("work").join("notes.txt");
-        fs::write(&origin, "two!").unwrap();
-        let record = TrashRecord::capture(&origin).unwrap();
-        fs::rename(&origin, fixture.trash_dir.join("notes 2.txt")).unwrap();
-        fixture.ledger.append(&record).unwrap();
+        fixture.trash_file_as("notes.txt", "two!", "notes 2.txt");
         let mut store = fixture.store();
 
         let args = RestoreArgs {
@@ -904,7 +908,7 @@ mod tests {
         assert!(run.stdout.starts_with("purged "), "{}", run.stdout);
         assert!(run.questions.is_empty(), "--force must not prompt");
         assert!(!fixture.trash_dir.join("notes.txt").exists());
-        assert!(fixture.ledger.records().unwrap().is_empty());
+        assert!(fixture.ledger.entries().unwrap().is_empty());
     }
 
     #[test]

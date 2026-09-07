@@ -1,5 +1,6 @@
 //! Directory listing with stable, case-insensitive ordering and cursor paging,
-//! plus synchronous file mutation operations (see [`ops`]).
+//! plus synchronous file mutation operations (see [`ops`]) and the trash
+//! (see [`trash`]).
 
 /// Synchronous directory listing.
 pub mod listing;
@@ -7,5 +8,3 @@ pub mod listing;
 pub mod ops;
 /// Listing, restoring from, and emptying the trash.
 pub mod trash;
-/// The record of what nohrs moved to the trash, used to restore it.
-pub mod trash_ledger;

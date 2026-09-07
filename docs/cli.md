@@ -154,7 +154,7 @@ $ noh doctor
 ok    binary  /Users/me/.local/bin/noh
 ok    shim    `rm` runs /Users/me/.local/bin/rm (this binary)
 ok    trash   /Users/me/.Trash (no OS trash index here, so restores use the nohrs ledger)
-ok    ledger  /Users/me/.local/share/nohrs/trash-ledger.jsonl (12 items recorded)
+ok    ledger  /Users/me/.local/share/nohrs/db.sqlite (12 items recorded)
 ok    config  /Users/me/.config/nohrs/config.toml
 ```
 
@@ -174,7 +174,7 @@ noh completions fish > ~/.config/fish/completions/noh.fish
 
 ## 7. 実装メモ
 
-### 7.1 ゴミ箱台帳 (`nohrs-services::fs::trash_ledger`)
+### 7.1 ゴミ箱台帳 (`nohrs-store` の `trash` テーブル)
 
 「戻す」ためには**どこから消したか**が要りますが、その情報の出どころは OS によって違います。
 
@@ -186,9 +186,10 @@ noh completions fish > ~/.config/fish/completions/noh.fish
 
 macOS では `trash` クレートの `os_limited` モジュールがそもそもコンパイルされず、さらに macOS 実装は
 `trashItemAtURL_resultingItemURL_error(&url, None)` と呼んでいてゴミ箱内の移動先を捨てています。
-そこで nohrs は、**OS のゴミ箱はそのまま使いつつ**、自前の台帳を横に置きます
-(`$XDG_DATA_HOME/nohrs/trash-ledger.jsonl`)。Finder のゴミ箱に普通に入るので、ユーザーの慣れた
-復元経路を壊しません。
+そこで nohrs は、**OS のゴミ箱はそのまま使いつつ**、自前の台帳を横に置きます。実体は
+`nohrs-store` のメタデータ DB (`$XDG_DATA_HOME/nohrs/db.sqlite`) の `trash` テーブルで、
+`nohrs_store::TrashLedger` trait 越しに読み書きします ([`persistence.md`](./persistence.md) §2)。
+捨てたもの自体は Finder のゴミ箱に普通に入るので、ユーザーの慣れた復元経路を壊しません。
 
 台帳には移動先ではなく**元のパス・ファイル名・サイズ・mtime・削除時刻**を記録し、
 ゴミ箱内の実体は**復元時に**それらで突き合わせます。ゴミ箱が名前を変えて受け入れた場合
@@ -201,14 +202,18 @@ macOS では `trash` クレートの `os_limited` モジュールがそもそも
 
 **台帳を書くのは、それを読む側がいるプラットフォームだけ**です。Linux / Windows では OS の索引が
 同じ情報を持っていて `OsStore` がそちらから復元するので、読み手のいない二重記録が
-際限なく伸びるのを避けています。P2 で `nohrs-store` の SQLite が入ったらそちらへ移します。
+際限なく伸びるのを避けています。そちらでは `db.sqlite` を開くことすらしません
+(`nohrs_cli::ledger::open_if_needed`)。
+
+行の順序も台帳の仕事です。削除時刻は `trashed_at` (ナノ秒) に持ちますが、同一時刻の
+タイブレークは行 id (単調増加) が行うため、`noh restore` の「直近の 1 件」は常に確定します。
 
 ### 7.2 プラットフォームによる差
 
 - **一覧の範囲**: Linux / Windows では OS のゴミ箱索引を読むので、**他のアプリが捨てたものも**
   一覧に出ます。macOS では nohrs が捨てたものだけです。
-- **同一秒内の順序**: 台帳は追記順という追加情報を持つので、macOS では同じ秒に捨てた複数の
-  アイテムでも「直近の 1 件」が正しく決まります。Linux / Windows の削除時刻は秒精度しかないため、
+- **同一秒内の順序**: 台帳は行 id を持つので、macOS では同じ瞬間に捨てた複数のアイテムでも
+  「直近の 1 件」が確定します。Linux / Windows の削除時刻は OS 側が秒精度でしか持たないため、
   同じ秒に複数捨てた直後の `noh restore` (引数なし) はそのうちの 1 件になります。
   複数消したときは `--all` かパス指定を使ってください。
 - **外部ボリューム**: macOS で外部ボリュームから捨てたものは
@@ -221,7 +226,7 @@ macOS では `trash` クレートの `os_limited` モジュールがそもそも
 - 破壊的操作は `Store` / `Backend` trait 越しに行います。ヘッドレス CI にはデスクトップのゴミ箱が
   無く実際の `trash::delete` を呼べないため、テストは記録用のフェイク実装や、
   一時ディレクトリを指した `LedgerStore` で検証します。
-- `LedgerStore` はゴミ箱ディレクトリを注入できるので、macOS が実際に通る経路を全プラットフォームの
-  CI でテストできます。
+- `LedgerStore` はゴミ箱ディレクトリと台帳の両方を注入できるので、macOS が実際に通る経路
+  (in-memory の `SqliteStore` + 一時ゴミ箱ディレクトリ) を全プラットフォームの CI でテストできます。
 - プロセス配線 (実 stdio のロック、実ゴミ箱のオープン、環境変数の読み取り) は
   `nohrs-cli/src/main.rs` に集約し、ライブラリ側は解析とエンジンだけにしてあります。

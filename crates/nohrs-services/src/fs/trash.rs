@@ -1,26 +1,29 @@
 //! The trash as something that can be listed, restored from, and emptied.
 //!
-//! Where that information comes from depends on the platform, which is what the
-//! [`Store`] trait abstracts:
+//! Where the information behind that comes from depends on the platform, which
+//! is what the [`Store`] trait abstracts:
 //!
 //! * Linux and Windows record each item's original location in the trash itself
 //!   (`.trashinfo` files, `$I` files) and the `trash` crate exposes it through
 //!   `os_limited`. [`OsStore`] delegates there, so a listing also covers items
 //!   other applications trashed and restoring cleans up the OS bookkeeping.
 //! * macOS keeps the equivalent inside Finder's private `.DS_Store` and compiles
-//!   no `os_limited` at all, so [`LedgerStore`] reads nohrs's own
-//!   [`trash_ledger`](super::trash_ledger) and finds each item in `~/.Trash`
-//!   again by its recorded name, size, and modification time.
+//!   no `os_limited` at all, so [`LedgerStore`] reads the `trash` table in
+//!   `nohrs-store` ([`TrashLedger`]) — written by [`ops::trash_path`] as items
+//!   go in — and finds each one in `~/.Trash` again by its recorded name, size,
+//!   and modification time.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
+use nohrs_core::config::paths;
 use nohrs_core::errors::{Error, Result};
+use nohrs_store::{TrashEntry, TrashId, TrashLedger};
 
 use crate::fs::ops;
-use crate::fs::trash_ledger::{self, TrashLedger, TrashRecord};
 
 /// One item currently in the trash.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +32,9 @@ pub struct Item {
     pub id: String,
     /// Where the item was before it was trashed.
     pub original_path: PathBuf,
-    /// When it was trashed, as seconds since the Unix epoch.
+    /// When it was trashed, as seconds since the Unix epoch. Seconds because
+    /// that is all an OS trash index records; ties are broken by the order
+    /// [`Store::list`] returns items in, not by this field.
     pub deleted_at_unix: i64,
     /// Whether the item is a directory.
     pub is_dir: bool,
@@ -46,24 +51,14 @@ impl Item {
     }
 }
 
-impl From<TrashRecord> for Item {
-    fn from(record: TrashRecord) -> Self {
-        Self {
-            id: record.id,
-            original_path: record.original_path,
-            deleted_at_unix: record.deleted_at_unix,
-            is_dir: record.is_dir,
-        }
-    }
-}
-
 /// What can be done to the trash.
 ///
 /// [`restore`](Store::restore) and [`purge`](Store::purge) address items by the
 /// ids handed out by the preceding [`list`](Store::list) call, so a caller
-/// always lists before it acts.
+/// always lists before it acts. `list` returns items most recently trashed
+/// first.
 pub trait Store {
-    /// Every item currently in the trash, in no particular order.
+    /// Every item currently in the trash, most recently trashed first.
     fn list(&mut self) -> Result<Vec<Item>>;
     /// Move `item` back to its original location, which must be free.
     fn restore(&mut self, item: &Item) -> Result<()>;
@@ -71,28 +66,24 @@ pub trait Store {
     fn purge(&mut self, item: &Item) -> Result<()>;
 }
 
-/// A [`Store`] backed by nohrs's own ledger, for platforms where the OS does not
-/// record where a trashed item came from.
+/// A [`Store`] backed by the nohrs trash ledger, for platforms where the OS does
+/// not record where a trashed item came from.
 pub struct LedgerStore {
-    ledger: TrashLedger,
+    ledger: Arc<dyn TrashLedger>,
     trash_dir: PathBuf,
-    /// Where each listed item sits inside `trash_dir`, filled in by
-    /// [`Store::list`].
-    located: HashMap<String, PathBuf>,
+    /// Where each listed item sits inside `trash_dir`, and which ledger row it
+    /// came from. Filled in by [`Store::list`].
+    located: HashMap<String, Located>,
+}
+
+struct Located {
+    row: TrashId,
+    path: PathBuf,
 }
 
 impl LedgerStore {
-    /// The store used in production: the ledger in the nohrs data directory over
-    /// the home volume's trash directory.
-    pub fn open_default() -> Result<Self> {
-        Ok(Self::new(
-            TrashLedger::open_default()?,
-            trash_ledger::home_trash_dir()?,
-        ))
-    }
-
-    /// A store over an explicit ledger and trash directory.
-    pub fn new(ledger: TrashLedger, trash_dir: impl Into<PathBuf>) -> Self {
+    /// A store over a ledger and a trash directory.
+    pub fn new(ledger: Arc<dyn TrashLedger>, trash_dir: impl Into<PathBuf>) -> Self {
         Self {
             ledger,
             trash_dir: trash_dir.into(),
@@ -100,80 +91,91 @@ impl LedgerStore {
         }
     }
 
-    fn source_of(&self, item: &Item) -> Result<PathBuf> {
+    fn source_of(&self, item: &Item) -> Result<&Located> {
         self.located
             .get(&item.id)
-            .cloned()
             .ok_or_else(|| Error::Other("no longer in the trash".to_string()))
     }
 
-    fn forget(&mut self, item: &Item) -> Result<()> {
+    fn forget(&mut self, item: &Item, row: TrashId) -> Result<()> {
         self.located.remove(&item.id);
-        self.ledger.forget(&HashSet::from([item.id.clone()]))?;
-        Ok(())
+        forget_rows(&self.ledger, &[row])
     }
 }
 
 impl Store for LedgerStore {
-    /// Read the ledger and pair every record with the entry it became inside the
+    /// Read the ledger and pair every row with the entry it became inside the
     /// trash directory.
     ///
-    /// Records that cannot be paired are dropped from the ledger: an item that
-    /// is not in the trash any more (emptied from Finder, say) can be neither
-    /// restored nor purged, so keeping its line would only make the ledger grow
-    /// forever. A trash directory that does not exist is the one case left
-    /// alone, because "empty" and "misconfigured" are indistinguishable here.
+    /// Rows that cannot be paired are dropped: an item that is not in the trash
+    /// any more (emptied from Finder, say) can be neither restored nor purged,
+    /// so keeping its row would only make the table grow forever. A trash
+    /// directory that does not exist is the one case left alone, because
+    /// "empty" and "misconfigured" are indistinguishable from here.
     fn list(&mut self) -> Result<Vec<Item>> {
-        let mut records: Vec<(usize, TrashRecord)> =
-            self.ledger.records()?.into_iter().enumerate().collect();
-        // Newest first, so when two records could name the same trash entry the
-        // more recent deletion claims it. The ledger is append-only, so its own
-        // order breaks a tie between two items trashed within the same second —
-        // which a timestamp in whole seconds cannot.
-        records.sort_by(|(left_position, left), (right_position, right)| {
-            right
-                .deleted_at_unix
-                .cmp(&left.deleted_at_unix)
-                .then(right_position.cmp(left_position))
-        });
+        // Already ordered most recently trashed first, with the row id breaking
+        // ties a timestamp cannot.
+        let records = self
+            .ledger
+            .entries()
+            .map_err(|error| Error::Other(format!("could not read the trash ledger: {error}")))?;
 
         let prunable = self.trash_dir.is_dir();
         let entries = read_entries(&self.trash_dir)?;
         let mut claimed: HashSet<&Path> = HashSet::new();
         let mut items = Vec::new();
-        let mut lost = HashSet::new();
+        let mut lost = Vec::new();
         let mut located = HashMap::new();
-        for (_, record) in records {
-            match locate(&record, &entries, &claimed) {
+        for record in records {
+            match locate(&record.entry, &entries, &claimed) {
                 Some(entry) => {
                     claimed.insert(entry.path.as_path());
-                    located.insert(record.id.clone(), entry.path.clone());
-                    items.push(Item::from(record));
+                    let id = record.id.to_string();
+                    located.insert(
+                        id.clone(),
+                        Located {
+                            row: record.id,
+                            path: entry.path.clone(),
+                        },
+                    );
+                    items.push(Item {
+                        id,
+                        original_path: record.entry.original_path,
+                        deleted_at_unix: record.entry.trashed_at / NANOS_PER_SECOND,
+                        is_dir: record.entry.is_dir,
+                    });
                 }
-                None => {
-                    lost.insert(record.id);
-                }
+                None => lost.push(record.id),
             }
         }
         self.located = located;
         if prunable {
-            self.ledger.forget(&lost)?;
+            forget_rows(&self.ledger, &lost)?;
         }
         Ok(items)
     }
 
     fn restore(&mut self, item: &Item) -> Result<()> {
         let source = self.source_of(item)?;
+        let (row, source) = (source.row, source.path.clone());
         let destination = free_destination(&item.original_path)?;
         ops::move_path(&source, &destination)?;
-        self.forget(item)
+        self.forget(item, row)
     }
 
     fn purge(&mut self, item: &Item) -> Result<()> {
         let source = self.source_of(item)?;
+        let (row, source) = (source.row, source.path.clone());
         ops::delete_permanent(&source)?;
-        self.forget(item)
+        self.forget(item, row)
     }
+}
+
+fn forget_rows(ledger: &Arc<dyn TrashLedger>, rows: &[TrashId]) -> Result<()> {
+    ledger
+        .forget(rows)
+        .map(|_| ())
+        .map_err(|error| Error::Other(format!("could not update the trash ledger: {error}")))
 }
 
 // The same predicate the `trash` crate uses to gate its `os_limited` module.
@@ -222,6 +224,8 @@ mod os_store {
         fn list(&mut self) -> Result<Vec<Item>> {
             self.listed = trash::os_limited::list()
                 .map_err(|error| Error::Other(format!("could not read the trash: {error}")))?;
+            self.listed
+                .sort_by_key(|entry| std::cmp::Reverse(entry.time_deleted));
             Ok(self
                 .listed
                 .iter()
@@ -263,8 +267,11 @@ mod os_store {
 ))]
 pub use os_store::OsStore;
 
-/// Whether this platform exposes the OS trash index, and so whether a listing
+/// Whether this platform exposes an OS trash index, and so whether a listing
 /// covers items nohrs did not trash itself.
+///
+/// Where it is `true` nothing writes the ledger, because the OS already records
+/// the same facts (see [`ops::trash_path`]).
 pub const OS_INDEX_AVAILABLE: bool = cfg!(any(
     target_os = "windows",
     all(
@@ -275,9 +282,15 @@ pub const OS_INDEX_AVAILABLE: bool = cfg!(any(
     )
 ));
 
-/// The store for this platform: the OS trash index where there is one, and
-/// nohrs's ledger where there is not.
-pub fn default_store() -> Result<Box<dyn Store>> {
+/// The store for this platform: the OS trash index where there is one, and the
+/// nohrs ledger where there is not.
+///
+/// `open_ledger` is called only in the second case, so a caller on Linux or
+/// Windows never pays for opening a database it will not read.
+pub fn default_store<F>(open_ledger: F) -> Result<Box<dyn Store>>
+where
+    F: FnOnce() -> Result<Arc<dyn TrashLedger>>,
+{
     #[cfg(any(
         target_os = "windows",
         all(
@@ -288,6 +301,7 @@ pub fn default_store() -> Result<Box<dyn Store>> {
         )
     ))]
     {
+        drop(open_ledger);
         Ok(Box::new(OsStore::default()))
     }
     #[cfg(not(any(
@@ -300,7 +314,66 @@ pub fn default_store() -> Result<Box<dyn Store>> {
         )
     )))]
     {
-        Ok(Box::new(LedgerStore::open_default()?))
+        Ok(Box::new(LedgerStore::new(
+            open_ledger()?,
+            home_trash_dir()?,
+        )))
+    }
+}
+
+/// The trash directory that items deleted from the home volume land in.
+///
+/// Items trashed from another volume go to that volume's own trash instead
+/// (`/Volumes/<name>/.Trashes/<uid>` on macOS); those are not tracked yet.
+pub fn home_trash_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = dirs::home_dir()
+            .ok_or_else(|| Error::Other("could not determine the home directory".to_string()))?;
+        Ok(home.join(".Trash"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // The freedesktop layout, which `paths::data_home` already resolves
+        // ($XDG_DATA_HOME, else ~/.local/share).
+        Ok(paths::data_home().join("Trash").join("files"))
+    }
+}
+
+/// Describe `path` as it is now, for the ledger, before it moves to the trash.
+///
+/// The location is recorded as an absolute path: the restore will not
+/// necessarily run from the working directory the deletion did, so a relative
+/// one would put the item back somewhere else entirely. `std::path::absolute`
+/// does not resolve symlinks, so a link is recorded as itself rather than as its
+/// target.
+pub fn capture(path: &Path) -> Result<TrashEntry> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    let path = std::path::absolute(path)?;
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| Error::Other(format!("path has no file name: {}", path.display())))?;
+    Ok(TrashEntry {
+        file_name,
+        size: if metadata.is_dir() { 0 } else { metadata.len() },
+        modified_ns: metadata.modified().ok().and_then(unix_nanos),
+        trashed_at: unix_nanos(SystemTime::now()).unwrap_or_default(),
+        is_dir: metadata.is_dir(),
+        original_path: path,
+    })
+}
+
+const NANOS_PER_SECOND: i64 = 1_000_000_000;
+
+/// Nanoseconds since the Unix epoch, negative for the pre-epoch timestamps some
+/// filesystems still carry.
+fn unix_nanos(time: SystemTime) -> Option<i64> {
+    match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(elapsed) => i64::try_from(elapsed.as_nanos()).ok(),
+        Err(error) => i64::try_from(error.duration().as_nanos())
+            .ok()
+            .map(|nanos| -nanos),
     }
 }
 
@@ -328,7 +401,7 @@ struct Entry {
     file_name: String,
     is_dir: bool,
     size: u64,
-    modified_unix: Option<i64>,
+    modified_ns: Option<i64>,
 }
 
 fn read_entries(trash_dir: &Path) -> Result<Vec<Entry>> {
@@ -346,52 +419,48 @@ fn read_entries(trash_dir: &Path) -> Result<Vec<Entry>> {
             file_name: entry.file_name().to_string_lossy().into_owned(),
             is_dir: metadata.is_dir(),
             size: if metadata.is_dir() { 0 } else { metadata.len() },
-            modified_unix: metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
-                .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok()),
+            modified_ns: metadata.modified().ok().and_then(unix_nanos),
         });
     }
     Ok(entries)
 }
 
-/// Find the trash entry a record became.
+/// Find the trash entry a ledger row became.
 ///
 /// The trash renames an item whose name is already taken (`notes.txt` becomes
 /// `notes 2.txt`), so an exact name match wins and a renamed candidate is
 /// accepted only when the rest of the metadata agrees. A move preserves size and
 /// modification time, which is what makes this reliable enough to restore from.
 fn locate<'a>(
-    record: &TrashRecord,
+    entry: &TrashEntry,
     entries: &'a [Entry],
     claimed: &HashSet<&Path>,
 ) -> Option<&'a Entry> {
     entries
         .iter()
-        .filter(|entry| !claimed.contains(entry.path.as_path()))
-        .filter_map(|entry| score(record, entry).map(|score| (score, entry)))
-        .max_by_key(|(score, entry)| (*score, entry.modified_unix))
-        .map(|(_, entry)| entry)
+        .filter(|candidate| !claimed.contains(candidate.path.as_path()))
+        .filter_map(|candidate| score(entry, candidate).map(|score| (score, candidate)))
+        .max_by_key(|(score, candidate)| (*score, candidate.modified_ns))
+        .map(|(_, candidate)| candidate)
 }
 
-fn score(record: &TrashRecord, entry: &Entry) -> Option<u32> {
-    if entry.is_dir != record.is_dir {
+fn score(entry: &TrashEntry, candidate: &Entry) -> Option<u32> {
+    if candidate.is_dir != entry.is_dir {
         return None;
     }
     // A file keeps its byte count across a move, so a different size means a
     // different file however similar the name looks.
-    if !record.is_dir && entry.size != record.size {
+    if !entry.is_dir && candidate.size != entry.size {
         return None;
     }
-    let mut score = if entry.file_name == record.file_name {
+    let mut score = if candidate.file_name == entry.file_name {
         4
-    } else if renamed_from(&record.file_name, &entry.file_name) {
+    } else if renamed_from(&entry.file_name, &candidate.file_name) {
         1
     } else {
         return None;
     };
-    if record.modified_unix.is_some() && entry.modified_unix == record.modified_unix {
+    if entry.modified_ns.is_some() && candidate.modified_ns == entry.modified_ns {
         score += 2;
     }
     Some(score)
@@ -422,14 +491,16 @@ fn renamed_from(original: &str, candidate: &str) -> bool {
 #[allow(clippy::unwrap_used, clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use nohrs_store::{SqliteStore, StoreLogConfig};
     use std::fs;
     use tempfile::{TempDir, tempdir};
 
     /// A trash directory plus the ledger describing it, wired together the way
-    /// [`ops::trash_path`] leaves them.
+    /// [`ops::trash_path`] leaves them. The ledger is a real in-memory
+    /// `SqliteStore`, so these exercise the code macOS actually runs.
     pub(crate) struct Fixture {
         pub home: TempDir,
-        pub ledger: TrashLedger,
+        pub ledger: Arc<dyn TrashLedger>,
         pub trash_dir: PathBuf,
     }
 
@@ -438,10 +509,10 @@ mod tests {
             let home = tempdir().unwrap();
             let trash_dir = home.path().join("Trash");
             fs::create_dir(&trash_dir).unwrap();
-            let ledger = TrashLedger::at(home.path().join("ledger.jsonl"));
+            let ledger = SqliteStore::open_in_memory(&StoreLogConfig::default()).unwrap();
             Self {
                 home,
-                ledger,
+                ledger: Arc::new(ledger),
                 trash_dir,
             }
         }
@@ -457,9 +528,9 @@ mod tests {
             let origin = self.origin(name);
             fs::create_dir_all(origin.parent().unwrap()).unwrap();
             fs::write(&origin, contents).unwrap();
-            let record = TrashRecord::capture(&origin).unwrap();
+            let entry = capture(&origin).unwrap();
             fs::rename(&origin, self.trash_dir.join(trash_name)).unwrap();
-            self.ledger.append(&record).unwrap();
+            self.ledger.append(&entry).unwrap();
             origin
         }
 
@@ -468,14 +539,14 @@ mod tests {
             let origin = self.origin(name);
             fs::create_dir_all(&origin).unwrap();
             fs::write(origin.join("inner.txt"), "inner").unwrap();
-            let record = TrashRecord::capture(&origin).unwrap();
+            let entry = capture(&origin).unwrap();
             fs::rename(&origin, self.trash_dir.join(name)).unwrap();
-            self.ledger.append(&record).unwrap();
+            self.ledger.append(&entry).unwrap();
             origin
         }
 
         pub fn store(&self) -> LedgerStore {
-            LedgerStore::new(self.ledger.clone(), self.trash_dir.clone())
+            LedgerStore::new(Arc::clone(&self.ledger), self.trash_dir.clone())
         }
     }
 
@@ -491,6 +562,40 @@ mod tests {
         assert_eq!(items[0].original_path, origin);
         assert_eq!(items[0].file_name(), "notes.txt");
         assert!(!items[0].is_dir);
+        assert!(items[0].deleted_at_unix > 0, "the timestamp is in seconds");
+    }
+
+    #[test]
+    fn capture_records_an_absolute_location() {
+        // Cargo runs unit tests with the package root as the working directory,
+        // so this crate's own manifest is a relative path that exists.
+        let entry = capture(Path::new("Cargo.toml")).unwrap();
+
+        assert!(
+            entry.original_path.is_absolute(),
+            "a relative location would restore to the wrong directory: {}",
+            entry.original_path.display()
+        );
+        assert!(entry.original_path.ends_with("Cargo.toml"));
+        assert!(entry.trashed_at > 0);
+    }
+
+    #[test]
+    fn capture_reports_a_directory_as_one_with_no_size() {
+        let fixture = Fixture::new();
+        let origin = fixture.origin("project");
+        fs::create_dir_all(&origin).unwrap();
+
+        let entry = capture(&origin).unwrap();
+
+        assert!(entry.is_dir);
+        assert_eq!(entry.size, 0, "a directory's own byte count is meaningless");
+    }
+
+    #[test]
+    fn capture_fails_on_a_missing_path() {
+        let fixture = Fixture::new();
+        assert!(capture(&fixture.origin("ghost.txt")).is_err());
     }
 
     #[test]
@@ -508,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn items_trashed_in_the_same_second_stay_in_deletion_order() {
+    fn items_trashed_in_the_same_instant_stay_in_deletion_order() {
         let fixture = Fixture::new();
         fixture.trash_file("older.txt", "old", "older.txt");
         fixture.trash_file("newer.txt", "new", "newer.txt");
@@ -519,15 +624,15 @@ mod tests {
         assert_eq!(
             items[0].file_name(),
             "newer.txt",
-            "a timestamp in whole seconds cannot separate these, but the ledger order can"
+            "the ledger's row order has to decide when the clock cannot"
         );
     }
 
     #[test]
-    fn two_records_never_claim_the_same_trash_entry() {
+    fn two_rows_never_claim_the_same_trash_entry() {
         let fixture = Fixture::new();
         // The same path trashed twice, but only one file is left in the trash:
-        // the older record has nothing to point at.
+        // the older row has nothing to point at.
         fixture.trash_file("notes.txt", "one", "notes.txt");
         fs::remove_file(fixture.trash_dir.join("notes.txt")).unwrap();
         fixture.trash_file("notes.txt", "two", "notes.txt");
@@ -537,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn a_record_whose_item_left_the_trash_is_dropped_from_the_ledger() {
+    fn a_row_whose_item_left_the_trash_is_dropped_from_the_ledger() {
         let fixture = Fixture::new();
         fixture.trash_file("notes.txt", "payload", "notes.txt");
         fs::remove_file(fixture.trash_dir.join("notes.txt")).unwrap();
@@ -545,8 +650,8 @@ mod tests {
 
         assert!(store.list().unwrap().is_empty());
         assert!(
-            fixture.ledger.records().unwrap().is_empty(),
-            "an unrestorable record must not stay in the ledger forever"
+            fixture.ledger.entries().unwrap().is_empty(),
+            "an unrestorable row must not stay in the ledger forever"
         );
     }
 
@@ -554,11 +659,14 @@ mod tests {
     fn a_missing_trash_directory_leaves_the_ledger_alone() {
         let fixture = Fixture::new();
         fixture.trash_file("notes.txt", "payload", "notes.txt");
-        let mut store = LedgerStore::new(fixture.ledger.clone(), fixture.home.path().join("gone"));
+        let mut store = LedgerStore::new(
+            Arc::clone(&fixture.ledger),
+            fixture.home.path().join("gone"),
+        );
 
         assert!(store.list().unwrap().is_empty());
         assert_eq!(
-            fixture.ledger.records().unwrap().len(),
+            fixture.ledger.entries().unwrap().len(),
             1,
             "a trash directory we cannot read is not evidence the item is gone"
         );
@@ -574,7 +682,7 @@ mod tests {
         store.restore(&items[0]).unwrap();
 
         assert_eq!(fs::read_to_string(&origin).unwrap(), "payload");
-        assert!(fixture.ledger.records().unwrap().is_empty());
+        assert!(fixture.ledger.entries().unwrap().is_empty());
         assert!(!fixture.trash_dir.join("notes.txt").exists());
     }
 
@@ -638,7 +746,7 @@ mod tests {
         store.purge(&items[0]).unwrap();
 
         assert!(!fixture.trash_dir.join("notes.txt").exists());
-        assert!(fixture.ledger.records().unwrap().is_empty());
+        assert!(fixture.ledger.entries().unwrap().is_empty());
     }
 
     #[test]
@@ -662,11 +770,11 @@ mod tests {
         let origin = fixture.origin("notes.txt");
         fs::create_dir_all(origin.parent().unwrap()).unwrap();
         fs::write(&origin, "payload").unwrap();
-        let record = TrashRecord::capture(&origin).unwrap();
+        let entry = capture(&origin).unwrap();
         fs::remove_file(&origin).unwrap();
         // Something else of the same name, but not our file.
         fs::write(fixture.trash_dir.join("notes.txt"), "a different payload").unwrap();
-        fixture.ledger.append(&record).unwrap();
+        fixture.ledger.append(&entry).unwrap();
         let mut store = fixture.store();
 
         assert!(store.list().unwrap().is_empty());
@@ -681,13 +789,24 @@ mod tests {
         assert!(!renamed_from("notes.txt", "notes.txt.bak"));
     }
 
-    // On macOS the default store is the ledger one, and building it would create
-    // the data directory on the developer's own machine; the OS-index store does
-    // no I/O until it is asked to list, so it is safe to construct here.
+    #[test]
+    fn the_home_trash_directory_is_named_for_the_platform() {
+        let trash = home_trash_dir().unwrap();
+        if cfg!(target_os = "macos") {
+            assert!(trash.ends_with(".Trash"), "{}", trash.display());
+        } else {
+            assert!(trash.ends_with("Trash/files"), "{}", trash.display());
+        }
+    }
+
+    // On macOS the default store is the ledger one, and building it would need a
+    // real database; the OS-index store does no I/O until it is asked to list,
+    // so it is safe to construct here.
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn the_default_store_is_the_os_index_where_the_platform_has_one() {
         const { assert!(OS_INDEX_AVAILABLE) };
-        assert!(default_store().is_ok());
+        let store = default_store(|| panic!("the ledger must not be opened on this platform"));
+        assert!(store.is_ok());
     }
 }
