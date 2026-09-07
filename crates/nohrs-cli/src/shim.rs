@@ -210,7 +210,11 @@ pub fn status(context: &Context, output: &mut dyn Write) -> io::Result<Summary> 
         // `None` when nothing of that name is on PATH at all, and a shim the
         // shell can never reach is not active.
         match (installed, resolve_on_path(name, &context.path_entries)) {
-            (true, Some(found)) if found == link => {
+            // Compared as programs, not as spellings: a `PATH` entry that
+            // reaches the shim directory by another name — through a symlinked
+            // parent, say — resolves to the same file and must not read as
+            // something shadowing it.
+            (true, Some(found)) if same_program(&found, &link) => {
                 summary.unchanged += 1;
                 writeln!(output, "{name}: active ({})", link.display())?;
             }
@@ -717,6 +721,25 @@ mod tests {
         let run = execute(|stdout, _| status(&shadowed, stdout));
         assert!(run.stdout.contains("comes first on PATH"), "{}", run.stdout);
         assert_eq!(run.summary.exit_code(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_sees_through_a_path_entry_that_spells_the_shim_directory_differently() {
+        // `PATH=~/bin` where `~/bin` is a symlink to the shim directory. The
+        // shim does win, and comparing the two spellings as strings would
+        // report it shadowed by itself.
+        let fixture = Fixture::new();
+        install_all(&fixture.context, false);
+        let alias = fixture.root.path().join("aliased-bin");
+        std::os::unix::fs::symlink(&fixture.context.dir, &alias).unwrap();
+        let mut context = fixture.context.clone();
+        context.path_entries = vec![alias];
+
+        let run = execute(|stdout, _| status(&context, stdout));
+
+        assert!(run.stdout.contains("rm: active"), "{}", run.stdout);
+        assert_eq!(run.summary.exit_code(), 0);
     }
 
     #[test]

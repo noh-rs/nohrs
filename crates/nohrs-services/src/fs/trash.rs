@@ -374,10 +374,10 @@ pub fn capture(path: &Path) -> Result<TrashEntry> {
     let path = std::path::absolute(path)?;
     // The ledger stores paths as text, so a path that is not valid UTF-8 could
     // only be written after mangling it — and a mangled record restores to the
-    // wrong name. Refuse rather than corrupt. macOS, the only platform that
-    // uses the ledger, accepts only valid UTF-8 filenames, so this cannot
-    // trigger there; on a platform where it could, `ops::trash_path` turns it
-    // into a refused delete rather than an unrestorable one.
+    // wrong name. Refuse rather than corrupt: `ops::trash_path` turns this into
+    // a refused delete rather than an unrestorable one. Rare on macOS, where
+    // APFS and HFS+ reject invalid UTF-8 outright, but a Unix name is bytes and
+    // a mounted exFAT, NFS, or SMB volume can hand one over.
     if path.to_str().is_none() {
         return Err(Error::Other(format!(
             "cannot record a path that is not valid UTF-8: {}",
