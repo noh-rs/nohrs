@@ -220,16 +220,23 @@ fn rename_no_replace(_src: &Path, _dst: &Path) -> Option<std::io::Result<()>> {
     None
 }
 
-// The cross-volume half of `move_path_no_replace`: `create_new` for a file and
-// `create_dir` for a directory both fail if the name is taken, so the
-// destination is claimed atomically before any byte is written.
+// The copying half of `move_path_no_replace`. Every branch claims the
+// destination with a call that fails if the name is taken — `symlink`,
+// `create_dir`, `create_new` — so nothing is written over a file that appeared
+// since the caller looked. Unlike `copy_path`, a symlink is recreated as a
+// symlink and permissions are carried across: this stands in for a move, so
+// what arrives has to be what left.
 fn copy_path_no_replace(src: &Path, dst: &Path) -> Result<()> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
-    if fs::symlink_metadata(src)?.is_dir() {
+    let metadata = fs::symlink_metadata(src)?;
+    if metadata.is_symlink() {
+        return symlink_no_replace(&fs::read_link(src)?, dst);
+    }
+    if metadata.is_dir() {
         fs::create_dir(dst)?;
-        copy_dir_all(src, dst)
+        copy_dir_all(src, dst)?;
     } else {
         let mut source = fs::File::open(src)?;
         let mut destination = fs::OpenOptions::new()
@@ -237,8 +244,30 @@ fn copy_path_no_replace(src: &Path, dst: &Path) -> Result<()> {
             .create_new(true)
             .open(dst)?;
         std::io::copy(&mut source, &mut destination)?;
-        Ok(())
     }
+    // After the contents, so a read-only mode cannot stop the copy that has to
+    // happen first.
+    fs::set_permissions(dst, metadata.permissions())?;
+    Ok(())
+}
+
+// Recreates a symlink to `target` at `link`, failing if `link` is taken.
+#[cfg(unix)]
+fn symlink_no_replace(target: &Path, link: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(target, link)?;
+    Ok(())
+}
+
+// Only Linux and macOS reach the copying fallback with a symlink in hand — they
+// are the platforms with a no-replace rename to fail over from, and the only
+// ones whose trash is served by `LedgerStore`. Refusing beats the alternative of
+// silently replacing a link with a copy of whatever it pointed at.
+#[cfg(not(unix))]
+fn symlink_no_replace(_target: &Path, link: &Path) -> Result<()> {
+    Err(Error::Other(format!(
+        "cannot recreate a symbolic link on this platform: {}",
+        link.display()
+    )))
 }
 
 // Whether an IO error from `rename` indicates the source and destination are on
@@ -425,9 +454,41 @@ mod tests {
         let dst = dir.path().join("b.txt");
         fs::write(&src, "payload").unwrap();
 
-        assert_eq!(move_path_no_replace(&src, &dst).unwrap(), MoveKind::Rename);
+        // Which of the two it takes depends on whether this filesystem accepts
+        // the no-replace flag, so only the outcome is asserted.
+        move_path_no_replace(&src, &dst).unwrap();
         assert!(!src.exists());
         assert_eq!(fs::read_to_string(&dst).unwrap(), "payload");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_fallback_move_keeps_a_symlink_a_symlink_and_a_mode_a_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        fs::write(&target, "pointed at").unwrap();
+
+        // A copy that followed the link would restore the target's bytes and
+        // leave the link behind as a plain file.
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let moved_link = dir.path().join("moved-link.txt");
+        copy_path_no_replace(&link, &moved_link).unwrap();
+        assert!(fs::symlink_metadata(&moved_link).unwrap().is_symlink());
+        assert_eq!(fs::read_link(&moved_link).unwrap(), target);
+
+        let script = dir.path().join("script.sh");
+        fs::write(&script, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let moved_script = dir.path().join("moved-script.sh");
+        copy_path_no_replace(&script, &moved_script).unwrap();
+        assert_eq!(
+            fs::metadata(&moved_script).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "an executable must not come back from the trash unexecutable"
+        );
     }
 
     #[test]

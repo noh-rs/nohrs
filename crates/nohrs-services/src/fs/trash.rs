@@ -557,10 +557,10 @@ fn score(entry: &TrashEntry, candidate: &Entry) -> Option<u32> {
 ///
 /// The trash only ever appends to the stem, and only in the two forms it uses
 /// to break a name collision: a counter (`notes 2.txt`) or the time of day
-/// (`notes 10.30.15 AM.txt`). Both put a space between the original stem and
-/// what follows, so that space is what this requires — without it any file
-/// whose name merely starts the same (`notes-backup.txt`, `notes_old.txt`)
-/// would be a candidate for restoring `notes.txt` over.
+/// (`notes 10.30.15 AM.txt`). Anything else that merely begins with the same
+/// stem — `notes-backup.txt`, `notes_old.txt`, `notes draft.txt` — is a
+/// different file, and matching it would put it at risk of being restored over
+/// or purged in the deleted file's place.
 fn renamed_from(original: &str, candidate: &str) -> bool {
     let original = Path::new(original);
     let candidate = Path::new(candidate);
@@ -571,15 +571,31 @@ fn renamed_from(original: &str, candidate: &str) -> bool {
         original.file_stem().and_then(|stem| stem.to_str()),
         candidate.file_stem().and_then(|stem| stem.to_str()),
     ) {
-        (Some(original), Some(candidate)) => {
-            !original.is_empty()
-                && candidate
-                    .strip_prefix(original)
-                    .and_then(|suffix| suffix.strip_prefix(' '))
-                    .is_some_and(|suffix| !suffix.is_empty())
-        }
+        (Some(original), Some(candidate)) if !original.is_empty() => candidate
+            .strip_prefix(original)
+            .and_then(|suffix| suffix.strip_prefix(' '))
+            .is_some_and(is_collision_suffix),
         _ => false,
     }
+}
+
+/// Whether `suffix` is one the trash appends to break a name collision: a
+/// counter (`2`) or a time of day (`10.30.15 AM`).
+fn is_collision_suffix(suffix: &str) -> bool {
+    if !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return true;
+    }
+    let Some((clock, meridiem)) = suffix.split_once(' ') else {
+        return false;
+    };
+    if !matches!(meridiem, "AM" | "PM") {
+        return false;
+    }
+    let mut parts = clock.split('.');
+    let parsed = [parts.next(), parts.next(), parts.next()].map(|part| {
+        part.is_some_and(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    });
+    parts.next().is_none() && parsed.iter().all(|part| *part)
 }
 
 #[cfg(test)]
@@ -1030,6 +1046,26 @@ mod tests {
         // The identical name is `score`'s exact-match branch, not a renaming.
         assert!(!renamed_from("notes.txt", "notes.txt"));
         assert!(!renamed_from("notes.txt", "notes .txt"));
+        // A space is not enough either: the suffix has to be one the trash
+        // writes, or a file the user named this way is at risk.
+        assert!(!renamed_from("notes.txt", "notes backup.txt"));
+        assert!(!renamed_from("notes.txt", "notes 2 old.txt"));
+    }
+
+    #[test]
+    fn only_the_suffixes_the_trash_appends_count_as_a_collision_name() {
+        assert!(is_collision_suffix("2"));
+        assert!(is_collision_suffix("10"));
+        assert!(is_collision_suffix("10.30.15 AM"));
+        assert!(is_collision_suffix("1.05.00 PM"));
+
+        assert!(!is_collision_suffix(""));
+        assert!(!is_collision_suffix("backup"));
+        assert!(!is_collision_suffix("2b"));
+        assert!(!is_collision_suffix("10.30 AM"));
+        assert!(!is_collision_suffix("10.30.15.20 AM"));
+        assert!(!is_collision_suffix("10.30.15 XM"));
+        assert!(!is_collision_suffix("10..15 AM"));
     }
 
     #[test]
