@@ -363,14 +363,28 @@ fn link_target(link: &Path) -> Option<PathBuf> {
     Some(link.parent()?.join(target))
 }
 
-/// Whether `path` is this binary. Both sides are canonicalized so a shim reached
-/// through a symlinked directory still compares equal; if that fails (a dangling
-/// link), the raw paths are compared instead.
-fn is_current_exe(context: &Context, path: &Path) -> bool {
-    match (path.canonicalize(), context.current_exe.canonicalize()) {
+/// Whether `link` is a shim this binary installed: a symlink whose target is
+/// `program`.
+///
+/// A name existing at the shim path proves nothing on its own — a hand-made
+/// `~/.local/bin/rm -> /bin/rm` is a symlink at exactly that path — so callers
+/// that report a shim as active have to resolve it.
+pub fn points_at(link: &Path, program: &Path) -> bool {
+    link_target(link).is_some_and(|target| same_program(&target, program))
+}
+
+/// Whether two paths name the same program. Both sides are canonicalized so a
+/// binary reached through a symlinked directory still compares equal; if that
+/// fails (a dangling link), the raw paths are compared instead.
+fn same_program(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
         (Ok(left), Ok(right)) => left == right,
-        _ => path == context.current_exe,
+        _ => left == right,
     }
+}
+
+fn is_current_exe(context: &Context, path: &Path) -> bool {
+    same_program(path, &context.current_exe)
 }
 
 fn parent_of(path: &Path) -> String {

@@ -223,15 +223,19 @@ pub fn create_dir(parent: &Path, name: &str) -> Result<PathBuf> {
 /// [`crate::fs::trash::OS_INDEX_AVAILABLE`] is how a caller decides.
 pub fn trash_path(path: &Path, ledger: Option<&dyn TrashLedger>) -> Result<()> {
     // Captured before the move, while the item is still at its original
-    // location — that is the whole point of the record.
-    let captured = ledger.map(|_| trash::capture(path));
+    // location — that is the whole point of the record. Failing here fails the
+    // whole operation: nothing has moved yet, and deleting an item we already
+    // know we cannot record would make it unrestorable on this platform.
+    let captured = match ledger {
+        Some(_) => Some(trash::capture(path)?),
+        None => None,
+    };
     ::trash::delete(path)
         .map_err(|error| Error::Other(format!("failed to move to trash: {error}")))?;
-    // The item is already in the trash at this point. A bookkeeping failure
-    // must not be reported as a failed delete, but it must not vanish either:
-    // without the record, the item cannot be restored on this platform.
+    // Past this point the item is in the trash, so a ledger write that fails
+    // cannot be reported as a failed delete — but it must not vanish either.
     if let (Some(ledger), Some(captured)) = (ledger, captured)
-        && let Err(error) = record_trashed(ledger, captured)
+        && let Err(error) = record_trashed(ledger, &captured)
     {
         tracing::warn!(
             path = %path.display(),
@@ -242,12 +246,9 @@ pub fn trash_path(path: &Path, ledger: Option<&dyn TrashLedger>) -> Result<()> {
     Ok(())
 }
 
-fn record_trashed(
-    ledger: &dyn TrashLedger,
-    captured: Result<nohrs_store::TrashEntry>,
-) -> Result<()> {
+fn record_trashed(ledger: &dyn TrashLedger, captured: &nohrs_store::TrashEntry) -> Result<()> {
     ledger
-        .append(&captured?)
+        .append(captured)
         .map(|_| ())
         .map_err(|error| Error::Other(format!("could not write the trash ledger: {error}")))
 }

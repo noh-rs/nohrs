@@ -67,8 +67,9 @@ pub struct Environment {
     pub current_exe: Option<PathBuf>,
     /// `PATH`, split into directories in search order.
     pub path_entries: Vec<PathBuf>,
-    /// Where `noh shim install` puts its links.
-    pub shim_dir: PathBuf,
+    /// Where `noh shim install` puts its links, when that can be resolved at
+    /// all (it cannot without a home directory).
+    pub shim_dir: Option<PathBuf>,
     /// The trash directory items from the home volume land in.
     pub trash_dir: Option<PathBuf>,
     /// The record of what nohrs trashed, when this platform uses one and it
@@ -91,7 +92,7 @@ impl Environment {
         Self {
             current_exe: std::env::current_exe().ok(),
             path_entries: shim::path_entries(),
-            shim_dir: shim::default_dir().unwrap_or_default(),
+            shim_dir: shim::default_dir().ok(),
             trash_dir: trash::home_trash_dir().ok(),
             // Opening it (which creates the database) is skipped entirely where
             // the ledger is not used; a failure to open becomes a failing check
@@ -148,13 +149,23 @@ fn check_binary(environment: &Environment) -> Check {
 
 /// One check per applet: is the shim installed, and does it win on `PATH`?
 fn shim_checks(environment: &Environment) -> Vec<Check> {
+    let name = "shim";
+    let (Some(shim_dir), Some(current_exe)) = (&environment.shim_dir, &environment.current_exe)
+    else {
+        return vec![Check::new(
+            name,
+            Status::Error,
+            "cannot tell where the shims live without a home directory and this binary's path",
+        )];
+    };
     shim::APPLETS
         .iter()
         .map(|applet| {
-            let name = "shim";
-            let link = environment.shim_dir.join(applet);
+            let link = shim_dir.join(applet);
             let found = shim::resolve_on_path(applet, &environment.path_entries);
-            let installed = link.is_symlink();
+            // A symlink at the shim path is not proof it is ours: a hand-made
+            // `~/.local/bin/rm -> /bin/rm` sits at exactly that path.
+            let installed = shim::points_at(&link, current_exe);
             match (installed, found) {
                 (_, None) => Check::new(
                     name,
@@ -172,7 +183,7 @@ fn shim_checks(environment: &Environment) -> Vec<Check> {
                     format!(
                         "`{applet}` still runs {}; put {} earlier in PATH",
                         found.display(),
-                        environment.shim_dir.display()
+                        shim_dir.display()
                     ),
                 ),
                 (false, Some(found)) => Check::new(
@@ -335,7 +346,7 @@ mod tests {
             let environment = Environment {
                 current_exe: Some(exe),
                 path_entries: vec![shim_dir.clone(), system_bin],
-                shim_dir,
+                shim_dir: Some(shim_dir),
                 trash_dir: Some(trash_dir),
                 ledger: Some(open_ledger()),
                 ledger_path: root.path().join("db.sqlite"),
@@ -347,8 +358,15 @@ mod tests {
             Self { root, environment }
         }
 
+        fn shim_dir(&self) -> PathBuf {
+            match &self.environment.shim_dir {
+                Some(dir) => dir.clone(),
+                None => panic!("the fixture always resolves a shim directory"),
+            }
+        }
+
         fn install_shim(&self) {
-            let link = self.environment.shim_dir.join("rm");
+            let link = self.shim_dir().join("rm");
             #[cfg(unix)]
             std::os::unix::fs::symlink(self.environment.current_exe.as_ref().unwrap(), &link)
                 .unwrap();
@@ -425,6 +443,29 @@ mod tests {
         assert!(shim.detail.contains("earlier in PATH"), "{}", shim.detail);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_another_program_is_not_reported_as_our_shim() {
+        let fixture = Fixture::new();
+        // The shape a hand-written `ln -sf` leaves behind: a symlink at exactly
+        // the shim path, pointing at the system binary rather than at us.
+        std::os::unix::fs::symlink(
+            fixture.root.path().join("bin").join("rm"),
+            fixture.shim_dir().join("rm"),
+        )
+        .unwrap();
+
+        let shim = check(&fixture.environment);
+        let shim = find(&shim, "shim");
+
+        assert_eq!(shim.status, Status::Warn);
+        assert!(
+            shim.detail.contains("noh shim install"),
+            "a foreign link must not read as active: {}",
+            shim.detail
+        );
+    }
+
     #[test]
     fn a_missing_binary_path_is_an_error_and_sets_the_exit_code() {
         let fixture = Fixture::new();
@@ -492,6 +533,20 @@ mod tests {
             "{}",
             find(&checks, "trash").detail
         );
+    }
+
+    #[test]
+    fn a_shim_directory_that_cannot_be_resolved_is_an_error() {
+        let fixture = Fixture::new();
+        let mut environment = fixture.environment.clone();
+        // No home directory: `shim::default_dir` fails, and an empty path would
+        // silently turn every shim check into nonsense.
+        environment.shim_dir = None;
+
+        let checks = check(&environment);
+
+        assert_eq!(find(&checks, "shim").status, Status::Error);
+        assert_eq!(rendered(&checks).1, 1);
     }
 
     #[test]

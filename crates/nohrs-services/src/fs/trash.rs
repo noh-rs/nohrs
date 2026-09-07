@@ -13,12 +13,16 @@
 //!   go in — and finds each one in `~/.Trash` again by its recorded name, size,
 //!   and modification time.
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+// Only the freedesktop branch of `home_trash_dir` resolves an XDG base
+// directory; macOS reads the home directory instead.
+#[cfg(not(target_os = "macos"))]
 use nohrs_core::config::paths;
 use nohrs_core::errors::{Error, Result};
 use nohrs_store::{TrashEntry, TrashId, TrashLedger};
@@ -402,6 +406,9 @@ struct Entry {
     is_dir: bool,
     size: u64,
     modified_ns: Option<i64>,
+    /// When this entry last changed on disk, which a move into the trash
+    /// updates — so it is, in effect, when the item arrived there.
+    changed_ns: Option<i64>,
 }
 
 fn read_entries(trash_dir: &Path) -> Result<Vec<Entry>> {
@@ -420,6 +427,7 @@ fn read_entries(trash_dir: &Path) -> Result<Vec<Entry>> {
             is_dir: metadata.is_dir(),
             size: if metadata.is_dir() { 0 } else { metadata.len() },
             modified_ns: metadata.modified().ok().and_then(unix_nanos),
+            changed_ns: changed_ns(&metadata),
         });
     }
     Ok(entries)
@@ -427,10 +435,18 @@ fn read_entries(trash_dir: &Path) -> Result<Vec<Entry>> {
 
 /// Find the trash entry a ledger row became.
 ///
-/// The trash renames an item whose name is already taken (`notes.txt` becomes
-/// `notes 2.txt`), so an exact name match wins and a renamed candidate is
-/// accepted only when the rest of the metadata agrees. A move preserves size and
-/// modification time, which is what makes this reliable enough to restore from.
+/// [`score`] narrows the field to entries that *could* be this row — a move
+/// preserves size and modification time, and the trash renames an item whose
+/// name is already taken (`notes.txt` becomes `notes 2.txt`).
+///
+/// Among those, the winner is the entry that physically arrived in the trash
+/// closest to when the row was written, not the one whose name matches best.
+/// The order matters: the trash gives the *first* arrival the original name, so
+/// for two copies with identical name, size and modification time, preferring
+/// the exact name would hand the newer row the older file — and restore its
+/// contents. Arrival time is the only thing that still separates them. Where the
+/// platform reports no change time, every gap is the same sentinel and the name
+/// decides, as before.
 fn locate<'a>(
     entry: &TrashEntry,
     entries: &'a [Entry],
@@ -440,8 +456,35 @@ fn locate<'a>(
         .iter()
         .filter(|candidate| !claimed.contains(candidate.path.as_path()))
         .filter_map(|candidate| score(entry, candidate).map(|score| (score, candidate)))
-        .max_by_key(|(score, candidate)| (*score, candidate.modified_ns))
+        .min_by_key(|(score, candidate)| (arrival_gap(entry, candidate), Reverse(*score)))
         .map(|(_, candidate)| candidate)
+}
+
+/// How far a candidate's arrival in the trash sits from when this row was
+/// written. `u64::MAX` when the platform reports no change time, which makes
+/// every candidate equally distant and leaves the decision to [`score`].
+fn arrival_gap(entry: &TrashEntry, candidate: &Entry) -> u64 {
+    match candidate.changed_ns {
+        Some(changed) => changed.saturating_sub(entry.trashed_at).unsigned_abs(),
+        None => u64::MAX,
+    }
+}
+
+/// When a filesystem entry last changed, in nanoseconds since the Unix epoch.
+/// A rename updates it, which is what makes it stand in for "when this arrived
+/// in the trash".
+#[cfg(unix)]
+fn changed_ns(metadata: &std::fs::Metadata) -> Option<i64> {
+    use std::os::unix::fs::MetadataExt;
+    metadata
+        .ctime()
+        .checked_mul(NANOS_PER_SECOND)
+        .map(|seconds| seconds.saturating_add(metadata.ctime_nsec()))
+}
+
+#[cfg(not(unix))]
+fn changed_ns(_metadata: &std::fs::Metadata) -> Option<i64> {
+    None
 }
 
 fn score(entry: &TrashEntry, candidate: &Entry) -> Option<u32> {
@@ -762,6 +805,51 @@ mod tests {
 
         assert!(store.restore(&item).is_err());
         assert!(store.purge(&item).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn two_copies_with_identical_metadata_are_told_apart_by_when_they_arrived() {
+        use std::fs::File;
+        use std::time::Duration;
+
+        let fixture = Fixture::new();
+        let origin = fixture.origin("notes.txt");
+        fs::create_dir_all(origin.parent().unwrap()).unwrap();
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+
+        // Two copies of the same path, same size, forced to the same
+        // modification time. Name, size and mtime are identical, so nothing but
+        // the moment each entered the trash can tell the rows apart.
+        let trash_copy = |contents: &str, trash_name: &str| {
+            fs::write(&origin, contents).unwrap();
+            File::options()
+                .write(true)
+                .open(&origin)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+            let entry = capture(&origin).unwrap();
+            fs::rename(&origin, fixture.trash_dir.join(trash_name)).unwrap();
+            fixture.ledger.append(&entry).unwrap();
+        };
+        // The trash keeps the original name for the first arrival and renames
+        // the second.
+        trash_copy("aaa", "notes.txt");
+        std::thread::sleep(Duration::from_millis(20));
+        trash_copy("bbb", "notes 2.txt");
+
+        let mut store = fixture.store();
+        let items = store.list().unwrap();
+        assert_eq!(items.len(), 2);
+        store.restore(&items[0]).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&origin).unwrap(),
+            "bbb",
+            "the newest row must restore the copy that went in last, not the one \
+             that happens to still hold the original name"
+        );
     }
 
     #[test]

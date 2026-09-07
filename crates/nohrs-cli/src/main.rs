@@ -42,12 +42,13 @@ fn run_command(command: &Command) -> io::Result<u8> {
         }
         Command::Shim(command) => run_shim(command),
         Command::Completions { shell } => {
-            clap_complete::generate(
-                *shell,
-                &mut Invocation::command(),
-                "noh",
-                &mut io::stdout().lock(),
-            );
+            // `clap_complete::generate` takes a `Write` but returns nothing, so
+            // it can only panic on a failed write (`noh completions bash | head`
+            // closes the pipe early). Buffer first, then write it ourselves so
+            // that failure travels the same path as every other output error.
+            let mut script = Vec::new();
+            clap_complete::generate(*shell, &mut Invocation::command(), "noh", &mut script);
+            io::stdout().lock().write_all(&script)?;
             Ok(0)
         }
     }
