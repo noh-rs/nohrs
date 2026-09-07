@@ -26,7 +26,7 @@ nohrs-store    = { path = "../nohrs-store" }
 gpui = "0.2"
 gpui-component = "0.5"
 tracing.workspace = true
-clap = { version = "4", features = ["derive"] }
+clap.workspace    = true
 
 [lints]
 workspace = true

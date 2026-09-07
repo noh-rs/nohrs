@@ -340,7 +340,9 @@ jobs:
         run: cargo llvm-cov report --fail-under-lines 50
       # Per-file floor on the testable subset, so a near-0% testable file cannot
       # hide behind the aggregate. The ignored set is code that is not testable
-      # in-process: the gpui binary entrypoint (`nohrs/src/{app,cli,main}.rs`),
+      # in-process: the gpui binary entrypoint (`nohrs/src/{app,cli,main}.rs`)
+      # and the CLI's (`nohrs-cli/src/main.rs` — its argv dispatch and `rm`
+      # engine are covered in the library, which is not excluded),
       # pure rendering/view and window-chrome code, the search backends (external
       # processes / tantivy index), and the page/list glue exercised only through
       # the running app. The reusable components (`file_list`, `footer`, `pane`)
@@ -350,7 +352,7 @@ jobs:
       - name: Enforce per-file coverage floor (testable subset)
         run: >
           cargo llvm-cov report --fail-under-file-lines 70
-          --ignore-filename-regex 'nohrs/src/(app|cli|main)\.rs|/explorer/view|/explorer\.rs|/explorer/list_setup\.rs|nohrs-pages/src/(root|git|s3|settings|extensions|nohrs_pages)\.rs|/search/|nohrs-services/src/search\.rs|nohrs-ui/src/(assets|window)\.rs|/components/layout/unified_toolbar\.rs'
+          --ignore-filename-regex 'nohrs/src/(app|cli|main)\.rs|nohrs-cli/src/main\.rs|/explorer/view|/explorer\.rs|/explorer/list_setup\.rs|nohrs-pages/src/(root|git|s3|settings|extensions|nohrs_pages)\.rs|/search/|nohrs-services/src/search\.rs|nohrs-ui/src/(assets|window)\.rs|/components/layout/unified_toolbar\.rs'
 
   # Posts (or updates) a single PR comment reporting both tiers against their
   # targets. A dedicated job (rather than the coverage jobs themselves) avoids a
