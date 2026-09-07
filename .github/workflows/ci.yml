@@ -341,8 +341,10 @@ jobs:
       # Per-file floor on the testable subset, so a near-0% testable file cannot
       # hide behind the aggregate. The ignored set is code that is not testable
       # in-process: the gpui binary entrypoint (`nohrs/src/{app,cli,main}.rs`)
-      # and the CLI's (`nohrs-cli/src/main.rs` — its argv dispatch and `rm`
-      # engine are covered in the library, which is not excluded),
+      # and the CLI's (`nohrs-cli/src/main.rs` — process wiring only: locking the
+      # real stdio, opening the real trash, reading the real environment. Its
+      # argument parsing and command engines live in the library, which is not
+      # excluded),
       # pure rendering/view and window-chrome code, the search backends (external
       # processes / tantivy index), and the page/list glue exercised only through
       # the running app. The reusable components (`file_list`, `footer`, `pane`)

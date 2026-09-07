@@ -27,6 +27,9 @@ nohrs-core = { path = "../nohrs-core" }
 # builds without any UI toolkit (it is part of `default-members`).
 nohrs-services = { path = "../nohrs-services" }
 clap.workspace = true
+clap_complete.workspace = true
+serde_json.workspace = true
+dirs = "6"
 
 [dev-dependencies]
 tempfile = "3"

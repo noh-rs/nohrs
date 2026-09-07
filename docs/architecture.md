@@ -129,12 +129,12 @@ expect_used  = "warn"
 | crate | 主な責務 | 依存 |
 |-------|---------|------|
 | **nohrs (bin)** | GUI エントリ、`nohrs config` サブコマンド、起動シーケンス | 全 crate |
-| **nohrs-cli (bin `noh`)** | ターミナル用エントリ (`rm` ほか)。GUI を開かない toolkit-free バイナリ。詳細は [`docs/cli.md`](./cli.md) | `core`, `services` |
+| **nohrs-cli (bin `noh`)** | ターミナル用エントリ (`rm` / `restore` / `trash` / `shim` / `doctor`)。GUI を開かない toolkit-free バイナリ。詳細は [`docs/cli.md`](./cli.md) | `core`, `services` |
 | **nohrs-pages** | explorer / settings / git / s3 などのページ | `ui`, `services`, `models`, `core`, (P2) `store` |
 | **nohrs-launcher** (P3) | ランチャー window、Command trait、結果リスト | `ui`, `services`, `core`, `store`, (P4) `plugin-host` |
 | **nohrs-plugin-host** (P4) | wasmtime + wasmtime-wasi + WIT host、permission ガード、専用 tokio runtime (隔離) | `core`, `store`, `services`, `models` |
 | **nohrs-ui** | gpui コンポーネント、テーマ、ウィンドウ管理 | `core`, `models` |
-| **nohrs-services** | fs listing、search、syntax highlighting | `core`, `models`, (P2) `store` |
+| **nohrs-services** | fs listing / mutation / ゴミ箱と台帳、search、syntax highlighting | `core`, `models`, (P2) `store` |
 | **nohrs-store** (P2) | SQLite (rusqlite) + redb (plugin KV) | `core`, `models` |
 | **nohrs-models** | FileEntry など pure data types | `core` |
 | **nohrs-core** | errors / config / telemetry / resource policy | — |

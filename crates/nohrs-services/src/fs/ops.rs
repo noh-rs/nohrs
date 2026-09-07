@@ -7,6 +7,8 @@
 //! layer is expected to route all mutations through this module rather than
 //! calling `std::fs` directly (see `docs/explorer-essentials.md` §8).
 
+use crate::fs::trash::OS_INDEX_AVAILABLE;
+use crate::fs::trash_ledger::{TrashLedger, TrashRecord};
 use nohrs_core::errors::{Error, Result};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -212,9 +214,34 @@ pub fn create_dir(parent: &Path, name: &str) -> Result<PathBuf> {
     Ok(dst)
 }
 
-/// Moves `path` to the operating system's trash/recycle bin.
+/// Moves `path` to the operating system's trash/recycle bin, recording where it
+/// came from so it can be restored later (see [`crate::fs::trash_ledger`]).
 pub fn trash_path(path: &Path) -> Result<()> {
-    trash::delete(path).map_err(|error| Error::Other(format!("failed to move to trash: {error}")))
+    // Only worth recording where nothing else will: on Linux and Windows the
+    // OS keeps its own index of where each trashed item came from, and
+    // `fs::trash::OsStore` restores from that, so a second copy of the same
+    // facts would just grow without bound with no reader.
+    //
+    // Captured before the move, while the item is still at its original
+    // location — that is the whole point of the record.
+    let captured = (!OS_INDEX_AVAILABLE).then(|| TrashRecord::capture(path));
+    trash::delete(path)
+        .map_err(|error| Error::Other(format!("failed to move to trash: {error}")))?;
+    // The item is already in the trash at this point. A bookkeeping failure
+    // must not be reported as a failed delete, but it must not vanish either:
+    // without the record, the item cannot be restored on this platform.
+    if let Some(Err(error)) = captured.map(record_trashed) {
+        tracing::warn!(
+            path = %path.display(),
+            %error,
+            "could not record the trashed item; it will not appear in `noh trash list`"
+        );
+    }
+    Ok(())
+}
+
+fn record_trashed(captured: Result<TrashRecord>) -> Result<()> {
+    TrashLedger::open_default()?.append(&captured?)
 }
 
 /// Permanently deletes `path`, whether it is a file, symlink, or directory

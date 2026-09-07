@@ -23,6 +23,7 @@ nohrs-core   = { path = "../nohrs-core" }
 nohrs-models = { path = "../nohrs-models" }
 anyhow.workspace  = true
 serde.workspace   = true
+serde_json.workspace = true
 tracing.workspace = true
 time.workspace    = true
 async-channel = "2"
