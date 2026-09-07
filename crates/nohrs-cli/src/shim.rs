@@ -144,19 +144,14 @@ pub fn install(
                     link.display(),
                     context.current_exe.display()
                 )?;
-                if let Some(shadowing) = shadowing(context, &name) {
-                    writeln!(
-                        errors,
-                        "noh shim: {} is still found first on PATH; put {} before {} in PATH",
-                        shadowing.display(),
-                        context.dir.display(),
-                        parent_of(&shadowing)
-                    )?;
-                }
+                warn_if_shadowed(context, &name, errors)?;
             }
             Ok(Outcome::AlreadyCorrect) => {
                 summary.unchanged += 1;
                 writeln!(output, "{} is already installed", link.display())?;
+                // PATH can have changed since the link was made, so re-running
+                // install has to say so rather than report success and stop.
+                warn_if_shadowed(context, &name, errors)?;
             }
             Err(error) => {
                 summary.failed += 1;
@@ -210,11 +205,23 @@ pub fn status(context: &Context, output: &mut dyn Write) -> io::Result<Summary> 
     let mut summary = Summary::default();
     for name in APPLETS {
         let link = context.dir.join(name);
-        let installed = link_target(&link).is_some_and(|target| is_current_exe(context, &target));
-        match (installed, shadowing(context, name)) {
-            (true, None) => {
+        let installed = points_at(&link, &context.current_exe);
+        // Resolved on PATH, not just checked for shadowing: `shadowing` is also
+        // `None` when nothing of that name is on PATH at all, and a shim the
+        // shell can never reach is not active.
+        match (installed, resolve_on_path(name, &context.path_entries)) {
+            (true, Some(found)) if found == link => {
                 summary.unchanged += 1;
                 writeln!(output, "{name}: active ({})", link.display())?;
+            }
+            (true, None) => {
+                summary.failed += 1;
+                writeln!(
+                    output,
+                    "{name}: installed at {} but not on PATH; add {} to PATH",
+                    link.display(),
+                    context.dir.display()
+                )?;
             }
             (true, Some(other)) => {
                 summary.failed += 1;
@@ -316,6 +323,21 @@ fn requested(
         }
     }
     Ok(requested)
+}
+
+/// Report on `errors` when the system command still wins on `PATH`, so an
+/// installed shim that cannot actually be reached does not read as success.
+fn warn_if_shadowed(context: &Context, name: &str, errors: &mut dyn Write) -> io::Result<()> {
+    let Some(shadowing) = shadowing(context, name) else {
+        return Ok(());
+    };
+    writeln!(
+        errors,
+        "noh shim: {} is still found first on PATH; put {} before {} in PATH",
+        shadowing.display(),
+        context.dir.display(),
+        parent_of(&shadowing)
+    )
 }
 
 /// The program `PATH` finds for `name` when it is *not* our shim — that is, the
@@ -542,6 +564,39 @@ mod tests {
             "{}",
             run.stderr
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reinstalling_still_warns_when_the_system_command_wins() {
+        let fixture = Fixture::new();
+        install_all(&fixture.context, false);
+
+        // PATH order changed since the link was made; a second `install` has to
+        // say so rather than report "already installed" and stop.
+        let run = install_all(&fixture.system_bin_first(), false);
+
+        assert_eq!(run.summary.unchanged, 1);
+        assert!(
+            run.stderr.contains("still found first on PATH"),
+            "{}",
+            run.stderr
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_does_not_call_a_shim_active_when_path_cannot_reach_it() {
+        let fixture = Fixture::new();
+        install_all(&fixture.context, false);
+        let mut context = fixture.context.clone();
+        // The link exists and points at us, but nothing named `rm` is on PATH.
+        context.path_entries = Vec::new();
+
+        let run = execute(|stdout, _| status(&context, stdout));
+
+        assert_eq!(run.summary.exit_code(), 1);
+        assert!(run.stdout.contains("not on PATH"), "{}", run.stdout);
     }
 
     #[cfg(unix)]

@@ -53,7 +53,8 @@ pub struct PurgeArgs {
     #[arg(value_name = "PATH")]
     pub paths: Vec<PathBuf>,
 
-    /// Purge every item in the trash.
+    /// Purge every match rather than only the most recent one; with no
+    /// operands, purge everything in the trash.
     #[arg(long)]
     pub all: bool,
 
@@ -185,6 +186,7 @@ impl<'a> Session<'a> {
             Err(error) => return self.abort(&error),
         };
         items.sort_by_key(|item| Reverse(item.deleted_at_unix));
+        let in_trash = items.len();
         if let Some(older_than) = args.older_than {
             let cutoff = self.now_unix - seconds_of(older_than);
             items.retain(|item| item.deleted_at_unix <= cutoff);
@@ -198,7 +200,14 @@ impl<'a> Session<'a> {
             return Ok(self.summary);
         }
         if items.is_empty() {
-            writeln!(self.output, "the trash is empty")?;
+            // An age filter that excluded everything is not an empty trash, and
+            // saying so would send the user looking for items that are there.
+            let reason = if in_trash == 0 {
+                "the trash is empty"
+            } else {
+                "no items are older than that"
+            };
+            writeln!(self.output, "{reason}")?;
             return Ok(self.summary);
         }
         for item in &items {
@@ -289,7 +298,13 @@ impl<'a> Session<'a> {
         };
         if selected.is_empty() && args.paths.is_empty() && !args.force {
             self.summary.failed += 1;
-            writeln!(self.errors, "noh restore: the trash is empty")?;
+            // `--since` excluding everything is not an empty trash.
+            let reason = if items.is_empty() {
+                "the trash is empty"
+            } else {
+                "nothing was trashed that recently"
+            };
+            writeln!(self.errors, "noh restore: {reason}")?;
             return Ok(self.summary);
         }
 
@@ -410,7 +425,10 @@ fn names(item: &Item, operand: &Path) -> bool {
     if operand.is_absolute() || operand.components().count() > 1 {
         return std::path::absolute(operand).is_ok_and(|operand| operand == item.original_path);
     }
-    operand.as_os_str() == item.file_name().as_str()
+    // Compared as `OsStr`, not through `Item::file_name`: that is lossy, and a
+    // name whose bytes are not valid UTF-8 — which Linux filesystems allow —
+    // would then silently match nothing.
+    item.original_path.file_name() == Some(operand.as_os_str())
 }
 
 fn json_line(item: &Item) -> String {

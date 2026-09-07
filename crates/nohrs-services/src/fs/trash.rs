@@ -117,8 +117,8 @@ impl Store for LedgerStore {
     /// directory that does not exist is the one case left alone, because
     /// "empty" and "misconfigured" are indistinguishable from here.
     fn list(&mut self) -> Result<Vec<Item>> {
-        // Already ordered most recently trashed first, with the row id breaking
-        // ties a timestamp cannot.
+        // Ordered most recently trashed first, with the row id breaking ties a
+        // timestamp cannot.
         let records = self
             .ledger
             .entries()
@@ -130,7 +130,12 @@ impl Store for LedgerStore {
         let mut items = Vec::new();
         let mut lost = Vec::new();
         let mut located = HashMap::new();
-        for record in records {
+        // Claimed *oldest* first, because that is the order the trash named them
+        // in: the first arrival keeps the original name and later ones are
+        // renamed. So when two rows could take the same entry and the clock is
+        // too coarse to separate them, the older row takes the original name —
+        // which is what actually happened.
+        for record in records.into_iter().rev() {
             match locate(&record.entry, &entries, &claimed) {
                 Some(entry) => {
                     claimed.insert(entry.path.as_path());
@@ -153,9 +158,19 @@ impl Store for LedgerStore {
             }
         }
         self.located = located;
-        if prunable {
+        if prunable && !lost.is_empty() {
+            // Not silent: an item trashed from another volume lands in that
+            // volume's own trash, which this store does not scan, so its row is
+            // dropped here even though the item still exists somewhere.
+            tracing::warn!(
+                rows = lost.len(),
+                trash_dir = %self.trash_dir.display(),
+                "dropping trash ledger rows whose items are not in this trash directory"
+            );
             forget_rows(&self.ledger, &lost)?;
         }
+        // Back to newest-first, the order every caller reports in.
+        items.reverse();
         Ok(items)
     }
 
@@ -354,6 +369,18 @@ pub fn home_trash_dir() -> Result<PathBuf> {
 pub fn capture(path: &Path) -> Result<TrashEntry> {
     let metadata = std::fs::symlink_metadata(path)?;
     let path = std::path::absolute(path)?;
+    // The ledger stores paths as text, so a path that is not valid UTF-8 could
+    // only be written after mangling it — and a mangled record restores to the
+    // wrong name. Refuse rather than corrupt. macOS, the only platform that
+    // uses the ledger, accepts only valid UTF-8 filenames, so this cannot
+    // trigger there; on a platform where it could, `ops::trash_path` turns it
+    // into a refused delete rather than an unrestorable one.
+    if path.to_str().is_none() {
+        return Err(Error::Other(format!(
+            "cannot record a path that is not valid UTF-8: {}",
+            path.display()
+        )));
+    }
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -462,7 +489,9 @@ fn locate<'a>(
 
 /// How far a candidate's arrival in the trash sits from when this row was
 /// written. `u64::MAX` when the platform reports no change time, which makes
-/// every candidate equally distant and leaves the decision to [`score`].
+/// every candidate equally distant and leaves the decision to [`score`] — as
+/// does a change time too coarse to separate two deletions. Both fall back on
+/// the claiming order in [`Store::list`], which is why that runs oldest-first.
 fn arrival_gap(entry: &TrashEntry, candidate: &Entry) -> u64 {
     match candidate.changed_ns {
         Some(changed) => changed.saturating_sub(entry.trashed_at).unsigned_abs(),
@@ -633,6 +662,26 @@ mod tests {
 
         assert!(entry.is_dir);
         assert_eq!(entry.size, 0, "a directory's own byte count is meaningless");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_refuses_a_path_it_could_only_record_by_mangling_it() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let fixture = Fixture::new();
+        let origin = fixture
+            .home
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"not-\xff-utf8"));
+        fs::write(&origin, "payload").unwrap();
+
+        let error = capture(&origin).unwrap_err().to_string();
+
+        assert!(
+            error.contains("not valid UTF-8"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -866,6 +915,47 @@ mod tests {
         let mut store = fixture.store();
 
         assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_clock_too_coarse_to_separate_arrivals_falls_back_to_the_naming_order() {
+        // Two entries the trash renamed on collision, on a filesystem whose
+        // change time cannot tell the two deletions apart.
+        fn entry(name: &str, changed_ns: Option<i64>) -> Entry {
+            Entry {
+                path: PathBuf::from("/trash").join(name),
+                file_name: name.to_string(),
+                is_dir: false,
+                size: 7,
+                modified_ns: Some(500),
+                changed_ns,
+            }
+        }
+        fn row(trashed_at: i64) -> TrashEntry {
+            TrashEntry {
+                original_path: PathBuf::from("/work/notes.txt"),
+                file_name: "notes.txt".to_string(),
+                size: 7,
+                modified_ns: Some(500),
+                trashed_at,
+                is_dir: false,
+            }
+        }
+        let entries = [
+            entry("notes.txt", Some(1_000)),
+            entry("notes 2.txt", Some(1_000)),
+        ];
+
+        // `Store::list` claims oldest-first, so replay that order here.
+        let mut claimed = HashSet::new();
+        let first = locate(&row(900), &entries, &claimed).unwrap();
+        assert_eq!(
+            first.file_name, "notes.txt",
+            "the first arrival is the one that kept the original name"
+        );
+        claimed.insert(first.path.as_path());
+        let second = locate(&row(950), &entries, &claimed).unwrap();
+        assert_eq!(second.file_name, "notes 2.txt");
     }
 
     #[test]

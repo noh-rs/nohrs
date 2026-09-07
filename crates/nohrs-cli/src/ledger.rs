@@ -36,7 +36,12 @@ pub fn open() -> Result<Arc<dyn TrashLedger>> {
 /// Open the ledger held in the database at `path`, creating its directory and
 /// running any pending migrations.
 pub fn open_at(path: &Path) -> Result<Arc<dyn TrashLedger>> {
-    if let Some(directory) = path.parent() {
+    // A bare file name has a parent, but it is empty, and `create_dir_all("")`
+    // fails — the database would then never be created.
+    if let Some(directory) = path
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+    {
         std::fs::create_dir_all(directory)?;
     }
     let store = SqliteStore::open(path, &StoreLogConfig::default())
