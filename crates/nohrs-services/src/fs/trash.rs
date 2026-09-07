@@ -582,13 +582,24 @@ fn renamed_from(original: &str, candidate: &str) -> bool {
 /// Whether `suffix` is one the trash appends to break a name collision: a
 /// counter (`2`) or a time of day (`10.30.15 AM`).
 fn is_collision_suffix(suffix: &str) -> bool {
-    if !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+    if is_counter(suffix) {
         return true;
     }
     match suffix.split_once(' ') {
         Some((clock, "AM" | "PM")) => is_clock(clock),
         _ => false,
     }
+}
+
+/// Whether `suffix` is a collision counter the trash could have written. It
+/// numbers the *second* arrival `2` and never pads, so `0`, `1` and `02` are
+/// names someone chose — and a file so named is one `locate` must not be free
+/// to restore over or purge in another's place.
+fn is_counter(suffix: &str) -> bool {
+    !suffix.is_empty()
+        && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        && !suffix.starts_with('0')
+        && suffix != "1"
 }
 
 /// Whether `clock` is a wall-clock time the trash could have written: a 12-hour
@@ -1081,6 +1092,13 @@ mod tests {
         assert!(!is_collision_suffix(""));
         assert!(!is_collision_suffix("backup"));
         assert!(!is_collision_suffix("2b"));
+        // The trash numbers the second arrival `2` and never pads, so these are
+        // names a person gave a neighbouring file.
+        assert!(!is_collision_suffix("0"));
+        assert!(!is_collision_suffix("1"));
+        assert!(!is_collision_suffix("02"));
+        assert!(!is_collision_suffix("007"));
+        assert!(is_collision_suffix("11"));
         assert!(!is_collision_suffix("10.30 AM"));
         assert!(!is_collision_suffix("10.30.15.20 AM"));
         assert!(!is_collision_suffix("10.30.15 XM"));
