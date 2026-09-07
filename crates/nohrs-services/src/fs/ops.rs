@@ -171,6 +171,77 @@ pub fn move_path(src: &Path, dst: &Path) -> Result<MoveKind> {
     }
 }
 
+/// Moves `src` to `dst` like [`move_path`], but fails instead of replacing
+/// anything that is already at `dst`.
+///
+/// Checking with [`would_conflict`] and then calling [`move_path`] is not the
+/// same thing: `rename(2)` replaces, so a file created in between is silently
+/// destroyed. Restoring from the trash writes to a path the user last saw empty
+/// minutes or days ago, which is exactly when something else may have taken it.
+///
+/// On Linux and macOS the rename itself carries the no-replace flag, so nothing
+/// can slip in. Elsewhere — and on filesystems that reject the flag — this
+/// degrades to the check-then-move it replaces, which is still no worse.
+pub fn move_path_no_replace(src: &Path, dst: &Path) -> Result<MoveKind> {
+    match rename_no_replace(src, dst) {
+        Some(Ok(())) => return Ok(MoveKind::Rename),
+        Some(Err(error)) if is_cross_device(&error) => {
+            copy_path_no_replace(src, dst)?;
+            delete_permanent(src)?;
+            return Ok(MoveKind::CrossVolume);
+        }
+        Some(Err(error)) => return Err(Error::Io(error)),
+        None => {}
+    }
+    if path_occupied(dst) {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} already exists", dst.display()),
+        )));
+    }
+    move_path(src, dst)
+}
+
+/// `rename(2)` with the platform's no-replace flag, or `None` where the
+/// platform or the filesystem does not offer one and the caller must fall back.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn rename_no_replace(src: &Path, dst: &Path) -> Option<std::io::Result<()>> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    match renameat_with(CWD, src, CWD, dst, RenameFlags::NOREPLACE) {
+        Ok(()) => Some(Ok(())),
+        // The flag reaches the filesystem driver, and not every driver
+        // implements it: overlayfs and some network mounts report `EINVAL`,
+        // a pre-4.9 kernel `ENOSYS`, a non-APFS macOS volume `ENOTSUP`.
+        Err(rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::NOTSUP) => {
+            None
+        }
+        Err(error) => Some(Err(std::io::Error::from(error))),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn rename_no_replace(_src: &Path, _dst: &Path) -> Option<std::io::Result<()>> {
+    None
+}
+
+// The cross-volume half of `move_path_no_replace`: `create_new` for a file and
+// `create_dir` for a directory both fail if the name is taken, so the
+// destination is claimed atomically before any byte is written.
+fn copy_path_no_replace(src: &Path, dst: &Path) -> Result<()> {
+    if fs::symlink_metadata(src)?.is_dir() {
+        fs::create_dir(dst)?;
+        copy_dir_all(src, dst)
+    } else {
+        let mut source = fs::File::open(src)?;
+        let mut destination = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dst)?;
+        std::io::copy(&mut source, &mut destination)?;
+        Ok(())
+    }
+}
+
 // Whether an IO error from `rename` indicates the source and destination are on
 // different devices, the signal to fall back to copy + delete.
 #[cfg(unix)]
@@ -346,6 +417,73 @@ mod tests {
         assert_eq!(kind, MoveKind::Rename);
         assert!(!src.exists());
         assert_eq!(fs::read_to_string(&dst).unwrap(), "payload");
+    }
+
+    #[test]
+    fn move_path_no_replace_moves_when_the_destination_is_free() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        fs::write(&src, "payload").unwrap();
+
+        assert_eq!(move_path_no_replace(&src, &dst).unwrap(), MoveKind::Rename);
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "payload");
+    }
+
+    #[test]
+    fn move_path_no_replace_refuses_an_occupied_destination() {
+        // The difference from `move_path` that restoring depends on: whatever
+        // is already there survives, and the source is still where it was.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        fs::write(&src, "restored").unwrap();
+        fs::write(&dst, "newer").unwrap();
+
+        let error = move_path_no_replace(&src, &dst).unwrap_err();
+
+        assert!(
+            matches!(&error, Error::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "newer");
+        assert_eq!(fs::read_to_string(&src).unwrap(), "restored");
+    }
+
+    #[test]
+    fn move_path_no_replace_refuses_an_occupied_directory_destination() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("inside.txt"), "mine").unwrap();
+        fs::create_dir(&dst).unwrap();
+        fs::write(dst.join("theirs.txt"), "theirs").unwrap();
+
+        assert!(move_path_no_replace(&src, &dst).is_err());
+
+        assert!(dst.join("theirs.txt").is_file());
+        assert!(!dst.join("inside.txt").exists());
+        assert!(src.join("inside.txt").is_file());
+    }
+
+    #[test]
+    fn move_path_no_replace_copies_a_tree_when_the_destination_is_free() {
+        // Exercises the cross-volume half directly: one filesystem in a test
+        // means `rename` never returns `EXDEV`, so call the copy itself.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("top.txt"), "top").unwrap();
+        let dst = dir.path().join("dst");
+
+        copy_path_no_replace(&src, &dst).unwrap();
+        assert_eq!(fs::read_to_string(dst.join("top.txt")).unwrap(), "top");
+
+        // And refuses once the name is taken, which is what keeps the fallback
+        // path as safe as the rename.
+        assert!(copy_path_no_replace(&src, &dst).is_err());
     }
 
     #[test]

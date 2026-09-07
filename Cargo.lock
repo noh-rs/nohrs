@@ -4140,6 +4140,7 @@ dependencies = [
  "notify 8.2.0",
  "notify-debouncer-mini",
  "postage",
+ "rustix 1.1.4",
  "serde",
  "syntect",
  "tantivy",

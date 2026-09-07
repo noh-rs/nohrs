@@ -178,7 +178,10 @@ impl Store for LedgerStore {
         let source = self.source_of(item)?;
         let (row, source) = (source.row, source.path.clone());
         let destination = free_destination(&item.original_path)?;
-        ops::move_path(&source, &destination)?;
+        // `free_destination` reports an occupied path in the words the CLI
+        // wants; this makes the move itself refuse one, so nothing that appears
+        // between the two is overwritten.
+        ops::move_path_no_replace(&source, &destination).map_err(occupied_destination)?;
         self.forget(item, row)
     }
 
@@ -408,16 +411,28 @@ fn unix_nanos(time: SystemTime) -> Option<i64> {
     }
 }
 
+/// What the CLI says when the original location is taken. The path is not part
+/// of it: `noh trash` prefixes every diagnostic with the operand it is about.
+const DESTINATION_OCCUPIED: &str =
+    "something else is at the original location; move it aside first";
+
+/// Restates a move that lost the race for the destination in the same words
+/// [`free_destination`] uses, so the user cannot tell which check caught it.
+fn occupied_destination(error: Error) -> Error {
+    match &error {
+        Error::Io(io) if io.kind() == io::ErrorKind::AlreadyExists => {
+            Error::Other(DESTINATION_OCCUPIED.to_string())
+        }
+        _ => error,
+    }
+}
+
 /// Where a restore should land: the original path, refusing to overwrite
 /// whatever occupies it now and recreating the directory it lived in if that has
 /// since been removed.
 fn free_destination(original: &Path) -> Result<PathBuf> {
     if ops::would_conflict(original) {
-        // The path, not the message, is the caller's to report: `noh trash`
-        // prefixes every diagnostic with the operand it is about.
-        return Err(Error::Other(
-            "something else is at the original location; move it aside first".to_string(),
-        ));
+        return Err(Error::Other(DESTINATION_OCCUPIED.to_string()));
     }
     let parent = original
         .parent()
@@ -538,8 +553,14 @@ fn score(entry: &TrashEntry, candidate: &Entry) -> Option<u32> {
     Some(score)
 }
 
-/// Whether `candidate` looks like the trash's renaming of `original`: the same
-/// extension, and a stem the original's is a prefix of.
+/// Whether `candidate` looks like the trash's renaming of `original`.
+///
+/// The trash only ever appends to the stem, and only in the two forms it uses
+/// to break a name collision: a counter (`notes 2.txt`) or the time of day
+/// (`notes 10.30.15 AM.txt`). Both put a space between the original stem and
+/// what follows, so that space is what this requires — without it any file
+/// whose name merely starts the same (`notes-backup.txt`, `notes_old.txt`)
+/// would be a candidate for restoring `notes.txt` over.
 fn renamed_from(original: &str, candidate: &str) -> bool {
     let original = Path::new(original);
     let candidate = Path::new(candidate);
@@ -551,7 +572,11 @@ fn renamed_from(original: &str, candidate: &str) -> bool {
         candidate.file_stem().and_then(|stem| stem.to_str()),
     ) {
         (Some(original), Some(candidate)) => {
-            !original.is_empty() && candidate.starts_with(original)
+            !original.is_empty()
+                && candidate
+                    .strip_prefix(original)
+                    .and_then(|suffix| suffix.strip_prefix(' '))
+                    .is_some_and(|suffix| !suffix.is_empty())
         }
         _ => false,
     }
@@ -813,6 +838,29 @@ mod tests {
     }
 
     #[test]
+    fn losing_the_race_for_the_destination_reads_like_finding_it_taken() {
+        // The move refuses a destination that appeared after `free_destination`
+        // looked. That arrives as a raw `AlreadyExists`, and the user should not
+        // have to tell the two checks apart.
+        let raced = occupied_destination(Error::Io(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "/work/notes.txt already exists",
+        )));
+        assert!(raced.to_string().contains(DESTINATION_OCCUPIED), "{raced}");
+        assert!(
+            !raced.to_string().contains("already exists"),
+            "the raw IO error should not reach the user: {raced}"
+        );
+
+        // Anything else is passed through untouched.
+        let other = occupied_destination(Error::Io(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "denied",
+        )));
+        assert!(other.to_string().contains("denied"), "{other}");
+    }
+
+    #[test]
     fn a_directory_survives_the_round_trip() {
         let fixture = Fixture::new();
         let origin = fixture.trash_directory("project");
@@ -965,6 +1013,43 @@ mod tests {
         assert!(!renamed_from("notes.txt", "notes 2.md"));
         assert!(!renamed_from("notes.txt", "other.txt"));
         assert!(!renamed_from("notes.txt", "notes.txt.bak"));
+    }
+
+    #[test]
+    fn a_file_that_merely_starts_the_same_is_not_a_renaming() {
+        // The trash separates its suffix with a space. Without that check any
+        // longer name would match, and `locate` could restore a neighbouring
+        // file of the same size over the deleted one.
+        assert!(!renamed_from("notes.txt", "notes-backup.txt"));
+        assert!(!renamed_from("notes.txt", "notes_old.txt"));
+        assert!(!renamed_from("notes.txt", "notes2.txt"));
+        // The identical name is `score`'s exact-match branch, not a renaming.
+        assert!(!renamed_from("notes.txt", "notes.txt"));
+        assert!(!renamed_from("notes.txt", "notes .txt"));
+    }
+
+    #[test]
+    fn a_neighbour_of_the_same_size_is_never_restored_in_place_of_the_deletion() {
+        // `notes-backup.txt` was in the trash first, so it is the nearer
+        // arrival; only the name rules it out.
+        let entries = [Entry {
+            path: PathBuf::from("/trash/notes-backup.txt"),
+            file_name: "notes-backup.txt".to_string(),
+            is_dir: false,
+            size: 7,
+            modified_ns: Some(500),
+            changed_ns: Some(1_000),
+        }];
+        let row = TrashEntry {
+            original_path: PathBuf::from("/work/notes.txt"),
+            file_name: "notes.txt".to_string(),
+            size: 7,
+            modified_ns: Some(500),
+            trashed_at: 1_000,
+            is_dir: false,
+        };
+
+        assert!(locate(&row, &entries, &HashSet::new()).is_none());
     }
 
     #[test]
