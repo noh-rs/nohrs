@@ -44,6 +44,11 @@ pub fn cache_home() -> PathBuf {
     xdg_base("XDG_CACHE_HOME", ".cache")
 }
 
+/// `$XDG_STATE_HOME` or `~/.local/state`.
+pub fn state_home() -> PathBuf {
+    xdg_base("XDG_STATE_HOME", ".local/state")
+}
+
 /// The nohrs config directory (`.../nohrs`).
 pub fn config_dir() -> PathBuf {
     config_home().join(APP_DIR)
@@ -57,6 +62,21 @@ pub fn data_dir() -> PathBuf {
 /// The nohrs cache directory (`.../nohrs`).
 pub fn cache_dir() -> PathBuf {
     cache_home().join(APP_DIR)
+}
+
+/// The nohrs state directory (`.../nohrs`).
+///
+/// State is what a user would keep across restarts but would not miss if it
+/// were lost, and would not want backed up: logs go here rather than in
+/// [`data_dir`] beside the databases, or [`cache_dir`], which a cleaner may
+/// empty at any moment.
+pub fn state_dir() -> PathBuf {
+    state_home().join(APP_DIR)
+}
+
+/// Directory holding the rolling log files (`.../nohrs/logs`).
+pub fn log_dir() -> PathBuf {
+    state_dir().join("logs")
 }
 
 /// Full path to `config.toml`.
@@ -113,14 +133,32 @@ mod tests {
         unsafe { std::env::set_var("XDG_DATA_HOME", "/tmp/data") };
         // TODO: Audit that the environment access only happens in single-threaded code.
         unsafe { std::env::set_var("XDG_CACHE_HOME", "/tmp/cache") };
-        let (config, data, cache) = (config_home(), data_home(), cache_home());
-        for key in ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"] {
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("XDG_STATE_HOME", "/tmp/state") };
+        let (config, data, cache, state) = (config_home(), data_home(), cache_home(), state_home());
+        for key in [
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+        ] {
             // TODO: Audit that the environment access only happens in single-threaded code.
             unsafe { std::env::remove_var(key) };
         }
         assert_eq!(config, PathBuf::from("/tmp/cfg"));
         assert_eq!(data, PathBuf::from("/tmp/data"));
         assert_eq!(cache, PathBuf::from("/tmp/cache"));
+        assert_eq!(state, PathBuf::from("/tmp/state"));
+    }
+
+    #[test]
+    fn logs_live_under_the_state_directory() {
+        // Not under `data_dir` (backed up beside the databases) and not under
+        // `cache_dir` (a cleaner may empty it while nohrs is running).
+        let _guard = env_lock();
+        let logs = log_dir();
+        assert!(logs.ends_with("nohrs/logs"), "{}", logs.display());
+        assert!(logs.starts_with(state_home()), "{}", logs.display());
     }
 
     #[test]

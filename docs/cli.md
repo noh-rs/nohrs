@@ -1,7 +1,7 @@
 # CLI — `noh`
 
 > Status: Draft (P2 で `rm` を実装、以降コマンドを追加)
-> Related: [`ROADMAP.md`](./ROADMAP.md), [`explorer-essentials.md`](./explorer-essentials.md), [`architecture.md`](./architecture.md)
+> Related: [`ROADMAP.md`](./ROADMAP.md), [`explorer-essentials.md`](./explorer-essentials.md), [`architecture.md`](./architecture.md), [`logging.md`](./logging.md)
 
 `noh` (crate としては `nohrs-cli`) は nohrs の**ターミナル側の入口**です。GUI (`nohrs` バイナリ) と同じファイル操作
 (`nohrs-services::fs::ops`) をシェルから使えるようにするもので、gpui に依存しないため
@@ -59,3 +59,32 @@ symlink を使わない場合は `noh rm ...` と明示的に呼べます。
   実際の `trash::delete` を呼べないため、テストは記録用のフェイク実装で「何を消そうとしたか」を検証します。
 - オペランドは削除前に絶対パスへ解決します (`std::path::absolute`)。ゴミ箱はプロセスの作業ディレクトリを
   前提にできないため。symlink は解決しません。
+
+---
+
+## 2. `noh log`
+
+nohrs が自分について記録したものを読み返します。GUI は stderr の行き先が無いので、CLI と GUI は
+共通のローリングファイル (`$XDG_STATE_HOME/nohrs/logs/`) に JSON Lines で追記しており、
+このコマンドがその読み手です。詳細は [`logging.md`](./logging.md)。
+
+| コマンド | 動作 |
+|---------|------|
+| `noh log show [-n N]` | 直近 N 件 (既定 50) を整形して出力 |
+| `noh log show --ops` | **完了した操作だけ**を、所要時間つきで出力 |
+| `noh log show --json` | 生の JSON Lines をそのまま出力 (`jq` に流す用) |
+| `noh log path` | ログディレクトリと現存するファイルを出力 |
+| `noh log clear [--force]` | ログファイルを削除。`--force` 無しでは件数を報告するだけ |
+
+`--ops` の出力は「何がどれだけかかったか」の一覧です。
+
+```
+14:22:47  fs.trash                      696µs path=/work/notes.txt
+14:22:49  search.query                 12.2ms query=report scope=Home
+```
+
+計測対象は `#[tracing::instrument(target = "nohrs::op", …)]` の付いた操作すべてで、
+ファイル操作・ディレクトリ一覧・検索・インデックス作成が既に含まれます。新しい操作を
+一覧に載せるには属性を 1 つ足すだけです ([`logging.md`](./logging.md) §2)。
+
+ログファイルが 1 つも無い場合 (初回起動直後など) はその旨を報告し、終了コードは 0 です。

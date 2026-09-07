@@ -122,6 +122,7 @@ pub fn unique_name(dir: &Path, name: &str) -> String {
 /// Recursively copies `src` (a file or directory) to `dst`, where `dst` is the
 /// full destination path rather than its parent directory. Missing parent
 /// directories are created; an existing destination file is overwritten.
+#[tracing::instrument(target = "nohrs::op", name = "fs.copy", level = "debug", skip_all, fields(src = %src.display(), dst = %dst.display()))]
 pub fn copy_path(src: &Path, dst: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(src)?;
     if metadata.is_dir() {
@@ -157,6 +158,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
 /// Moves `src` to `dst`. Uses `rename(2)` when both reside on the same
 /// filesystem; otherwise (a cross-volume move) copies `src` recursively to
 /// `dst` and then removes the source, reporting which path was taken.
+#[tracing::instrument(target = "nohrs::op", name = "fs.move", level = "debug", skip_all, fields(src = %src.display(), dst = %dst.display()))]
 pub fn move_path(src: &Path, dst: &Path) -> Result<MoveKind> {
     match fs::rename(src, dst) {
         Ok(()) => Ok(MoveKind::Rename),
@@ -190,6 +192,7 @@ fn is_cross_device(_error: &std::io::Error) -> bool {
 
 /// Renames `src` to `new_name` within its current directory, returning the new
 /// full path. `new_name` must be a bare file name, not a path with separators.
+#[tracing::instrument(target = "nohrs::op", name = "fs.rename", level = "debug", skip_all, fields(src = %src.display(), new_name))]
 pub fn rename_in_place(src: &Path, new_name: &str) -> Result<PathBuf> {
     ensure_plain_name(new_name)?;
     let parent = src.parent().ok_or_else(|| {
@@ -205,6 +208,7 @@ pub fn rename_in_place(src: &Path, new_name: &str) -> Result<PathBuf> {
 
 /// Creates a new directory named `name` inside `parent`, returning its full
 /// path. Fails if a file or directory of that name already exists.
+#[tracing::instrument(target = "nohrs::op", name = "fs.create_dir", level = "debug", skip_all, fields(parent = %parent.display(), name))]
 pub fn create_dir(parent: &Path, name: &str) -> Result<PathBuf> {
     ensure_plain_name(name)?;
     let dst = parent.join(name);
@@ -213,12 +217,14 @@ pub fn create_dir(parent: &Path, name: &str) -> Result<PathBuf> {
 }
 
 /// Moves `path` to the operating system's trash/recycle bin.
+#[tracing::instrument(target = "nohrs::op", name = "fs.trash", level = "debug", skip_all, fields(path = %path.display()))]
 pub fn trash_path(path: &Path) -> Result<()> {
     trash::delete(path).map_err(|error| Error::Other(format!("failed to move to trash: {error}")))
 }
 
 /// Permanently deletes `path`, whether it is a file, symlink, or directory
 /// tree. This cannot be undone.
+#[tracing::instrument(target = "nohrs::op", name = "fs.delete", level = "debug", skip_all, fields(path = %path.display()))]
 pub fn delete_permanent(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.is_dir() {

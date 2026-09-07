@@ -6,6 +6,8 @@
 //! installed *in front of* the system `rm` by symlinking the binary under that
 //! name earlier on `PATH`; [`Invocation`] picks the entry point from argv[0].
 
+/// `log`: read back the rolling log file nohrs writes about itself.
+pub mod log;
 /// `rm`: trash-by-default removal.
 pub mod rm;
 
@@ -40,6 +42,10 @@ pub enum Command {
     /// Remove files and directories, moving them to the trash unless
     /// `--permanent` is given.
     Rm(rm::Args),
+    /// Show what nohrs recorded about itself, including how long each
+    /// operation took.
+    #[command(subcommand)]
+    Log(log::Command),
 }
 
 /// Entry point for a binary invoked through an `rm` symlink, where there is no
@@ -103,6 +109,9 @@ impl Invocation {
                 command: Command::Rm(args),
             })
             | Invocation::Rm(RmCli { args }) => run_rm(args),
+            Invocation::Direct(Cli {
+                command: Command::Log(command),
+            }) => run_log(command),
         }
     }
 }
@@ -126,6 +135,13 @@ fn run_rm(args: &rm::Args) -> io::Result<u8> {
     Ok(summary.exit_code())
 }
 
+fn run_log(command: &log::Command) -> io::Result<u8> {
+    let directory = nohrs_core::config::paths::log_dir();
+    let mut output = io::stdout().lock();
+    let summary = log::Session::new(&directory, &mut output).run(command)?;
+    Ok(summary.exit_code())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -143,6 +159,7 @@ mod tests {
                 command: Command::Rm(args),
             })
             | Invocation::Rm(RmCli { args }) => args,
+            other => panic!("expected an rm invocation, got {other:?}"),
         }
     }
 

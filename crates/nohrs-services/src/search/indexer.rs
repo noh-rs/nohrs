@@ -95,6 +95,12 @@ impl IndexManager {
     // writer() helper removed as we use shared writer
 
     /// Indexes the content root from scratch, reporting progress through `progress_tx` if given.
+    #[tracing::instrument(
+        target = "nohrs::op",
+        name = "index.build_home",
+        level = "debug",
+        skip_all
+    )]
     pub fn index_home(&self, mut progress_tx: Option<postage::watch::Sender<f32>>) -> Result<()> {
         let mut writer_guard = self
             .writer
@@ -261,6 +267,7 @@ impl IndexManager {
     }
 
     /// Removes the document for `path` from the index and commits.
+    #[tracing::instrument(target = "nohrs::op", name = "index.remove", level = "debug", skip_all, fields(path = %path.display()))]
     pub fn remove_file(&self, path: &Path) -> Result<()> {
         let mut writer_guard = self
             .writer
@@ -283,6 +290,7 @@ impl IndexManager {
     }
 
     /// Re-indexes or removes each of `paths` (depending on existence) and commits once.
+    #[tracing::instrument(target = "nohrs::op", name = "index.process_changes", level = "debug", skip_all, fields(paths = paths.len()))]
     pub fn process_changes(&self, paths: &[PathBuf]) -> Result<()> {
         let mut writer_guard = self
             .writer

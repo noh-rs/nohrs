@@ -5,8 +5,13 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use nohrs_cli::Invocation;
+use nohrs_core::telemetry::logging::{FileLogConfig, init_logging_with_file};
 
 fn main() -> ExitCode {
+    // The CLI records to the same rolling file the GUI writes, so `noh log`
+    // shows what was done from either side. Bound to a name, not `_`: dropping
+    // the guard would stop the writer before the command has run.
+    let _log_guard = init_logging_with_file(&FileLogConfig::default());
     match Invocation::parse_from(std::env::args_os()).run() {
         Ok(code) => ExitCode::from(code),
         Err(error) => report_failure(&error),
