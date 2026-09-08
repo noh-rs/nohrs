@@ -33,6 +33,58 @@
 
 新しい永続データを追加するときは必ずこの基準で配置先を決める。判断に迷う「とりあえず DB」を避け、SQL 表現力を実際に使うものだけを SQLite に集約する。
 
+### 1.2 SQLite を残すかは P3 で再評価する
+
+**§1.1 の基準そのものが、実は 2 つのストアを区別できていない。** 基準は「範囲・差分・順序・二次インデックスで引くなら SQLite」と言っており、その意味では P2 の実装は確かに基準を満たしています — `list_changed_since` は差分と範囲、`list_children` は順序、`find_by_inode` は二次インデックス、`history.list` は時刻順を使っています。
+
+問題は、**そのどれもが B-tree の性質であって SQL エンジンの性質ではない**ことです。redb も順序付きキーと範囲スキャンを持ち、二次インデックスも (自前整合が要るとはいえ) 表現できます。基準が本当に問うべきなのは「キー完全一致以外か」ではなく「**クエリプランナと関係演算子が要るか**」で、その意味での SQL 表現力は P2 時点で一度も使われていません。
+
+数える対象は `crates/nohrs-store/src/sqlite.rs` の実行時 SQL と `crates/nohrs-store/migrations/001_init.sql` のスキーマ文 (P2 時点で存在する唯一のマイグレーション) の 2 つ。
+
+| 対象 | 文数 | 内訳 |
+|------|------|------|
+| 実行時 SQL (`sqlite.rs`) | **13** | `PRAGMA journal_mode=WAL` 1 / `_migrations` の作成・照会・記録 3 / `files` 7 / `history` 2 |
+| スキーマ (`001_init.sql`) | **5** | `CREATE TABLE` 2 / `CREATE INDEX` 3 |
+| うち `JOIN` / `GROUP BY` / `HAVING` / `UNION` | **0** | 両方の対象を合わせて 0 |
+| うちサブクエリ | **1** | 実行時の `SELECT EXISTS(SELECT 1 FROM _migrations …)` のみ |
+
+数え方は「ソースに文字列として書かれた SQL 文」です。ドライバが暗黙に発行するもの — `pragma_update` 経由の
+`PRAGMA synchronous=NORMAL` (`sqlite.rs:58`) と、`connection.transaction()` / `commit()` が出す `BEGIN` / `COMMIT`
+(`sqlite.rs:129`, `:135`) — は**対象外**です。数えているのは「どんな問い合わせを書いたか」であって、
+発行されたステートメント数ではありません。
+
+全クエリが「点引き」「インデックス付き等価スキャン」「順序付き範囲スキャン」のいずれかで、クエリプランナが仕事をする場面が無い。一方で SQLite は次のコストを持ち込んでいる。
+
+- `sqlite3.c` は **9.1 MB の C ソース**、`libsqlite3-sys` の再ビルドに **約 40 秒**
+- 非 Rust ツールチェーンへの依存。実例として `libsqlite3-sys 0.38` は `cfg_select!` を要求するため、rustc が古い環境ではクレートがビルドできない
+
+つまり現状は「B-tree と順序と ACID のためだけに SQL エンジンを積んでいる」状態で、これは redb で置き換えられる。redb のキーは順序を持ち範囲スキャンができるため、`history` は連結キーで表現できる。ただし**キーの一意性は自分で担保する必要がある**: `(kind, occurred_at)` は一意ではなく (`history.id` が主キー、`occurred_at` は同一値を取りうる)、これをキーにすると同 kind・同時刻の 2 件が上書きで消える。したがって
+
+- キーは `(kind, occurred_at, id)` とし、`id` は SQLite の `INTEGER PRIMARY KEY` が担っていた**単調増加の採番を redb 側に持たせる** (採番用テーブルに次の値を持ち、書き込みと同一トランザクションで進める)。`HistoryEntry` は現状 `id` を持たないので、この採番を追加するのが移行の前提になる
+- `list` の「新しい順」は `range((kind, i64::MIN, 0)..=(kind, i64::MAX, i64::MAX))` を `.rev()` で走査して満たす。同時刻のタイブレークは `id` の降順、すなわち**後に記録された方が先**に来る
+
+  ここは SQLite と**同じ挙動にならない**ので、移行時に意識が要ります。現在の `HistoryStore::list` は
+  `ORDER BY occurred_at DESC` だけで、**同一 `occurred_at` の順序をクエリが規定していません**。実際には
+  `idx_history_kind_time(kind, occurred_at DESC)` を走査するため rowid 昇順、つまり**先に記録された方が先**に
+  出ますが、それはプラン依存の実装詳細で保証ではありません。redb 版は順序を*定義する*ぶん改善ですが、
+  向きが逆になります。順序を安定させたいなら SQLite 側も `ORDER BY occurred_at DESC, id DESC` にすべきで、
+  どちらの向きを正とするかは P3 の再検討で決めます (この PR はドキュメントのみなのでクエリは変更しません)
+
+`files` は二次インデックス (`parent_path` / `inode` / `mtime_ns`) を自前でトランザクション内整合させる必要がある。
+
+**それでも P2 では変更しない。** 理由は 2 つ。
+
+1. **この判断は可逆で、バックエンドは trait の裏に隠れている。** `MetadataQuery` / `MetadataStore` / `HistoryStore` / `KvStore` はいずれも trait として宣言されており、差し替えは `nohrs-store` に閉じる。ただし P2 時点で実際に `Arc<dyn _>` として呼び出し側へ配線されているのは `KvStore` だけで (`nohrs/src/app.rs`)、メタデータと履歴はまだ利用側が無い。**利用側が増える前に決めるほど差し替えは安い**、というのがここでの含意。
+2. **本命のワークロードがまだ無い。** この DB を本気で叩くのは P3 のメタデータインデクサで、数十万エントリの更新において自前二次インデックスが SQLite の B-tree に勝つかは、そのコード無しには測れない。いま決めるのは目隠しで決めること。
+
+**P3 のインデクサ実装後に、以下を実測したうえで再検討する。**
+
+- 数十万エントリの初回インデックス構築と差分更新のスループット (SQLite WAL vs redb)
+- ウォッチャの高頻度更新と読み取りの競合
+- `JOIN` が本当に必要になったか (undo が `trash` と `history` を結合する時点が最初の候補)
+
+再検討の結果 SQLite を残すなら、その根拠をこの節に記録する。redb 一本化に倒すなら `state.redb` へ統合し、§1 の表と §2 を差し替える。開発時に `sqlite3` CLI で DB を覗ける利点は失われるので、代替の検査手段 (`noh` 側のダンプコマンド等) をセットで用意すること。
+
 ---
 
 ## 2. SQLite (rusqlite)
@@ -41,10 +93,11 @@
 
 ```toml
 [dependencies]
-rusqlite = { version = "0.31", features = ["bundled", "blob"] }
+rusqlite = { version = "0.40", features = ["bundled", "blob", "trace"] }
 ```
 
 - `bundled` で SQLite 自体を vendoring (システム SQLite に依存しない、docker/nix 安定)
+- `trace` は §5 の遅いクエリ検出 (`StoreLogConfig::slow_query_ms`) が使う
 - WAL モード (`PRAGMA journal_mode=WAL`) で single writer + many readers
 - `cx.background_spawn` 経由で UI 層から async に見せる
 - tokio 依存なし
@@ -156,7 +209,7 @@ fn migrate(conn: &Connection) -> Result<()> {
 
 ```toml
 [dependencies]
-redb = "2"
+redb = "4"
 ```
 
 - ACID + MVCC、SQLite と同じく WAL 風 crash recovery
