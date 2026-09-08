@@ -171,10 +171,18 @@ pub fn init_logging_with_file(config: &FileLogConfig) -> LogGuard {
 /// `None` means the date could not be formatted, which leaves the caller to
 /// treat every file as closed — the behaviour before this existed.
 pub fn current_log_file_name() -> Option<String> {
-    let format = time::macros::format_description!("[year]-[month]-[day]");
-    let date = time::OffsetDateTime::now_utc().format(&format).log_err()?;
+    log_file_name_for(time::OffsetDateTime::now_utc().date())
+}
+
+/// The name the appender gives the file for `date`.
+fn log_file_name_for(date: time::Date) -> Option<String> {
+    let date = date.format(FILE_DATE_FORMAT).log_err()?;
     Some(format!("{LOG_FILE_PREFIX}.{date}"))
 }
+
+/// How `tracing-appender` spells the date it appends under daily rotation.
+const FILE_DATE_FORMAT: &[time::format_description::FormatItem<'static>] =
+    time::macros::format_description!("[year]-[month]-[day]");
 
 /// Whether `name` is one the appender itself wrote.
 ///
@@ -182,19 +190,13 @@ pub fn current_log_file_name() -> Option<String> {
 /// it would hand `noh log clear` a hand-made `nohrs.log.backup` to unlink, and
 /// `noh log show` someone's saved copy to parse. The appender only ever writes
 /// `<prefix>.<yyyy-mm-dd>`, so that is the whole shape.
+///
+/// The date is parsed rather than pattern-matched, so a name shaped like a date
+/// but not naming a day — `nohrs.log.2026-02-31` — is somebody's file, not ours.
 pub fn is_log_file_name(name: &str) -> bool {
-    let Some(date) = name
-        .strip_prefix(LOG_FILE_PREFIX)
+    name.strip_prefix(LOG_FILE_PREFIX)
         .and_then(|rest| rest.strip_prefix('.'))
-    else {
-        return false;
-    };
-    let bytes = date.as_bytes();
-    bytes.len() == "yyyy-mm-dd".len()
-        && bytes.iter().enumerate().all(|(index, byte)| match index {
-            4 | 7 => *byte == b'-',
-            _ => byte.is_ascii_digit(),
-        })
+        .is_some_and(|date| time::Date::parse(date, FILE_DATE_FORMAT).is_ok())
 }
 
 /// The stderr filter: `RUST_LOG` if set, `info` otherwise.
@@ -288,16 +290,21 @@ where
 /// record. That resolves itself: the marker is still on yesterday, so the very
 /// next write tightens. A bounded one-record window, rather than a day.
 ///
-/// The date comparison is what keeps this to one `read_dir` a day rather than
-/// one per record.
+/// Only the file the rollover just created is touched, not the whole directory:
+/// a `read_dir` per record would be thousands a second during indexing, and the
+/// older files were each tightened when they were the current one. The full scan
+/// stays at startup, where it also catches files an older build left behind.
 #[cfg(unix)]
 struct OwnerOnly<W> {
     inner: W,
     directory: PathBuf,
-    /// The last date whose files were successfully tightened. `None` until the
+    /// The last date whose file was successfully tightened. `None` until the
     /// first write, so startup never has to guess — including when it straddles
     /// midnight itself.
     restricted_on: Option<time::Date>,
+    /// The last date a failure was reported on, which is what stops the report
+    /// feeding itself. See [`OwnerOnly::write`].
+    reported_on: Option<time::Date>,
     /// Injected so the midnight boundary can be tested. It is the only
     /// interesting case here and there is no way to wait for it.
     now: Box<dyn FnMut() -> time::Date + Send>,
@@ -310,24 +317,63 @@ impl<W: std::io::Write> OwnerOnly<W> {
             inner,
             directory,
             restricted_on: None,
+            reported_on: None,
             now: Box::new(|| time::OffsetDateTime::now_utc().date()),
         }
+    }
+
+    /// Whether a failure on `today` is worth reporting, marking it reported.
+    ///
+    /// The limit is load-bearing rather than tidiness. This runs on the writer
+    /// thread, so a warning is itself a record, whose write comes back through
+    /// here — reporting every time would make each warning produce the next one,
+    /// a queue that never drains. Marking the day *before* the warning is
+    /// emitted is what breaks that: the second pass finds it already reported.
+    ///
+    /// Deliberately separate from `restricted_on`, which stays unset on failure
+    /// so the retries continue.
+    fn should_report(&mut self, today: time::Date) -> bool {
+        if self.reported_on == Some(today) {
+            return false;
+        }
+        self.reported_on = Some(today);
+        true
     }
 }
 
 #[cfg(unix)]
 impl<W: std::io::Write> std::io::Write for OwnerOnly<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        use std::os::unix::fs::PermissionsExt;
+
         let today = (self.now)();
         let rolled = self.restricted_on != Some(today);
         let written = self.inner.write(buf)?;
-        if rolled {
+        if !rolled {
+            return Ok(written);
+        }
+        let Some(name) = log_file_name_for(today) else {
+            return Ok(written);
+        };
+        let outcome = std::fs::set_permissions(
+            self.directory.join(name),
+            std::fs::Permissions::from_mode(0o600),
+        );
+        match outcome {
             // Only on success: marking the day done after a failed chmod would
             // suppress every retry and leave the new file at its umask mode
-            // until tomorrow.
-            if restrict_log_files(&self.directory).log_err().is_some() {
-                self.restricted_on = Some(today);
+            // until tomorrow. A persistent failure therefore costs one
+            // `set_permissions` per record — a single syscall, on a path that
+            // is usually failing fast, in a session whose log directory has
+            // already gone wrong.
+            Ok(()) => self.restricted_on = Some(today),
+            Err(error) if self.should_report(today) => {
+                tracing::warn!(
+                    "could not restrict the log file in {}: {error}",
+                    self.directory.display()
+                );
             }
+            Err(_) => {}
         }
         Ok(written)
     }
@@ -464,6 +510,12 @@ mod tests {
             "nohrs.log.2026-9-07",
             "nohrs.log.2026-09-07.gz",
             "notes.txt",
+            // Shaped like a date but not naming a day, so it is somebody's
+            // file, not one the appender wrote — and `clear` unlinks what this
+            // accepts.
+            "nohrs.log.2026-02-31",
+            "nohrs.log.2026-13-01",
+            "nohrs.log.2026-00-10",
         ] {
             assert!(!is_log_file_name(name), "{name} was taken for a log file");
         }
@@ -687,6 +739,7 @@ mod tests {
             },
             directory: scanned.to_path_buf(),
             restricted_on: None,
+            reported_on: None,
             now: Box::new(move || clock.date()),
         }
     }
@@ -759,6 +812,54 @@ mod tests {
         let rolled = scanned.join(format!("{LOG_FILE_PREFIX}.2026-09-01"));
         let mode = std::fs::metadata(&rolled).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the retry must happen on the same day");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_persistent_failure_is_reported_once_a_day_not_once_a_record() {
+        use std::io::Write;
+
+        // This runs on the writer thread, so a warning is itself a record whose
+        // write comes back through here. Reporting every time would make each
+        // warning produce the next one — a queue that never drains. The day
+        // marker is what breaks it, so it has to be set even though the
+        // tightening failed, and independently of `restricted_on`, which must
+        // stay unset so the retries continue.
+        let root = tempfile::tempdir().unwrap();
+        let absent = root.path().join("absent");
+        let written_to = root.path().join("written-to");
+        std::fs::create_dir_all(&written_to).unwrap();
+        // Two records on the same day, then one on the next.
+        let mut writer = wrapped_appender(&absent, &written_to, vec![1, 1, 1, 1, 2, 2]);
+
+        // Driven through the decision itself: whether the warning was *emitted*
+        // is not observable from outside `tracing`, and it is the count that
+        // matters here, not the marker's value.
+        assert!(
+            writer.should_report(date(1)),
+            "the first failure has to be reported"
+        );
+        assert!(
+            !writer.should_report(date(1)),
+            "a second failure on the same day must stay quiet, or the warning \
+             it emits comes back as the next record and reports again"
+        );
+        assert!(
+            writer.should_report(date(2)),
+            "a new day is worth reporting again"
+        );
+
+        // And through a real write, to pin that reporting never counts as done.
+        writer.write_all(b"a record").unwrap();
+        assert_eq!(
+            writer.restricted_on, None,
+            "a failure must not stop the retries"
+        );
+    }
+
+    #[cfg(unix)]
+    fn date(day: u8) -> time::Date {
+        time::Date::from_calendar_date(2026, time::Month::September, day).expect("a September day")
     }
 
     #[cfg(unix)]
