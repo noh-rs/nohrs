@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use redb::{Database, ReadableDatabase, TableDefinition, TableError};
 
-use crate::{KvOp, KvStore, Result, StoreLogConfig};
+use crate::{KvKey, KvOp, KvStore, Result, StoreLogConfig};
 
 /// The single host KV table. Keys are namespaced strings (e.g.
 /// `"window.position"`, `"session.tabs"`); values are opaque blobs the caller
@@ -47,11 +47,11 @@ impl RedbKvStore {
 }
 
 impl KvStore for RedbKvStore {
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+    fn get(&self, key: &KvKey) -> Result<Option<Vec<u8>>> {
         let started = Instant::now();
         let read_txn = self.database.begin_read()?;
         let value = match read_txn.open_table(HOST_KV) {
-            Ok(table) => table.get(key)?.map(|guard| guard.value().to_vec()),
+            Ok(table) => table.get(key.as_str())?.map(|guard| guard.value().to_vec()),
             // No writes have happened yet: an absent table means an absent key.
             Err(TableError::TableDoesNotExist(_)) => None,
             Err(error) => return Err(error.into()),
@@ -60,32 +60,36 @@ impl KvStore for RedbKvStore {
         Ok(value)
     }
 
-    fn put(&self, key: &str, value: &[u8]) -> Result<()> {
+    fn put(&self, key: &KvKey, value: &[u8]) -> Result<()> {
         let started = Instant::now();
         let write_txn = self.database.begin_write()?;
         {
             let mut table = write_txn.open_table(HOST_KV)?;
-            table.insert(key, value)?;
+            table.insert(key.as_str(), value)?;
         }
         write_txn.commit()?;
         self.trace("put", started);
         Ok(())
     }
 
-    fn delete(&self, key: &str) -> Result<()> {
+    fn delete(&self, key: &KvKey) -> Result<()> {
         let started = Instant::now();
         let write_txn = self.database.begin_write()?;
         {
             let mut table = write_txn.open_table(HOST_KV)?;
-            table.remove(key)?;
+            table.remove(key.as_str())?;
         }
         write_txn.commit()?;
         self.trace("delete", started);
         Ok(())
     }
 
-    fn list_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    fn list_namespace(&self, namespace: &str) -> Result<Vec<(KvKey, Vec<u8>)>> {
         let started = Instant::now();
+        // The trailing dot is what confines the scan to the namespace itself:
+        // scanning from `window` alone would also walk into a `window_backup`
+        // namespace, since `window_backup.x` sorts after `window`.
+        let prefix = format!("{namespace}.");
         let read_txn = self.database.begin_read()?;
         let table = match read_txn.open_table(HOST_KV) {
             Ok(table) => table,
@@ -94,15 +98,21 @@ impl KvStore for RedbKvStore {
         };
         let mut matches = Vec::new();
         // Keys are ordered, so once one stops matching the prefix none after it can.
-        for entry in table.range(prefix..)? {
+        for entry in table.range(prefix.as_str()..)? {
             let (key, value) = entry?;
             let key = key.value();
-            if !key.starts_with(prefix) {
+            if !key.starts_with(&prefix) {
                 break;
             }
-            matches.push((key.to_string(), value.value().to_vec()));
+            // Every key was a `KvKey` on the way in, so this only fails if the
+            // file was written by something else; such a row is not ours to
+            // return.
+            let Ok(key) = KvKey::parse(key) else {
+                continue;
+            };
+            matches.push((key, value.value().to_vec()));
         }
-        self.trace("list_prefix", started);
+        self.trace("list_namespace", started);
         Ok(matches)
     }
 
@@ -137,60 +147,88 @@ mod tests {
         RedbKvStore::open_in_memory(&StoreLogConfig::default()).unwrap()
     }
 
+    /// Shorthand for a compile-time-checked key in these tests.
+    macro_rules! key {
+        ($key:literal) => {
+            KvKey::from_static($key)
+        };
+    }
+
     #[test]
     fn get_missing_key_before_any_write() {
         let store = store();
-        assert_eq!(store.get("absent").unwrap(), None);
-        assert!(store.list_prefix("any").unwrap().is_empty());
+        assert_eq!(store.get(&key!("window.absent")).unwrap(), None);
+        assert!(store.list_namespace("window").unwrap().is_empty());
     }
 
     #[test]
     fn put_get_delete_round_trip() {
         let store = store();
-        store.put("window.position", b"1,2,3,4").unwrap();
-        assert_eq!(
-            store.get("window.position").unwrap().as_deref(),
-            Some(&b"1,2,3,4"[..])
-        );
-        store.delete("window.position").unwrap();
-        assert_eq!(store.get("window.position").unwrap(), None);
+        let key = key!("window.position");
+        store.put(&key, b"1,2,3,4").unwrap();
+        assert_eq!(store.get(&key).unwrap().as_deref(), Some(&b"1,2,3,4"[..]));
+        store.delete(&key).unwrap();
+        assert_eq!(store.get(&key).unwrap(), None);
     }
 
     #[test]
-    fn list_prefix_returns_only_matching_keys() {
+    fn list_namespace_returns_only_that_namespace() {
         let store = store();
-        store.put("session.tabs", b"a").unwrap();
-        store.put("session.active", b"b").unwrap();
-        store.put("window.position", b"c").unwrap();
-        let mut session = store.list_prefix("session.").unwrap();
+        store.put(&key!("session.tabs"), b"a").unwrap();
+        store.put(&key!("session.active"), b"b").unwrap();
+        store.put(&key!("window.position"), b"c").unwrap();
+        let mut session = store.list_namespace("session").unwrap();
         session.sort();
         assert_eq!(session.len(), 2);
-        assert_eq!(session[0].0, "session.active");
-        assert_eq!(session[1].0, "session.tabs");
+        assert_eq!(session[0].0.as_str(), "session.active");
+        assert_eq!(session[1].0.as_str(), "session.tabs");
+    }
+
+    #[test]
+    fn a_namespace_listing_does_not_straddle_into_a_longer_one() {
+        // `range("window"..)` would walk into `window_backup.*`, since it sorts
+        // after `window`. The trailing dot is what confines it — and this is the
+        // bug a free `list_prefix` invited.
+        let store = store();
+        store.put(&key!("window.position"), b"mine").unwrap();
+        store
+            .put(&key!("window_backup.position"), b"theirs")
+            .unwrap();
+
+        let listed = store.list_namespace("window").unwrap();
+
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].0.as_str(), "window.position");
     }
 
     #[test]
     fn batch_is_applied_atomically() {
         let store = store();
-        store.put("keep", b"x").unwrap();
+        store.put(&key!("session.keep"), b"x").unwrap();
         store
             .batch(vec![
                 KvOp::Put {
-                    key: "a".to_string(),
+                    key: key!("session.a"),
                     value: b"1".to_vec(),
                 },
                 KvOp::Put {
-                    key: "b".to_string(),
+                    key: key!("session.b"),
                     value: b"2".to_vec(),
                 },
                 KvOp::Delete {
-                    key: "keep".to_string(),
+                    key: key!("session.keep"),
                 },
             ])
             .unwrap();
-        assert_eq!(store.get("a").unwrap().as_deref(), Some(&b"1"[..]));
-        assert_eq!(store.get("b").unwrap().as_deref(), Some(&b"2"[..]));
-        assert_eq!(store.get("keep").unwrap(), None);
+        assert_eq!(
+            store.get(&key!("session.a")).unwrap().as_deref(),
+            Some(&b"1"[..])
+        );
+        assert_eq!(
+            store.get(&key!("session.b")).unwrap().as_deref(),
+            Some(&b"2"[..])
+        );
+        assert_eq!(store.get(&key!("session.keep")).unwrap(), None);
     }
 
     #[test]
@@ -200,15 +238,18 @@ mod tests {
             ..Default::default()
         };
         let store = RedbKvStore::open_in_memory(&log).unwrap();
-        store.put("k", b"v").unwrap();
+        store.put(&key!("window.k"), b"v").unwrap();
         store
             .batch(vec![KvOp::Put {
-                key: "x".to_string(),
+                key: key!("window.x"),
                 value: b"y".to_vec(),
             }])
             .unwrap();
-        assert_eq!(store.get("k").unwrap().as_deref(), Some(&b"v"[..]));
-        assert_eq!(store.list_prefix("").unwrap().len(), 2);
+        assert_eq!(
+            store.get(&key!("window.k")).unwrap().as_deref(),
+            Some(&b"v"[..])
+        );
+        assert_eq!(store.list_namespace("window").unwrap().len(), 2);
     }
 
     #[test]
@@ -217,11 +258,11 @@ mod tests {
         let path = dir.path().join("state.redb");
         {
             let store = RedbKvStore::open(&path, &StoreLogConfig::default()).unwrap();
-            store.put("session.tabs", b"restored").unwrap();
+            store.put(&key!("session.tabs"), b"restored").unwrap();
         }
         let reopened = RedbKvStore::open(&path, &StoreLogConfig::default()).unwrap();
         assert_eq!(
-            reopened.get("session.tabs").unwrap().as_deref(),
+            reopened.get(&key!("session.tabs")).unwrap().as_deref(),
             Some(&b"restored"[..])
         );
     }

@@ -159,14 +159,35 @@ redb = "2"
 // crates/nohrs-store/src/nohrs_store.rs (擬似コード)
 use redb::TableDefinition;
 
-// 単一テーブル。key は "window.position" / "session.tabs" 等の名前空間付き文字列。
+// 単一テーブル。key は `KvKey` (= "window.position" / "session.tabs")。
 const HOST_KV: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("kv");
 ```
 
 - `KvStore::get` / `put` / `delete` は `HOST_KV` への単純な点アクセス
-- `KvStore::list_prefix(prefix)` は `range(prefix..)` を走査し prefix 不一致で打ち切る
+- `KvStore::list_namespace(ns)` は `range("<ns>.".. )` を走査し prefix 不一致で打ち切る
 - `KvStore::batch(ops)` は 1 つの write transaction にまとめて atomic commit
 - value は JSON or MessagePack で serialize した blob (タブ群のスナップショット等)
+
+#### キーの名前空間は型で強制する
+
+key は `&str` ではなく **`KvKey`** です。`<namespace>.<name>` のドット区切りで、セグメントは
+1 つ以上・小文字 ASCII / 数字 / `_`。
+
+名前空間は「文字列の慣習」だった時期があり、それだと `put("tabs", …)` が普通にコンパイルされ、
+書けて読み戻せてしまいます。壊れるのは後から別の場所で、`list_*` が行を取りこぼす形です。
+そこで:
+
+| 作り方 | 検査 | 用途 |
+|--------|------|------|
+| `KvKey::from_static("session.explorer_tabs")` | **コンパイル時** (`const fn`) | サブシステムが持つ固定キー。ほぼ全部これ |
+| `KvKey::new(ns, name)` / `KvKey::parse(s)` | 実行時 (`Result`) | 実行時に組み立てるキー |
+
+`from_static` は `const fn` なので、`KvKey::from_static("tabs")` は実行時エラーではなく
+**ビルドエラー**になります。これが「規約」を規約以上のものにしている部分です。
+
+`list_namespace` が prefix ではなく名前空間を取るのも同じ理由です。自由な prefix だと
+`list_prefix("sess")` が `session.*` にたまたま一致し、`list_prefix("window")` は
+`window_backup.*` まで拾います。末尾のドットを内部で足すことで、走査は名前空間の中で閉じます。
 
 > **書き込み頻度に関する注意**: redb の commit はデフォルトで durable (fsync) なので、window ドラッグ等の高頻度更新を 1 操作ずつ `put` すると fsync が多発する。呼び出し側 (UI 層) で **debounce してから書く**、複数キーは `batch` でまとめる、を原則とする。
 
@@ -228,10 +249,10 @@ pub trait MetadataStore: MetadataQuery {
 }
 
 pub trait KvStore: Send + Sync {
-    fn get(&self, key: &str) -> Result<Option<Bytes>>;
-    fn put(&self, key: &str, value: &[u8]) -> Result<()>;
-    fn delete(&self, key: &str) -> Result<()>;
-    fn list_prefix(&self, prefix: &str) -> Result<Vec<(String, Bytes)>>;
+    fn get(&self, key: &KvKey) -> Result<Option<Bytes>>;
+    fn put(&self, key: &KvKey, value: &[u8]) -> Result<()>;
+    fn delete(&self, key: &KvKey) -> Result<()>;
+    fn list_namespace(&self, namespace: &str) -> Result<Vec<(KvKey, Bytes)>>;
     fn batch(&self, ops: Vec<KvOp>) -> Result<()>;
 }
 

@@ -17,7 +17,7 @@ use gpui_component::resizable::ResizableState;
 use nohrs_core::config::{Explorer as ExplorerConfig, SplitDirection, Ui};
 use nohrs_core::telemetry::LogErr;
 use nohrs_services::search::SearchService;
-use nohrs_store::KvStore;
+use nohrs_store::{KvKey, KvStore};
 use nohrs_ui::theme::theme;
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +31,7 @@ const PANES_CONTEXT: &str = "ExplorerPanes";
 
 // Host-KV key under which the tab session is persisted (`docs/persistence.md`
 // §3: tab/session restore lives in redb `state.redb`).
-const SESSION_KEY: &str = "session.explorer_tabs";
+const SESSION_KEY: KvKey = KvKey::from_static("session.explorer_tabs");
 
 // How long to coalesce rapid mutations (navigation, tab open/close) before
 // writing the session snapshot, so high-frequency changes don't hammer redb's
@@ -216,7 +216,7 @@ impl ExplorerPage {
 
     // Reads and deserializes the persisted session snapshot, if any.
     fn load_session(&self) -> Option<SessionSnapshot> {
-        let bytes = self.store.as_ref()?.get(SESSION_KEY).log_err()??;
+        let bytes = self.store.as_ref()?.get(&SESSION_KEY).log_err()??;
         serde_json::from_slice(&bytes).log_err()
     }
 
@@ -563,7 +563,7 @@ impl ExplorerPage {
                     return;
                 };
                 cx.background_spawn(async move {
-                    store.put(SESSION_KEY, &bytes).log_err();
+                    store.put(&SESSION_KEY, &bytes).log_err();
                 })
                 .await;
             }
