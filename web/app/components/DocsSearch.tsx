@@ -81,13 +81,18 @@ export function DocsSearch({ lang }: { lang: Lang }) {
     void (async () => {
       const pagefind = await load()
       if (!pagefind || cancelled) return
+      // The index covers both language trees, and the locale is only known
+      // once a result's data is fetched — so more than a page of results is
+      // resolved and the filter runs before the limit. Slicing to the limit
+      // first would show nothing whenever the top hits were all in the other
+      // language.
       const response = await pagefind.search(term)
-      const resolved = await Promise.all(response.results.slice(0, 8).map((result) => result.data()))
+      const resolved = await Promise.all(response.results.slice(0, 40).map((result) => result.data()))
       if (cancelled) return
       setHits(
         resolved
-          // Keep a Japanese reader in Japanese: the index covers both trees.
           .filter((entry) => entry.url.startsWith(`/${lang}/`))
+          .slice(0, 8)
           .map((entry, index) => ({
             id: `${index}-${entry.url}`,
             url: entry.url,
@@ -107,14 +112,16 @@ export function DocsSearch({ lang }: { lang: Lang }) {
         type="button"
         onClick={() => setOpen(true)}
         aria-label={strings.searchLabel}
-        className="hidden items-center gap-2 rounded-md border border-line px-3 py-[7px] font-mono text-xs whitespace-nowrap text-muted transition-colors duration-200 hover:border-tan hover:text-ink md:inline-flex"
+        // Shown at every width: `/` is the only other way in, and a phone has
+        // no key to press.
+        className="inline-flex items-center gap-2 rounded-md border border-line px-2.5 py-[7px] font-mono text-xs whitespace-nowrap text-muted transition-colors duration-200 hover:border-tan hover:text-ink md:px-3"
       >
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.4" />
           <path d="m10.5 10.5 3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
         </svg>
-        <span>{strings.searchShort}</span>
-        <span className="ml-2 opacity-60">/</span>
+        <span className="hidden sm:inline">{strings.searchShort}</span>
+        <span className="ml-2 hidden opacity-60 md:inline">/</span>
       </button>
 
       {open ? (

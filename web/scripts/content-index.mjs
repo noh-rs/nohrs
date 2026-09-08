@@ -26,7 +26,9 @@ function readCollection(lang, collection) {
       const slug = basename(name, '.mdx')
       const source = readFileSync(join(dir, name), 'utf8')
       const { data, body } = splitFrontmatter(source)
-      return { slug, lang, collection, body, ...data }
+      // Frontmatter is spread first: a stray `slug:` or `lang:` key must not
+      // shadow what the file's own path says it is.
+      return { ...data, slug, lang, collection, body }
     })
 }
 

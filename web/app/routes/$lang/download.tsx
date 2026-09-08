@@ -35,7 +35,9 @@ function Download() {
 
       {/* Nothing here offers a download while `releases` is empty: a button
           that lands on an empty page costs more trust than it buys clicks. */}
-      {latest ? (
+      {/* A release with no macOS asset attached would otherwise render a
+          heading over an empty list. */}
+      {latest && latest.assets.length > 0 ? (
         <Section eyebrow={`${latest.tag} · ${latest.date ? formatDate(latest.date, lang) : ''}`}>
           <div className="rows">
             {latest.assets.map((asset) => (

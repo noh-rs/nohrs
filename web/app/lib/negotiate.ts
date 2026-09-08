@@ -25,7 +25,9 @@ export function negotiateLang(header: string | null | undefined): Lang {
       const quality = params.find((param) => param.trim().startsWith('q='))
       return { tag: tag.toLowerCase(), q: quality ? Number.parseFloat(quality.split('=')[1]) : 1 }
     })
-    .filter((entry) => Number.isFinite(entry.q))
+    // `q=0` means "not acceptable", so it must not be treated as a weak
+    // preference for that language.
+    .filter((entry) => Number.isFinite(entry.q) && entry.q > 0)
     .sort((a, b) => b.q - a.q)
 
   for (const { tag } of ranked) {

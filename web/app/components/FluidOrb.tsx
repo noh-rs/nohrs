@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 const VERTEX = `
 attribute vec2 p;
@@ -84,14 +84,29 @@ function mix(a: Rgb, b: Rgb, amount: number): Rgb {
 
 export function FluidOrb() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  // The CSS hides the orb below 1080px. Tracking the same breakpoint here
+  // means a phone never allocates a WebGL context or compiles a shader for a
+  // canvas it will not show — and a window widened past it still gets one.
+  const [wideEnough, setWideEnough] = useState(false)
+  // No WebGL, or a shader that will not compile: the orb is decoration, so it
+  // is dropped rather than degraded. Held as state so React removes the node.
+  const [unsupported, setUnsupported] = useState(false)
+
+  useEffect(() => {
+    const wide = window.matchMedia('(min-width: 1081px)')
+    const sync = () => setWideEnough(wide.matches)
+    sync()
+    wide.addEventListener('change', sync)
+    return () => wide.removeEventListener('change', sync)
+  }, [])
 
   useEffect(() => {
     const canvas = canvasRef.current
-    if (!canvas) return
+    if (!canvas || !wideEnough || unsupported) return
 
     const gl = canvas.getContext('webgl', { antialias: false, alpha: false, depth: false })
     if (!gl) {
-      canvas.remove()
+      setUnsupported(true)
       return
     }
 
@@ -107,14 +122,14 @@ export function FluidOrb() {
     const fragment = compile(gl.FRAGMENT_SHADER, FRAGMENT)
     const program = gl.createProgram()
     if (!vertex || !fragment || !program) {
-      canvas.remove()
+      setUnsupported(true)
       return
     }
     gl.attachShader(program, vertex)
     gl.attachShader(program, fragment)
     gl.linkProgram(program)
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      canvas.remove()
+      setUnsupported(true)
       return
     }
     gl.useProgram(program)
@@ -228,7 +243,9 @@ export function FluidOrb() {
       prefersDark.removeEventListener('change', onScheme)
       window.removeEventListener('resize', onResize)
     }
-  }, [])
+  }, [wideEnough, unsupported])
+
+  if (unsupported) return null
 
   // Hidden below 1080px: the hero text reaches the right margin there, and the
   // orb would sit behind it.

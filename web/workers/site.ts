@@ -32,9 +32,17 @@ export default {
 
     // `localhost` and `*.workers.dev` are left alone so preview deploys and
     // `wrangler dev` do not bounce to production.
-    if (url.hostname.endsWith(`.${CANONICAL_HOST}`)) {
+    const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1'
+    const insecure = url.protocol === 'http:' && !local
+    const offCanonicalHost = url.hostname.endsWith(`.${CANONICAL_HOST}`)
+
+    // A custom domain does not redirect HTTP by default, so the scheme is
+    // enforced here rather than left to a dashboard setting. Both corrections
+    // go out as one 301, so `http://www.nohrs.app/x` costs one hop, not two.
+    if (insecure || offCanonicalHost) {
       const target = new URL(url)
-      target.hostname = CANONICAL_HOST
+      if (insecure) target.protocol = 'https:'
+      if (offCanonicalHost) target.hostname = CANONICAL_HOST
       return new Response(null, {
         status: 301,
         headers: { Location: target.toString() },

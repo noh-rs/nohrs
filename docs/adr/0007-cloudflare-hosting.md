@@ -2,6 +2,8 @@
 
 > Status: Accepted
 > Date: 2026-05-28
+> 改訂: 2026-09-08 — 静的サイトの入れ口を **Pages から Workers + assets binding に変更**した。
+> 以下の Decision は当初の記録として残す。現行の構成は末尾の「改訂」節を参照。
 
 ## Context
 

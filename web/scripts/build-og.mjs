@@ -22,7 +22,7 @@ const PAPER = '#FCFAF8'
 const INK = '#191510'
 const MUTED = '#6F6459'
 const LINE = '#E3DBD0'
-const TAN_INK = '#9C5A24'
+const TAN_INK = '#94541F'
 
 // An empty User-Agent makes Google Fonts serve TrueType; Satori cannot read woff2.
 async function fetchFont(family, weight, file) {

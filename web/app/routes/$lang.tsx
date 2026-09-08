@@ -41,7 +41,18 @@ function LanguageLayout() {
 function useAnchorScroll() {
   useEffect(() => {
     const onClick = (event: MouseEvent) => {
-      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey) return
+      // A modified click means the browser should handle it: new tab, new
+      // window, download.
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return
+      }
       const link = (event.target as HTMLElement | null)?.closest('a[href^="#"]')
       if (!(link instanceof HTMLAnchorElement)) return
 
@@ -53,6 +64,13 @@ function useAnchorScroll() {
       event.preventDefault()
       const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
       target.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' })
+
+      // Cancelling the fragment navigation also cancels the focus move it
+      // would have done, and a skip link that only scrolls skips nothing: the
+      // next Tab would resume from the link, back up in the header.
+      if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1')
+      target.focus({ preventScroll: true })
+
       history.replaceState(null, '', `#${id}`)
     }
 

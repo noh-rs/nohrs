@@ -29,14 +29,25 @@ defaults:
   run:
     working-directory: web
 
+env:
+  # A scheduled run starts on the default branch, but production is `main`.
+  # Both jobs resolve the ref the same way, so `needs: build` validates the
+  # revision that gets deployed rather than a different one.
+  DEPLOY_REF: ${{ github.event_name == 'schedule' && 'main' || github.ref }}
+
 jobs:
   build:
     name: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ env.DEPLOY_REF }}
+          # `npm ci` runs below, and a dependency lifecycle script must not be
+          # able to read the checkout's persisted token.
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -66,7 +77,7 @@ jobs:
           test -f dist/client/en/blog/rss.xml
           test -d dist/client/_pagefind
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: web-dist
           path: web/dist/client
@@ -81,15 +92,19 @@ jobs:
       || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: production
+    # Keyed to the environment rather than the ref, so a scheduled run and a
+    # push to `main` cannot deploy over each other. Not cancelled in flight:
+    # a half-applied deploy is worse than a queued one.
+    concurrency:
+      group: web-deploy-production
+      cancel-in-progress: false
     steps:
-      # A scheduled run starts on the default branch, and production is `main`.
-      # A manual run deploys whatever ref it was dispatched on, so the site can
-      # be put up from a branch before that branch is merged.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ github.event_name == 'schedule' && 'main' || github.ref }}
+          ref: ${{ env.DEPLOY_REF }}
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm

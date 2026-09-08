@@ -134,6 +134,7 @@ function Hero({ lang }: { lang: Lang }) {
             <pre className="cmd">
               <code>
                 <span className="prompt">$</span>git clone https://github.com/noh-rs/nohrs{'\n'}
+                <span className="prompt">$</span>cd nohrs{'\n'}
                 <span className="prompt">$</span>cargo run -p nohrs
               </code>
             </pre>

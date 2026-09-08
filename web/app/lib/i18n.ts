@@ -21,5 +21,9 @@ export function formatDate(value: string, lang: Lang): string {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
+    // Every date here is date-only, which parses as UTC midnight. Formatting
+    // it in the viewer's zone would render the previous day west of UTC, and
+    // disagree with the HTML prerendered in CI.
+    timeZone: 'UTC',
   }).format(date)
 }

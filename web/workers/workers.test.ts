@@ -49,6 +49,20 @@ test('the host redirect runs before language negotiation', async () => {
   })
 })
 
+test('http is upgraded, and one 301 fixes both scheme and host', async () => {
+  assert.deepEqual(await get('http://nohrs.app/en/'), {
+    status: 301,
+    location: 'https://nohrs.app/en/',
+    vary: null,
+  })
+  // One hop, not two: not http://nohrs.app → https://www → https://apex.
+  assert.deepEqual(await get('http://www.nohrs.app/en/docs/keyboard'), {
+    status: 301,
+    location: 'https://nohrs.app/en/docs/keyboard',
+    vary: null,
+  })
+})
+
 test('workers.dev and localhost are left alone', async () => {
   const preview = await site.fetch(new Request('https://nohrs-web.example.workers.dev/en/'), env)
   assert.equal(preview.status, 200)
@@ -106,15 +120,22 @@ test('noh.rs resolves a path without a language, temporarily', () => {
   })
 })
 
-test('noh.rs expands the short schemes', () => {
+test('noh.rs expands the plugin shortcut against a language', () => {
   assert.deepEqual(short('https://noh.rs/p/git-status', { 'accept-language': 'en' }), {
     status: 302,
     location: 'https://nohrs.app/en/plugins/git-status',
   })
-  assert.deepEqual(short('https://noh.rs/r/v0.1.0', { 'accept-language': 'en' }), {
-    status: 302,
-    location: 'https://nohrs.app/en/releases/v0.1.0',
+})
+
+test('noh.rs sends a release tag to GitHub, not to a page we do not have', () => {
+  // The site has a releases index but no per-release route, so
+  // `/en/releases/v0.1.0` would be a 404.
+  assert.deepEqual(short('https://noh.rs/r/v0.1.0'), {
+    status: 301,
+    location: 'https://github.com/noh-rs/nohrs/releases/tag/v0.1.0',
   })
+  // A bare `/r/` is not a tag; it falls through to the path-preserving rule.
+  assert.equal(short('https://noh.rs/r/').status, 302)
 })
 
 test('noh.rs root goes to the apex root, which then negotiates', () => {

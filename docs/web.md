@@ -26,10 +26,13 @@
 ### noh.rs リダイレクト仕様 (Cloudflare Workers)
 
 - `noh.rs/<any>` → `nohrs.app/<any>` に **path 保持で 301**
-- 短縮スキーム (将来):
-  - `noh.rs/p/<plugin-id>` → `nohrs.app/plugins/<plugin-id>`
-  - `noh.rs/r/<release>` → `nohrs.app/releases/<release>` (もしくは GitHub release)
-- HTTPS 強制
+- 短縮スキーム:
+  - `noh.rs/p/<plugin-id>` → `nohrs.app/<lang>/plugins/<plugin-id>` (**302 + `Vary`**。言語を判定するため)
+  - `noh.rs/r/<tag>` → **GitHub の release ページ** (`github.com/noh-rs/nohrs/releases/tag/<tag>`) に 301。
+    サイトには releases の一覧はあるが**個別 release のページが無い**ため、`nohrs.app/<lang>/releases/<tag>`
+    に送ると 404 になる。個別ページを作った時点でこちらに切り替える
+- **HTTPS 強制は Worker で行う** (`workers/site.ts`)。カスタムドメインは HTTP を自動でリダイレクトしないため、
+  ダッシュボードの "Always Use HTTPS" に頼らずコード側で 301 する。スキームとホストの補正は 1 回の 301 にまとめる
 - HSTS preload は P5 以降に検討
 
 ---
@@ -155,9 +158,12 @@ web/
     └── wrangler.noh-rs.jsonc
 ```
 
-ビルド時スクリプト (`scripts/`) は**失敗してもビルドを止めない**。ネットワークが無い環境では、
-システムフォント・コミット済みの GitHub スナップショット・OG 画像なしに縮退する。壊れたデプロイを
-出すより、欠けた状態で出す方が安全なため。
+**`prebuild` の 3 本 (`fetch-fonts` / `fetch-github` / `build-og`) は失敗してもビルドを止めない。**
+ネットワークが無い環境では、システムフォント・コミット済みの GitHub スナップショット・OG 画像なしに
+縮退する。欠けているのは装飾と鮮度であって、壊れたデプロイを出すより安全なため。
+
+一方 **`build-feeds` と `pagefind` は失敗したらビルドを落とす**。こちらはページの中身そのもの
+(フィードと検索インデックス) を作る工程で、黙って欠けると壊れたサイトを配信することになる。
 
 ---
 
@@ -341,8 +347,11 @@ push できるブランチのワークフローから読み出せてしまうの
 `workers/site.ts`。全ページが prerender 済みなので、この Worker が自分で答えるのは 2 つだけで、
 それ以外は assets binding にそのまま渡す。
 
-1. **正規ホスト**。`www.nohrs.app` も同じ Worker に付けているため、何もしないと apex と同一の
-   サイトをもう 1 部配信することになる。`*.nohrs.app` は apex へ **301**
+1. **正規ホストとスキーム**。`www.nohrs.app` も同じ Worker に付けているため、何もしないと apex と
+   同一のサイトをもう 1 部配信することになる。`*.nohrs.app` は apex へ **301**。あわせて `http://` も
+   `https://` へ 301 する (カスタムドメインは HTTP を自動リダイレクトしない)。両方の補正を 1 回の
+   301 にまとめるので、`http://www.nohrs.app/x` でもホップは 1 回。`localhost` と `*.workers.dev` は
+   対象外 (`wrangler dev` とプレビューが本番に飛ばないように)
 2. **`/` の言語振り分け**。Cookie → `Accept-Language` の順に決めて **302** で `/en` か `/ja` に送り、
    Cookie に記憶する。`Vary: Accept-Language, Cookie` を付け、別の言語設定の訪問者が同じリダイレクトを
    キャッシュから受け取らないようにする
