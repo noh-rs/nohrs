@@ -266,7 +266,10 @@ export function FluidOrb() {
       gl.deleteProgram(program)
       gl.deleteShader(vertex)
       gl.deleteShader(fragment)
-      gl.getExtension('WEBGL_lose_context')?.loseContext()
+      // Deliberately no `WEBGL_lose_context`: the canvas element outlives this
+      // effect, and a context lost here stays lost. `getContext` would hand the
+      // same dead context back on the way up past 1080px, `createShader` would
+      // return null, and the orb would be gone for the rest of the visit.
       observer.disconnect()
       themeObserver.disconnect()
       document.removeEventListener('visibilitychange', onVisibility)

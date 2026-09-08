@@ -41,9 +41,21 @@ export const github: GitHubData = generated?.default ?? (fallbackData as GitHubD
 export const hasReleases: boolean = github.releases.length > 0
 
 /**
- * Whether a release carries a macOS binary. This, not `hasReleases`, drives
- * the primary CTA and the download page: ADR 0008's rule is that the site must
- * never offer a download with nothing behind the link, and a release published
- * with notes but no attached asset is exactly that case.
+ * The newest release that actually carries a macOS binary, if there is one.
+ *
+ * The download page renders this exact release, and the CTA is shown when it
+ * exists, so the promise and the page cannot disagree. Asking whether *any*
+ * release has an asset while rendering `releases[0]` was that disagreement: a
+ * release published with notes before its build finished would light up the
+ * CTA and then show an empty page.
  */
-export const hasDownloads: boolean = github.releases.some((release) => release.assets.length > 0)
+export const downloadRelease: Release | undefined = github.releases.find(
+  (release) => release.assets.length > 0,
+)
+
+/**
+ * Whether the site can offer a download at all. This, not `hasReleases`, drives
+ * the primary CTA: ADR 0008's rule is that the site must never offer a download
+ * with nothing behind the link.
+ */
+export const hasDownloads: boolean = downloadRelease !== undefined

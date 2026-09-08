@@ -23,8 +23,15 @@ const headers = {
   ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
 }
 
+// A stalled response is the one failure the fallback below cannot reach: the
+// promise never settles, so the build hangs instead of using the snapshot.
+const TIMEOUT_MS = 20_000
+
 async function api(path) {
-  const response = await fetch(`https://api.github.com/${path}`, { headers })
+  const response = await fetch(`https://api.github.com/${path}`, {
+    headers,
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
   if (!response.ok) throw new Error(`${response.status} ${response.statusText} for ${path}`)
   return response.json()
 }

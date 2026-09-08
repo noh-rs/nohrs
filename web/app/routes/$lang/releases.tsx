@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { PageHeader, Section } from '~/components/Page'
-import { github } from '~/lib/github'
+import { github, hasReleases } from '~/lib/github'
 import { formatDate, t, type Lang } from '~/lib/i18n'
 import { seo } from '~/lib/seo'
 
@@ -14,7 +14,7 @@ export const Route = createFileRoute('/$lang/releases')({
       title: strings.title,
       // Saying "no release exists" in the meta description of a page that
       // lists releases is worse than saying nothing specific.
-      description: github.releases.length === 0 ? strings.empty : strings.lede,
+      description: hasReleases ? strings.lede : strings.empty,
     })
   },
   component: Releases,
@@ -29,7 +29,7 @@ function Releases() {
       <PageHeader eyebrow={strings.nav.releases} title={strings.releases.title} />
 
       <Section compact>
-        {github.releases.length === 0 ? (
+        {!hasReleases ? (
           <>
             <p className="max-w-[58ch] text-[1.0625rem] text-ink-2">{strings.releases.empty}</p>
             <Link

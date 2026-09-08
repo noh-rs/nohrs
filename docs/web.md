@@ -342,10 +342,19 @@ push できるブランチのワークフローから読み出せてしまうの
 配られる。`secrets` に置いているのは、fork でビルドしたときに本家の Discussions へ書き込んだり、
 本家の Analytics に計上したりしないためだけで、**secret が無い場合は機能ごと出さない**方に倒す。
 
-> `production` Environment に **Deployment branches** 制限をかける場合は、`main` だけでなく
-> **`develop` も許可する**こと。この制限はチェックアウト先ではなくワークフロー実行の ref で判定され、
-> スケジュール実行の ref はデフォルトブランチ (`develop`) になるため、`main` のみにすると
-> 週次リビルドが黙って止まる。
+> `production` Environment の **Deployment branches** 制限は、チェックアウト先ではなく
+> **ワークフロー実行の ref** で判定される。スケジュール実行の ref はデフォルトブランチ
+> (`develop`) になるため、ここでのトレードオフは二択になる (2026-09-08):
+>
+> - **`main` + `develop` を許可**: 週次リビルドが動く。ただし `develop` に push できる者は
+>   `web.yml` の deploy ステップを書き換えられ、月曜のスケジュール実行がそれを production の
+>   Cloudflare トークンで実行してしまう。job の `if:` は push / dispatch にしか効かないため、
+>   ここは `develop` のブランチ保護が唯一の防壁になる
+> - **`main` のみ**: 上の経路を塞げるが、週次リビルドは黙って止まる。星の数・コミット一覧・
+>   release 一覧はビルド時に読むので、以後 deploy するまで古いまま固定される
+>
+> どちらを取るかは `develop` のブランチ保護の強さ次第。保護が弱いなら `main` のみにして、
+> 週次リビルドは諦める (必要なときに `main` へ push するか、手動実行する)。
 
 ### Worker (`nohrs.app`)
 

@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { DefinitionRow, DefinitionRows, PageHeader, Section } from '~/components/Page'
 import { GitHubMark } from '~/components/Mark'
-import { github, hasDownloads } from '~/lib/github'
+import { downloadRelease, hasDownloads } from '~/lib/github'
 import { formatDate, t, type Lang } from '~/lib/i18n'
 import { seo } from '~/lib/seo'
 import { SITE } from '~/lib/site'
@@ -23,7 +23,7 @@ export const Route = createFileRoute('/$lang/download')({
 function Download() {
   const { lang } = Route.useParams() as { lang: Lang }
   const strings = t(lang)
-  const latest = github.releases[0]
+  const latest = downloadRelease
 
   return (
     <>
@@ -33,11 +33,11 @@ function Download() {
         lede={hasDownloads ? strings.download.ledeReleased : strings.download.ledePreRelease}
       />
 
-      {/* Nothing here offers a download while `releases` is empty: a button
-          that lands on an empty page costs more trust than it buys clicks. */}
-      {/* A release with no macOS asset attached would otherwise render a
-          heading over an empty list. */}
-      {latest && latest.assets.length > 0 ? (
+      {/* Nothing here offers a download until a release carries a binary: a
+          button that lands on an empty page costs more trust than it buys
+          clicks. `downloadRelease` is the same release `hasDownloads` answers
+          for, so the CTA and this section cannot disagree. */}
+      {latest ? (
         <Section eyebrow={`${latest.tag} · ${latest.date ? formatDate(latest.date, lang) : ''}`}>
           <div className="rows">
             {latest.assets.map((asset) => (

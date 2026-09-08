@@ -24,6 +24,10 @@ const MUTED = '#6F6459'
 const LINE = '#E3DBD0'
 const TAN_INK = '#94541F'
 
+// Same reason as the other build fetches: without a deadline a stalled response
+// hangs the build rather than falling through to `main().catch`.
+const TIMEOUT_MS = 20_000
+
 // An empty User-Agent makes Google Fonts serve TrueType; Satori cannot read woff2.
 async function fetchFont(family, weight, file) {
   const cached = join(FONT_CACHE, file)
@@ -34,10 +38,14 @@ async function fetchFont(family, weight, file) {
     // not cached yet
   }
   const cssUrl = `https://fonts.googleapis.com/css2?family=${family}:wght@${weight}&display=swap`
-  const css = await (await fetch(cssUrl, { headers: { 'User-Agent': '' } })).text()
+  const css = await (
+    await fetch(cssUrl, { headers: { 'User-Agent': '' }, signal: AbortSignal.timeout(TIMEOUT_MS) })
+  ).text()
   const url = /src: url\((https:[^)]+\.ttf)\)/.exec(css)?.[1]
   if (!url) throw new Error(`no TrueType face for ${family} ${weight}`)
-  const buffer = Buffer.from(await (await fetch(url)).arrayBuffer())
+  const buffer = Buffer.from(
+    await (await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) })).arrayBuffer(),
+  )
   await mkdir(FONT_CACHE, { recursive: true })
   await writeFile(cached, buffer)
   return buffer
