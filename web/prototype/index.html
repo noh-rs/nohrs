@@ -25,7 +25,6 @@
     --frame: 1120px;
     --sans: "Inter", "Noto Sans JP", ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
     --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    --shader-amp: 0.20;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -41,7 +40,6 @@
       --tan-ink: #E7B693;
       --tan-wash:#241A13;
       --shadow: 0 1px 2px rgba(0,0,0,.4), 0 16px 40px -14px rgba(0,0,0,.7);
-      --shader-amp: 0.13;
     }
   }
   :root[data-theme="dark"] {
@@ -57,7 +55,6 @@
     --tan-ink: #E7B693;
     --tan-wash:#241A13;
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 16px 40px -14px rgba(0,0,0,.7);
-    --shader-amp: 0.13;
   }
 
   * { box-sizing: border-box; }
@@ -189,29 +186,8 @@
   }
 
   /* ── hero ──────────────────────────────────────────────────── */
-  .hero { position: relative; border-top: 0; overflow: hidden; }
-  #shader {
-    position: absolute; inset: 0; width: 100%; height: 100%;
-    display: block; z-index: 0; pointer-events: none;
-  }
-  .hero-fade {
-    position: absolute; inset: auto 0 0 0; height: 45%; z-index: 1; pointer-events: none;
-    background: linear-gradient(to bottom, transparent, var(--paper));
-  }
-  .hero > .frame { position: relative; z-index: 2; padding-block: clamp(72px, 12vw, 136px) clamp(64px, 9vw, 104px); }
-
-  .status {
-    display: inline-flex; align-items: center; gap: 10px;
-    font: 500 .6875rem/1 var(--mono); letter-spacing: .14em; text-transform: uppercase;
-    color: var(--muted);
-    border: 1px solid var(--line); border-radius: 999px;
-    padding: 7px 13px 7px 11px; margin-bottom: 34px;
-    background: color-mix(in srgb, var(--paper) 70%, transparent);
-  }
-  .status .dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: var(--tan-ink); flex: none;
-  }
+  .hero { border-top: 0; }
+  .hero > .frame { padding-block: clamp(76px, 13vw, 148px) clamp(72px, 10vw, 116px); }
 
   h1 {
     margin: 0;
@@ -232,14 +208,8 @@
     padding-inline: .1em;
     vertical-align: .035em;
   }
-  .hero .sub { margin: 26px 0 0; font-size: clamp(1rem, 1.5vw, 1.1875rem); color: var(--ink-2); max-width: 44ch; }
-  .hero .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 38px; }
-  .hero .meta {
-    margin-top: 40px; display: flex; flex-wrap: wrap; gap: 8px 22px;
-    font: 400 .75rem/1.6 var(--mono); color: var(--muted); letter-spacing: .02em;
-  }
-  .hero .meta span { display: inline-flex; gap: 8px; }
-  .hero .meta b { font-weight: 500; color: var(--ink-2); }
+  .hero .sub { margin: 28px 0 0; font-size: clamp(1rem, 1.5vw, 1.1875rem); color: var(--ink-2); max-width: 44ch; }
+  .hero .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 40px; }
 
   /* ── pillars ───────────────────────────────────────────────── */
   .pillars { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); }
@@ -276,24 +246,27 @@
   .coming-item p { font-size: .875rem; color: var(--muted); margin: 0; }
   @media (max-width: 760px) { .coming { grid-template-columns: 1fr; } }
 
-  /* ── roadmap ───────────────────────────────────────────────── */
-  .road { width: 100%; border-collapse: collapse; font-size: .9375rem; }
-  .road th {
-    text-align: left; font: 500 .6875rem/1 var(--mono); letter-spacing: .12em; text-transform: uppercase;
-    color: var(--muted); padding: 0 16px 12px 0; border-bottom: 1px solid var(--line);
+  /* ── roadmap: same hairline-row vocabulary as the community list */
+  .phases { border-top: 1px solid var(--line); }
+  .phase {
+    display: grid;
+    grid-template-columns: 48px 68px 1fr auto;
+    gap: 24px;
+    align-items: baseline;
+    padding: 19px 0;
+    border-bottom: 1px solid var(--line-soft);
   }
-  .road td { padding: 16px 16px 16px 0; border-bottom: 1px solid var(--line-soft); vertical-align: baseline; }
-  .road tr:last-child td { border-bottom: 0; }
-  .road .ph { font-family: var(--mono); font-weight: 500; color: var(--ink); white-space: nowrap; }
-  .road .ver { font-family: var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .road td:last-child { color: var(--ink-2); }
-  .road tr[data-now] .ph { color: var(--tan-ink); }
-  .road tr[data-now] td { background: var(--tan-wash); }
-  .road tr[data-now] .ph::before {
-    content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-    background: var(--tan-ink); margin-right: 9px; vertical-align: .08em;
+  .phase:last-child { border-bottom-color: var(--line); }
+  .p-id    { font: 500 .875rem/1.6 var(--mono); color: var(--muted); }
+  .p-ver   { font: 400 .875rem/1.6 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .p-theme { font-size: .9375rem; color: var(--ink-2); }
+  .p-state { font: 400 .75rem/1.6 var(--mono); letter-spacing: .06em; color: var(--muted); white-space: nowrap; }
+  .phase[data-now] .p-id    { color: var(--ink); }
+  .phase[data-now] .p-state { color: var(--tan-ink); }
+  @media (max-width: 720px) {
+    .phase { grid-template-columns: 48px 1fr; gap: 6px 24px; }
+    .p-ver, .p-theme, .p-state { grid-column: 2; }
   }
-  .road-scroll { overflow-x: auto; }
 
   /* ── signals ───────────────────────────────────────────────── */
   .signals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 28px; margin-bottom: 36px; }
@@ -372,15 +345,10 @@
 
   <!-- ── Hero ─────────────────────────────────────────────────── -->
   <section class="hero">
-    <canvas id="shader" aria-hidden="true"></canvas>
-    <div class="hero-fade" aria-hidden="true"></div>
     <div class="frame">
-      <span class="status">
-        <span class="dot" aria-hidden="true"></span>
-        <span data-en="Pre-alpha · macOS · MIT" data-ja="Pre-alpha · macOS · MIT">Pre-alpha · macOS · MIT</span>
-      </span>
+      <p class="eyebrow"><span data-en="Pre-alpha · macOS · MIT" data-ja="Pre-alpha · macOS · MIT">Pre-alpha · macOS · MIT</span></p>
 
-      <h1>Launcher <span class="x" id="glyph">×</span> Explorer</h1>
+      <h1>Launcher <span class="x">×</span> Explorer</h1>
 
       <p class="sub"
          data-en="Nohrs is a keyboard-driven file explorer for macOS with a built-in launcher. Written in Rust. Open source."
@@ -389,7 +357,7 @@
       </p>
 
       <div class="cta">
-        <a class="btn btn-primary magnetic" href="https://github.com/noh-rs/nohrs">
+        <a class="btn btn-primary" href="https://github.com/noh-rs/nohrs">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38l-.01-1.49c-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.19c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
           <span data-en="Star on GitHub" data-ja="GitHub でスターする">Star on GitHub</span>
           <span class="count">149</span>
@@ -398,12 +366,6 @@
           <span data-en="Join Discord" data-ja="Discord に参加">Join Discord</span>
           <span aria-hidden="true">↗</span>
         </a>
-      </div>
-
-      <div class="meta">
-        <span><b>Rust</b> <span data-en="+ gpui" data-ja="+ gpui">+ gpui</span></span>
-        <span><b>SQLite + Tantivy</b> <span data-en="search" data-ja="検索">search</span></span>
-        <span><b>WASM</b> <span data-en="component-model plugins" data-ja="コンポーネントモデルのプラグイン">component-model plugins</span></span>
       </div>
     </div>
   </section>
@@ -526,42 +488,43 @@
          data-ja="P1 は 0.0.x を反復します。最初に使える版は、P2 の完了時に 0.1.0 として切り出します。">
         P1 iterates on 0.0.x. The first usable build is cut as 0.1.0 when P2 completes.
       </p>
-      <div class="road-scroll reveal">
-        <table class="road">
-          <thead>
-            <tr>
-              <th data-en="Phase" data-ja="フェーズ">Phase</th>
-              <th data-en="Milestone" data-ja="マイルストーン">Milestone</th>
-              <th data-en="Theme" data-ja="テーマ">Theme</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr data-now>
-              <td class="ph">P1</td><td class="ver">0.0.x</td>
-              <td data-en="Foundation — quality, workspace split, dev/CI infrastructure, web" data-ja="基盤 — 品質、ワークスペース分割、開発／CI 基盤、web">Foundation — quality, workspace split, dev/CI infrastructure, web</td>
-            </tr>
-            <tr>
-              <td class="ph">P2</td><td class="ver">0.1.0</td>
-              <td data-en="Explorer essentials — drag-and-drop, file operations, split view, tabs, persistence" data-ja="エクスプローラーの基礎 — ドラッグ＆ドロップ、ファイル操作、分割ビュー、タブ、永続化">Explorer essentials — drag-and-drop, file operations, split view, tabs, persistence</td>
-            </tr>
-            <tr>
-              <td class="ph">P3</td><td class="ver">0.2.0</td>
-              <td data-en="Launcher &amp; search — global-hotkey launcher, SQLite FTS5 search" data-ja="ランチャーと検索 — グローバルホットキーのランチャー、SQLite FTS5 検索">Launcher &amp; search — global-hotkey launcher, SQLite FTS5 search</td>
-            </tr>
-            <tr>
-              <td class="ph">P4</td><td class="ver">0.3.0</td>
-              <td data-en="Plugin host — WASM component model, templates for three languages" data-ja="プラグインホスト — WASM コンポーネントモデル、3 言語のテンプレート">Plugin host — WASM component model, templates for three languages</td>
-            </tr>
-            <tr>
-              <td class="ph">P5</td><td class="ver">0.4.0</td>
-              <td data-en="Ecosystem — plugin store, community plugins" data-ja="エコシステム — プラグインストア、コミュニティプラグイン">Ecosystem — plugin store, community plugins</td>
-            </tr>
-            <tr>
-              <td class="ph">P6</td><td class="ver">0.5.0</td>
-              <td data-en="Stabilization — multi-OS strategy, performance gates, documentation" data-ja="安定化 — マルチ OS 戦略、パフォーマンス基準、ドキュメント">Stabilization — multi-OS strategy, performance gates, documentation</td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="phases reveal">
+        <div class="phase" data-now>
+          <span class="p-id">P1</span>
+          <span class="p-ver">0.0.x</span>
+          <span class="p-theme" data-en="Foundation — quality, workspace split, dev/CI infrastructure, web" data-ja="基盤 — 品質、ワークスペース分割、開発／CI 基盤、web">Foundation — quality, workspace split, dev/CI infrastructure, web</span>
+          <span class="p-state" data-en="In progress" data-ja="進行中">In progress</span>
+        </div>
+        <div class="phase">
+          <span class="p-id">P2</span>
+          <span class="p-ver">0.1.0</span>
+          <span class="p-theme" data-en="Explorer essentials — drag-and-drop, file operations, split view, tabs, persistence" data-ja="エクスプローラーの基礎 — ドラッグ＆ドロップ、ファイル操作、分割ビュー、タブ、永続化">Explorer essentials — drag-and-drop, file operations, split view, tabs, persistence</span>
+          <span class="p-state" data-en="Planned" data-ja="計画">Planned</span>
+        </div>
+        <div class="phase">
+          <span class="p-id">P3</span>
+          <span class="p-ver">0.2.0</span>
+          <span class="p-theme" data-en="Launcher &amp; search — global-hotkey launcher, SQLite FTS5 search" data-ja="ランチャーと検索 — グローバルホットキーのランチャー、SQLite FTS5 検索">Launcher &amp; search — global-hotkey launcher, SQLite FTS5 search</span>
+          <span class="p-state" data-en="Planned" data-ja="計画">Planned</span>
+        </div>
+        <div class="phase">
+          <span class="p-id">P4</span>
+          <span class="p-ver">0.3.0</span>
+          <span class="p-theme" data-en="Plugin host — WASM component model, templates for three languages" data-ja="プラグインホスト — WASM コンポーネントモデル、3 言語のテンプレート">Plugin host — WASM component model, templates for three languages</span>
+          <span class="p-state" data-en="Planned" data-ja="計画">Planned</span>
+        </div>
+        <div class="phase">
+          <span class="p-id">P5</span>
+          <span class="p-ver">0.4.0</span>
+          <span class="p-theme" data-en="Ecosystem — plugin store, community plugins" data-ja="エコシステム — プラグインストア、コミュニティプラグイン">Ecosystem — plugin store, community plugins</span>
+          <span class="p-state" data-en="Planned" data-ja="計画">Planned</span>
+        </div>
+        <div class="phase">
+          <span class="p-id">P6</span>
+          <span class="p-ver">0.5.0</span>
+          <span class="p-theme" data-en="Stabilization — multi-OS strategy, performance gates, documentation" data-ja="安定化 — マルチ OS 戦略、パフォーマンス基準、ドキュメント">Stabilization — multi-OS strategy, performance gates, documentation</span>
+          <span class="p-state" data-en="Planned" data-ja="計画">Planned</span>
+        </div>
       </div>
     </div>
   </section>
@@ -698,10 +661,9 @@
     if (!btn) return;
     root.setAttribute("data-theme", btn.dataset.themeSet);
     syncThemeSeg();
-    readShaderColors();
   });
   prefersDark.addEventListener("change", () => {
-    if (!root.hasAttribute("data-theme")) { syncThemeSeg(); readShaderColors(); }
+    if (!root.hasAttribute("data-theme")) syncThemeSeg();
   });
 
   /* ── language ──────────────────────────────────────────────── */
@@ -733,18 +695,8 @@
     });
   }
 
-  /* ── magnetic CTA + screenshot tilt (hover micro-interactions) */
+  /* ── screenshot tilt (hover micro-interaction) ─────────────── */
   if (!reduce && matchMedia("(pointer: fine)").matches) {
-    document.querySelectorAll(".magnetic").forEach(el => {
-      el.addEventListener("pointermove", e => {
-        const r = el.getBoundingClientRect();
-        const dx = (e.clientX - (r.left + r.width / 2)) / r.width;
-        const dy = (e.clientY - (r.top + r.height / 2)) / r.height;
-        el.style.transform = `translate(${dx * 7}px, ${dy * 5}px)`;
-      });
-      el.addEventListener("pointerleave", () => { el.style.transform = ""; });
-    });
-
     const shot = document.getElementById("shot");
     const wrap = shot?.parentElement;
     wrap?.addEventListener("pointermove", e => {
@@ -754,127 +706,6 @@
       shot.style.transform = `rotateY(${dx * 2.4}deg) rotateX(${-dy * 1.6}deg) translateZ(0)`;
     });
     wrap?.addEventListener("pointerleave", () => { shot.style.transform = ""; });
-  }
-
-  /* ── hero shader: a very faint warm bloom, WebGL with CSS fallback */
-  const cv = document.getElementById("shader");
-  let gl = null, uni = {}, bg = [1, 1, 1], tan = [1, 1, 1], amp = 0.2, raf = 0;
-
-  function cssRGB(name) {
-    const v = getComputedStyle(root).getPropertyValue(name).trim();
-    const d = document.createElement("canvas").getContext("2d");
-    d.fillStyle = v; const hex = d.fillStyle;
-    return [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
-  }
-  function readShaderColors() {
-    if (!gl) { paintFallback(); return; }
-    bg = cssRGB("--paper");
-    tan = cssRGB("--tan");
-    amp = parseFloat(getComputedStyle(root).getPropertyValue("--shader-amp")) || 0.2;
-    if (reduce) draw(0);
-  }
-  function paintFallback() {
-    cv.style.background =
-      `radial-gradient(58% 68% at 30% 62%, var(--tan-wash), transparent 70%),
-       radial-gradient(46% 56% at 84% 34%, var(--tan-wash), transparent 72%)`;
-  }
-
-  const VS = `attribute vec2 p; void main(){ gl_Position = vec4(p,0.,1.); }`;
-  const FS = `precision mediump float;
-    uniform vec2 u_res; uniform float u_t; uniform vec3 u_bg; uniform vec3 u_tan;
-    uniform float u_amp; uniform vec2 u_ptr;
-    float blob(vec2 p, vec2 c, float r){ float d = length(p-c)/r; return exp(-d*d); }
-    void main(){
-      vec2 p = gl_FragCoord.xy / u_res;
-      p.x *= u_res.x / u_res.y;
-      float ar = u_res.x / u_res.y;
-      float t = u_t * 0.055;
-      float m = blob(p, vec2(0.30*ar + 0.10*sin(t),        0.66 + 0.07*cos(t*0.83)), 0.42) * 0.95
-              + blob(p, vec2(0.82*ar + 0.09*cos(t*0.71),   0.38 + 0.09*sin(t*1.07)), 0.34) * 0.70
-              + blob(p, vec2(0.55*ar + 0.12*sin(t*0.49+2.), 0.14 + 0.06*cos(t*0.91)), 0.28) * 0.55
-              + blob(p, vec2(u_ptr.x*ar, u_ptr.y), 0.22) * 0.45;
-      gl_FragColor = vec4(mix(u_bg, u_tan, clamp(m, 0., 1.) * u_amp), 1.);
-    }`;
-
-  function compile(type, src) {
-    const s = gl.createShader(type);
-    gl.shaderSource(s, src); gl.compileShader(s);
-    return gl.getShaderParameter(s, gl.COMPILE_STATUS) ? s : null;
-  }
-
-  function initGL() {
-    try { gl = cv.getContext("webgl", { antialias: false, alpha: false, depth: false }); } catch { gl = null; }
-    if (!gl) return false;
-    const vs = compile(gl.VERTEX_SHADER, VS), fs = compile(gl.FRAGMENT_SHADER, FS);
-    if (!vs || !fs) { gl = null; return false; }
-    const prog = gl.createProgram();
-    gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { gl = null; return false; }
-    gl.useProgram(prog);
-    const buf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
-    const loc = gl.getAttribLocation(prog, "p");
-    gl.enableVertexAttribArray(loc);
-    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    uni = {
-      res: gl.getUniformLocation(prog, "u_res"), t: gl.getUniformLocation(prog, "u_t"),
-      bg: gl.getUniformLocation(prog, "u_bg"), tan: gl.getUniformLocation(prog, "u_tan"),
-      amp: gl.getUniformLocation(prog, "u_amp"), ptr: gl.getUniformLocation(prog, "u_ptr"),
-    };
-    return true;
-  }
-
-  let ptr = [0.5, 1.4];  /* parked off-canvas until the pointer arrives */
-  function resize() {
-    const r = cv.getBoundingClientRect();
-    /* deliberately low resolution — the image is all soft gradients */
-    cv.width = Math.max(2, Math.round(r.width * 0.28));
-    cv.height = Math.max(2, Math.round(r.height * 0.28));
-    if (gl) gl.viewport(0, 0, cv.width, cv.height);
-  }
-  function draw(ms) {
-    if (!gl) return;
-    gl.uniform2f(uni.res, cv.width, cv.height);
-    gl.uniform1f(uni.t, ms / 1000);
-    gl.uniform3fv(uni.bg, bg);
-    gl.uniform3fv(uni.tan, tan);
-    gl.uniform1f(uni.amp, amp);
-    gl.uniform2f(uni.ptr, ptr[0], ptr[1]);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-  }
-  function loop(ms) { draw(ms); raf = requestAnimationFrame(loop); }
-
-  if (initGL()) {
-    readShaderColors();
-    resize();
-    addEventListener("resize", () => { resize(); if (reduce) draw(0); }, { passive: true });
-    if (reduce) { draw(0); }
-    else {
-      raf = requestAnimationFrame(loop);
-      document.addEventListener("visibilitychange", () => {
-        if (document.hidden) { cancelAnimationFrame(raf); raf = 0; }
-        else if (!raf) raf = requestAnimationFrame(loop);
-      });
-      if (matchMedia("(pointer: fine)").matches) {
-        cv.parentElement.addEventListener("pointermove", e => {
-          const r = cv.getBoundingClientRect();
-          ptr = [(e.clientX - r.left) / r.width, 1 - (e.clientY - r.top) / r.height];
-        });
-        cv.parentElement.addEventListener("pointerleave", () => { ptr = [0.5, 1.4]; });
-      }
-    }
-  } else {
-    paintFallback();
-  }
-
-  /* ── glyph: the × breathes, very slowly ────────────────────── */
-  if (!reduce) {
-    const g = document.getElementById("glyph");
-    g.animate(
-      [{ transform: "rotate(0deg)" }, { transform: "rotate(90deg)" }, { transform: "rotate(0deg)" }],
-      { duration: 18000, iterations: Infinity, easing: "cubic-bezier(.6,0,.4,1)" }
-    );
   }
 
   /* ── boot ──────────────────────────────────────────────────── */

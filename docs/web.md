@@ -89,8 +89,9 @@ R2 は他用途でも使用:
 
 ### モーション
 
-- スクロール連動の控えめな reveal + 繊細な hover + ヒーロー背景の極薄シェーダー
-- 3D/パララックスは封印 (マーケ LP 化を避け職人トーンを維持)。ヒーロー背景の極薄グラデーションのみ例外 (改訂 2026-09-08)
+- スクロール連動の控えめな reveal + 繊細な hover のみ
+- グラデ/3D/パララックスは封印 (マーケ LP 化を避け職人トーンを維持)
+- **要素そのものを動かす演出も封印** (改訂 2026-09-08)。ホバーで吸い付くボタン、回転するグリフの類は、罫線と余白で組む他セクションと語彙が食い違い、ページ全体の品位を下げる。動かしてよいのは「状態が変わったこと」を伝える場合に限る
 - 実装は CSS 主体、オーケストレーションが要る所のみ軽量に Motion。`prefers-reduced-motion` 対応必須
 - 基準値: `220ms` / `cubic-bezier(.16,1,.3,1)` / `translateY(6px)` / stagger `50ms`
 
@@ -190,7 +191,7 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 1. **Hero**: tagline (大タイポ) + サブコピー + 主 CTA。**製品スクショは Hero に置かない** (改訂 2026-09-08)
    - tagline は **`Launcher × Explorer`** で確定。`×` のみ mono + Rust tan で組み、他は Inter。リポジトリ description の冒頭と一致させる
    - サブコピーは事実のみ 1〜2 行 (何であるか・何で書かれているか・ライセンス)。バッジや煽り文句を足さない
-   - 背景は **極薄のシェーダー** (warm bloom)。WebGL が使えない環境では CSS グラデーションにフォールバックし、`prefers-reduced-motion` では静止 1 フレームを描く
+   - **背景は無地**。ステータス表記 (`Pre-alpha · macOS · MIT`) はピルバッジにせず、他セクションと同じ mono の eyebrow + 罫線で組む。Hero だけが別の視覚言語を喋らないようにする
    - **正直主義は維持**: 実在する Explorer の額装スクショは Hero ではなく直後の Preview セクションに置く。**当面は静止スクショで代替**し（**en ロケールで撮り直し**）、操作 GIF は後日差し替える（README 約束分）。Launcher/Plugins/Search は **偽装せず** mock も作らず、"Coming in v0.x" のテキストカードのみで見せる
 2. **"Why nohrs?"** — 3-4 ポイントで差別化 (Launcher first-class / Explorer first-class / WASM plugins / Spotlight 非依存の検索。README の柱を流用)
 3. **主要機能ハイライト** (Explorer=実在 / Launcher・Plugin・Search=Coming カードで mock 提示)
