@@ -120,17 +120,17 @@ impl ExplorerPane {
                             )
                         }),
                 )
-                // Cancel leads, and Rename — the only choice that loses nothing —
-                // takes the trailing primary slot. Overwrite sits inboard of it:
-                // the destructive action must not occupy the position the eye
-                // (and a stray Return) treats as the default.
+                // Cancel leads and Rename trails, keeping destructive Overwrite
+                // out of the slot the eye reads as the default. None of the four
+                // is styled primary: Enter abandons the paste (above), so
+                // highlighting one would promise a keyboard default it does not
+                // have — the four outcomes differ too much to guess between.
                 .footer(move |_ok, _cancel, _window, _cx| {
                     vec![
                         cancel_button(&weak),
                         overwrite_button(&weak),
                         conflict_button(&weak, "skip", "Skip", ConflictResolution::Skip),
-                        conflict_button(&weak, "rename", "Rename", ConflictResolution::Rename)
-                            .primary(),
+                        conflict_button(&weak, "rename", "Rename", ConflictResolution::Rename),
                     ]
                 })
         });

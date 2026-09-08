@@ -190,12 +190,16 @@ fn footer_item<V: gpui::Render>(
         })
         .when(has_label, |this| {
             this.child(
-                // No ellipsis here: nothing constrains this label's width, so it
-                // would imply a clip that never happens. What actually bounds
-                // the longest label — the path — is `MAX_TAIL_CHARS`.
+                // `overflow_hidden` is load-bearing, not decoration: it drops a
+                // flex item's automatic minimum size to zero, so a long label
+                // (a branch name, a storage status) ellipsizes when the bar runs
+                // out of room instead of forcing the row wider and pushing the
+                // right-hand section off-window.
                 div()
                     .text_xs()
                     .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
                     .text_color(rgb(theme::GRAY_600))
                     .child(label),
             )
