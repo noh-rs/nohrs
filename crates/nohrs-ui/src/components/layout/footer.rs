@@ -53,8 +53,8 @@ pub fn footer<V: gpui::Render>(
         .flex()
         .items_center()
         .justify_between()
-        .px(px(8.0))
-        .bg(rgb(theme::GRAY_200))
+        .px(px(12.0))
+        .bg(rgb(theme::FOOTER_BG))
         .border_t_1()
         .border_color(rgb(theme::BORDER))
         .child(
@@ -62,12 +62,12 @@ pub fn footer<V: gpui::Render>(
             div()
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap_1()
                 // Git branch
                 .when_some(props.git_branch.clone(), |this, branch| {
-                    this.child(footer_button(
+                    this.child(footer_item(
                         ("footer-git", 0_usize),
-                        IconName::File,
+                        Some(Icon::new(IconName::GitHub)),
                         &branch,
                         cx,
                     ))
@@ -76,9 +76,9 @@ pub fn footer<V: gpui::Render>(
                 .when_some(props.indexing_progress, |this, progress| {
                     if progress < 1.0 {
                         let percent = (progress * 100.0) as u32;
-                        this.child(footer_button(
+                        this.child(footer_item(
                             ("footer-indexing", 99_usize),
-                            IconName::File, // Use a spinner icon if available? IconName::Sync?
+                            Some(Icon::new(IconName::Loader)),
                             &format!("Indexing: {}%", percent),
                             cx,
                         ))
@@ -88,24 +88,25 @@ pub fn footer<V: gpui::Render>(
                 })
                 // Selected items
                 .when(props.selected_count > 0, |this| {
-                    this.child(footer_button(
+                    this.child(footer_item(
                         ("footer-selected", 1_usize),
-                        IconName::File,
+                        Some(Icon::new(IconName::CircleCheck)),
                         &format!("{} selected", props.selected_count),
                         cx,
                     ))
                 })
                 // Total items
-                .child(footer_button(
+                .child(footer_item(
                     ("footer-total", 2_usize),
-                    IconName::Folder,
+                    Some(Icon::new(IconName::Folder)),
                     &format!("{} items", props.total_count),
                     cx,
                 ))
-                // Total size
-                .child(footer_button(
+                // Total size, which no icon in the set describes; the label
+                // alone is unambiguous next to the item count.
+                .child(footer_item(
                     ("footer-size", 3_usize),
-                    IconName::File,
+                    None,
                     &props.total_size,
                     cx,
                 ))
@@ -143,29 +144,34 @@ pub fn footer<V: gpui::Render>(
             div()
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap_1()
                 // Storage status (S3 connection, etc)
                 .when_some(props.storage_status, |this, status| {
-                    this.child(footer_button(
+                    this.child(footer_item(
                         ("footer-storage", 4_usize),
-                        IconName::Folder,
+                        Some(
+                            Icon::new(Icon::empty())
+                                .path(gpui::SharedString::from("icons/database.svg")),
+                        ),
                         &status,
                         cx,
                     ))
                 })
                 // Current path indicator
-                .child(footer_button(
+                .child(footer_item(
                     ("footer-path", 5_usize),
-                    IconName::Folder,
+                    Some(Icon::new(IconName::FolderOpen)),
                     &truncate_path(&props.current_path, 30),
                     cx,
                 )),
         )
 }
 
-fn footer_button<V: gpui::Render>(
+/// One status-bar readout. These are informational, so they carry no pointer
+/// cursor or hover fill — nothing here is clickable.
+fn footer_item<V: gpui::Render>(
     id: impl Into<gpui::ElementId>,
-    icon: IconName,
+    icon: Option<Icon>,
     label: &str,
     _cx: &mut Context<V>,
 ) -> impl IntoElement {
@@ -175,19 +181,19 @@ fn footer_button<V: gpui::Render>(
     div()
         .id(id)
         .h(px(24.0))
-        .px(px(8.0))
+        .px(px(6.0))
         .flex()
         .items_center()
-        .gap_1()
-        .rounded(px(4.0))
-        .cursor_pointer()
-        .hover(|style| style.bg(rgb(theme::GRAY_300)))
-        .child(Icon::new(icon).size_3().text_color(rgb(theme::GRAY_700)))
+        .gap_1p5()
+        .when_some(icon, |this, icon| {
+            this.child(icon.size_3().text_color(rgb(theme::GRAY_500)))
+        })
         .when(has_label, |this| {
             this.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(theme::GRAY_700))
+                    .whitespace_nowrap()
+                    .text_color(rgb(theme::GRAY_600))
                     .child(label),
             )
         })

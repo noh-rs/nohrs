@@ -44,7 +44,7 @@ fn render_grid_item(
     _window: &mut Window,
     cx: &mut Context<ExplorerPane>,
 ) -> AnyElement {
-    use nohrs_ui::components::file_list::{format_date, get_file_type, human_bytes};
+    use nohrs_ui::components::file_list::{format_date, human_bytes};
 
     let rename_input = page
         .renaming
@@ -57,19 +57,26 @@ fn render_grid_item(
         _ => IconName::File,
     };
 
-    let name = truncate_middle(&item.name, 28);
-    let file_type = get_file_type(&item.name, &item.kind);
-    let size_text = match item.kind.as_str() {
-        "file" => human_bytes(item.size),
-        "dir" => file_type.clone(),
-        _ => file_type.clone(),
+    let is_dir = item.kind == "dir";
+    // Budgeted to the tile's inner width: the label is centered, so anything
+    // wider is clipped at *both* ends rather than ellipsized.
+    let name = truncate_middle(&item.name, 16);
+    // A folder has no meaningful byte size, so it shows its date alone rather
+    // than repeating "Folder" on a second line.
+    let meta_text = match item.kind.as_str() {
+        "dir" => format_date(&item.modified),
+        "file" => format!(
+            "{} · {}",
+            human_bytes(item.size),
+            format_date(&item.modified)
+        ),
+        other => format!("{} · {}", other, format_date(&item.modified)),
     };
-    let modified_text = format_date(&item.modified);
     let activation_item = item.clone();
     let preview_item = item.clone();
 
     let bg_color = if selected {
-        rgb(theme::BG_HOVER)
+        rgb(theme::ACCENT_SUBTLE)
     } else {
         rgb(theme::BG)
     };
@@ -81,19 +88,23 @@ fn render_grid_item(
     };
 
     div()
-        .w(px(180.0))
-        .min_h(px(140.0))
-        .p(px(16.0))
+        .w(px(168.0))
+        .h(px(136.0))
+        .px(px(12.0))
+        .py(px(14.0))
         .rounded(px(10.0))
         .border_1()
         .border_color(border_color)
         .bg(bg_color)
-        .hover(|this| this.bg(rgb(theme::BG_HOVER)))
+        .when(!selected, |this| {
+            this.hover(|this| this.bg(rgb(theme::BG_SECONDARY)))
+        })
         .cursor_pointer()
         .flex()
         .flex_col()
-        .items_start()
-        .gap_3()
+        .items_center()
+        .text_center()
+        .gap_2()
         .on_mouse_down(
             gpui::MouseButton::Left,
             cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
@@ -115,14 +126,17 @@ fn render_grid_item(
                 cx.notify();
             }),
         )
-        .child(
-            Icon::new(icon_name)
-                .size_6()
-                .text_color(rgb(theme::GRAY_600)),
-        )
+        .child(div().flex().flex_1().items_center().justify_center().child(
+            Icon::new(icon_name).size_10().text_color(rgb(if is_dir {
+                theme::ACCENT
+            } else {
+                theme::GRAY_500
+            })),
+        ))
         .child(match rename_input {
             Some(input) => div().w_full().child(Input::new(&input)).into_any_element(),
             None => div()
+                .w_full()
                 .text_sm()
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(rgb(theme::FG))
@@ -134,21 +148,13 @@ fn render_grid_item(
         })
         .child(
             div()
-                .text_xs()
-                .text_color(rgb(theme::FG_SECONDARY))
-                .child(file_type),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(theme::FG_SECONDARY))
-                .child(size_text),
-        )
-        .child(
-            div()
+                .w_full()
                 .text_xs()
                 .text_color(rgb(theme::MUTED))
-                .child(modified_text),
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .child(meta_text),
         )
         .into_any_element()
 }

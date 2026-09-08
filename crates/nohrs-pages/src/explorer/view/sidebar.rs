@@ -1,9 +1,8 @@
 use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::list::ListItem;
 use gpui_component::{Icon, IconName};
-use nohrs_ui::theme::theme; // Assuming theme is accessible
+use nohrs_ui::theme::theme;
 
 /// Renders the explorer sidebar listing quick-access locations.
 pub fn render(
@@ -16,89 +15,107 @@ pub fn render(
         .flex()
         .flex_col()
         .bg(rgb(theme::BG))
-        .py(px(16.0))
+        .py(px(12.0))
+        .child(section_label("Library"))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap_1()
+                .gap(px(1.0))
                 .px(px(8.0))
-                .child(sidebar_item(IconName::Folder, "Home", true))
-                .child(sidebar_item(IconName::Star, "Favorites", false))
-                .child(sidebar_item(IconName::File, "Recent", false))
-                .child(sidebar_item(IconName::Folder, "Trash", false)),
+                .child(sidebar_item(Icon::new(IconName::Star), "Favorites", false))
+                .child(sidebar_item(asset_icon("icons/clock.svg"), "Recent", false))
+                .child(sidebar_item(
+                    asset_icon("icons/trash-2.svg"),
+                    "Trash",
+                    false,
+                )),
         )
         .child(
             div()
                 .flex()
                 .flex_col()
-                .mt(px(16.0))
-                .child(
-                    div()
-                        .px(px(12.0))
-                        .py(px(8.0))
-                        .text_xs()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(rgb(theme::FG_SECONDARY))
-                        .child("Folder"),
-                )
+                .mt(px(12.0))
+                .child(section_label("Places"))
                 .child(render_shortcuts(page, cx)),
         )
 }
 
-fn sidebar_item(icon: IconName, label: &str, _active: bool) -> impl IntoElement + use<> {
+fn section_label(label: &'static str) -> impl IntoElement + use<> {
+    div()
+        .px(px(16.0))
+        .pt(px(4.0))
+        .pb(px(6.0))
+        .text_xs()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(rgb(theme::MUTED))
+        .child(label)
+}
+
+/// An icon loaded straight from the embedded asset path, for the glyphs that
+/// ship with this crate but have no `IconName` variant.
+fn asset_icon(path: &'static str) -> Icon {
+    Icon::new(Icon::empty()).path(SharedString::from(path))
+}
+
+/// One sidebar row. Every group shares this so the two lists keep the same row
+/// height and icon/label alignment.
+fn sidebar_item(icon: Icon, label: &str, active: bool) -> impl IntoElement + use<> {
     let label = label.to_string();
     div()
         .w_full()
         .flex()
         .items_center()
         .gap_2()
-        .px(px(12.0))
-        .py(px(8.0))
+        .h(px(28.0))
+        .px(px(8.0))
         .rounded(px(6.0))
         .cursor_pointer()
-        .hover(|this| this.bg(rgb(theme::BG_HOVER)))
-        .child(Icon::new(icon).size_4().text_color(rgb(theme::GRAY_600)))
-        .child(div().text_sm().text_color(rgb(theme::FG)).child(label))
+        .when(active, |this| this.bg(rgb(theme::ACCENT_SUBTLE)))
+        .when(!active, |this| {
+            this.hover(|this| this.bg(rgb(theme::BG_HOVER)))
+        })
+        .child(icon.size_4().flex_shrink_0().text_color(rgb(if active {
+            theme::ACCENT
+        } else {
+            theme::GRAY_500
+        })))
+        .child(
+            div()
+                .text_sm()
+                .overflow_hidden()
+                .text_ellipsis()
+                .whitespace_nowrap()
+                .when(active, |this| this.font_weight(gpui::FontWeight::MEDIUM))
+                .text_color(rgb(theme::FG))
+                .child(label),
+        )
 }
 
 fn render_shortcuts(
-    _page: &mut ExplorerPane,
+    page: &mut ExplorerPane,
     cx: &mut Context<ExplorerPane>,
 ) -> impl IntoElement + use<> {
     let shortcuts = get_shortcuts();
-    let mut shortcuts_el = div().flex().flex_col().gap_1().px(px(8.0));
+    let cwd = page.cwd.clone();
+    let mut shortcuts_el = div().flex().flex_col().gap(px(1.0)).px(px(8.0));
 
     for (i, (label, path)) in shortcuts.into_iter().enumerate() {
         let p = path.clone();
-        let icon = match label.as_str() {
-            "Home" => IconName::Folder,
-            "Desktop" => IconName::Folder,
-            "Downloads" => IconName::Folder,
-            "Documents" => IconName::Folder,
-            "Pictures" => IconName::Folder,
-            _ => IconName::Folder,
+        let is_current = cwd == path;
+        let icon = if is_current {
+            Icon::new(IconName::FolderOpen)
+        } else {
+            Icon::new(IconName::Folder)
         };
-        let label_str = label.clone();
 
         shortcuts_el = shortcuts_el.child(
-            ListItem::new(("shortcut", i))
+            div()
+                .id(("shortcut", i))
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.change_dir(p.clone(), window, cx)),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(Icon::new(icon).size_4().text_color(rgb(theme::GRAY_600)))
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(theme::FG))
-                                .child(label_str.clone()),
-                        ),
-                ),
+                .child(sidebar_item(icon, &label, is_current)),
         );
     }
 

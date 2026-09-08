@@ -5,8 +5,14 @@ use gpui::prelude::*;
 use gpui::*;
 use gpui_component::list::ListItem;
 use gpui_component::v_virtual_list;
+use gpui_component::{Icon, IconName};
 use nohrs_ui::theme::theme;
 use std::rc::Rc;
+
+/// Height of the sticky column-header row. Shared with the preview pane's
+/// header so the two line up across the divider, and with the virtual list's
+/// size table, which must agree with what the header actually paints.
+pub const HEADER_HEIGHT: f32 = 40.0;
 
 /// Renders the file listing as a virtualized multi-column table.
 pub fn render(page: &mut ExplorerPane, cx: &mut Context<ExplorerPane>) -> AnyElement {
@@ -51,7 +57,7 @@ fn render_table_with_header(
 ) -> impl IntoElement + use<> {
     let entity = cx.entity().clone();
 
-    let mut all_sizes = vec![gpui::size(px(table_width), px(48.0))];
+    let mut all_sizes = vec![gpui::size(px(table_width), px(HEADER_HEIGHT))];
     all_sizes.extend(page.item_sizes.as_ref().iter().copied());
     let all_sizes = Rc::new(all_sizes);
     let scroll_handle = page.virtual_scroll_handle.clone();
@@ -105,8 +111,9 @@ fn render_header_row(
 ) -> impl IntoElement + use<> {
     div()
         .w(px(table_width))
-        .h(px(48.0))
-        .px(px(24.0))
+        .h(px(HEADER_HEIGHT))
+        .pl(px(24.0))
+        .pr(px(24.0))
         .bg(rgb(theme::BG))
         .border_b_1()
         .border_color(rgb(theme::BORDER))
@@ -174,10 +181,19 @@ fn render_resizable_column_header(
     // ... .child(render_column_header(...))
     // ... .child(div()... on_mouse_down(... this.start_column_resize ...))
 
+    // The name column's rows lead with a chevron gutter and a type icon, so its
+    // heading is indented to match; the other columns start flush.
+    let leading_indent = if column_index == 0 {
+        super::row::NAME_INDENT
+    } else {
+        0.0
+    };
+
     div()
         .w(px(width))
         .flex_shrink_0()
         .relative()
+        .pl(px(leading_indent))
         .child(render_column_header(
             page,
             label,
@@ -215,10 +231,10 @@ fn render_column_header(
 ) -> gpui::Div {
     let is_active = page.sort_key == key;
     let label_str = label.to_string();
-    let sort_icon = if is_active {
-        Some(if page.sort_asc { "↑" } else { "↓" })
+    let sort_icon = if page.sort_asc {
+        IconName::ChevronUp
     } else {
-        None
+        IconName::ChevronDown
     };
 
     let mut wrapper = div();
@@ -228,7 +244,10 @@ fn render_column_header(
     }
 
     wrapper.child(
+        // `ListItem` pads itself horizontally; zeroed here so each heading sits
+        // flush with the column data below it.
         ListItem::new(("sort-header", key_idx))
+            .px(px(0.0))
             .on_click(cx.listener(move |this, _, _, _| {
                 this.set_sort_key(key);
             }))
@@ -249,12 +268,7 @@ fn render_column_header(
                             .child(label_str),
                     )
                     .when(is_active, |this| {
-                        this.child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(theme::FG))
-                                .child(sort_icon.unwrap_or("")),
-                        )
+                        this.child(Icon::new(sort_icon).size_3().text_color(rgb(theme::ACCENT)))
                     }),
             ),
     )

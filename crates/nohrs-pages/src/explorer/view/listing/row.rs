@@ -9,6 +9,12 @@ use gpui_component::{Icon, IconName};
 use nohrs_services::fs::listing::FileEntryDto;
 use nohrs_ui::theme::theme;
 
+/// Horizontal space a row's name column spends before the name itself: the
+/// 20px chevron gutter, the 16px type icon, and the two 4px gaps around them.
+/// The table header indents its "Name" label by the same amount so the column
+/// heading lines up with the file names beneath it.
+pub const NAME_INDENT: f32 = 44.0;
+
 /// Renders a single listing row for the given entry at row index `ix`.
 pub fn render(
     page: &ExplorerPane,
@@ -24,20 +30,16 @@ pub fn render(
     };
     let icon_color = match item.kind.as_str() {
         "dir" => rgb(theme::ACCENT),
-        _ => rgb(theme::GRAY_600),
+        _ => rgb(theme::GRAY_500),
     };
 
-    let bg_color = if page.is_selected(ix) {
-        theme::ACCENT_LIGHT
-    } else if ix % 2 == 0 {
-        theme::BG
-    } else {
-        theme::GRAY_50
-    };
+    let is_selected = page.is_selected(ix);
 
     let file_type = get_file_type(&item.name, &item.kind);
 
-    let max_chars = (page.col_name_width / 8.0) as usize;
+    // Budget only the space the name actually gets: the column minus the
+    // chevron gutter, icon and gaps that precede it (see `NAME_INDENT`).
+    let max_chars = ((page.col_name_width - NAME_INDENT) / 7.0) as usize;
     let display_name = truncate_middle(&item.name, max_chars.max(20));
 
     let total_width = page.total_table_width();
@@ -117,8 +119,24 @@ pub fn render(
             ListItem::new(("file-row", ix))
                 .w(px(total_width))
                 .h(px(32.0))
-                .px(px(24.0))
-                .bg(rgb(bg_color))
+                .pr(px(24.0))
+                // A flush-left accent bar carries the selection instead of the
+                // former zebra striping, which fought with the selected color.
+                .border_l_2()
+                .border_color(rgb(if is_selected {
+                    theme::ACCENT
+                } else {
+                    theme::BG
+                }))
+                .pl(px(22.0))
+                // `ListItem` paints its own hover fill, which also covers a
+                // selected row's tint; the accent bar above is what keeps the
+                // selection legible while the pointer is over it.
+                .bg(rgb(if is_selected {
+                    theme::ACCENT_SUBTLE
+                } else {
+                    theme::BG
+                }))
                 .on_click(
                     cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                         if let gpui::ClickEvent::Mouse(mouse) = event {
