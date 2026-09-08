@@ -10,6 +10,10 @@
     // canonical-host redirect in workers/site.ts has to see `www` requests on
     // every path, not only the root. The Worker passes anything it does not
     // answer itself straight to the assets binding.
+    //
+    // The two hostnames below are the only ones routed here. The Worker's
+    // redirect is written for any `*.nohrs.app` so that adding a hostname to
+    // `routes` is the only step needed, but nothing else reaches it today.
     "run_worker_first": true,
     "not_found_handling": "404-page",
     "html_handling": "auto-trailing-slash"

@@ -8,7 +8,14 @@ export const Route = createFileRoute('/$lang/releases')({
   head: ({ params }) => {
     const lang = params.lang as Lang
     const strings = t(lang).releases
-    return seo({ lang, path: '/releases', title: strings.title, description: strings.empty })
+    return seo({
+      lang,
+      path: '/releases',
+      title: strings.title,
+      // Saying "no release exists" in the meta description of a page that
+      // lists releases is worse than saying nothing specific.
+      description: github.releases.length === 0 ? strings.empty : strings.lede,
+    })
   },
   component: Releases,
 })

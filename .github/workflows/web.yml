@@ -18,8 +18,11 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
+# The event is part of the group: a scheduled run's ref is the default branch,
+# so without it an ordinary push to `develop` would cancel the Monday refresh
+# and never deploy in its place.
 concurrency:
-  group: web-${{ github.workflow }}-${{ github.ref }}
+  group: web-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -30,9 +33,9 @@ defaults:
     working-directory: web
 
 env:
-  # A scheduled run starts on the default branch, but production is `main`.
-  # Both jobs resolve the ref the same way, so `needs: build` validates the
-  # revision that gets deployed rather than a different one.
+  # Production is `main`. A scheduled run starts on the default branch, so it
+  # has to say so explicitly; both jobs resolve this the same way, which is
+  # what makes `needs: build` a check on the revision that actually ships.
   DEPLOY_REF: ${{ github.event_name == 'schedule' && 'main' || github.ref }}
 
 jobs:
@@ -77,19 +80,25 @@ jobs:
           test -f dist/client/en/blog/rss.xml
           test -d dist/client/_pagefind
 
+      # Deploy publishes exactly this, rather than rebuilding: what shipped is
+      # then the output these checks passed on, not a second build of it.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: web-dist
           path: web/dist/client
           retention-days: 7
+          include-hidden-files: true
 
   deploy:
     name: deploy
     needs: build
+    # Production deploys only from `main`. A manual run on any other branch
+    # would otherwise execute that branch's workflow and build scripts with the
+    # production Cloudflare token, which is a push-access-to-deploy escalation.
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
-      || github.event_name == 'schedule'
-      || github.event_name == 'workflow_dispatch'
+      github.event_name == 'schedule'
+      || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+          && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     environment: production
     # Keyed to the environment rather than the ref, so a scheduled run and a
@@ -110,15 +119,19 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      # wrangler only; the site itself is downloaded, not rebuilt.
       - run: npm ci
 
-      - name: Build
-        run: npm run build
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VITE_GISCUS_REPO_ID: ${{ secrets.GISCUS_REPO_ID }}
-          VITE_GISCUS_CATEGORY_ID: ${{ secrets.GISCUS_CATEGORY_ID }}
-          VITE_CF_ANALYTICS_TOKEN: ${{ secrets.CF_ANALYTICS_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: web-dist
+          path: web/dist/client
+
+      - name: Check the downloaded output
+        run: |
+          test -f dist/client/en/index.html
+          test -f dist/client/ja/index.html
+          test -d dist/client/_pagefind
 
       - name: Deploy nohrs.app
         run: npx wrangler deploy

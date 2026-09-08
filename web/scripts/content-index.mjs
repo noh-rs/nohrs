@@ -56,8 +56,10 @@ export function plugins() {
  * the prerender list and the sitemap, so the two can never drift apart.
  */
 export function sitePaths() {
-  /** @type {{path: string, changefreq: string, priority: number}[]} */
-  const paths = [{ path: '/', changefreq: 'monthly', priority: 1 }]
+  /** @type {{path: string, changefreq: string, priority: number, sitemap?: boolean}[]} */
+  // `/` is prerendered — it is the no-JS fallback for the language redirect —
+  // but it is `noindex` and holds no content, so it stays out of the sitemap.
+  const paths = [{ path: '/', changefreq: 'monthly', priority: 1, sitemap: false }]
   for (const lang of LANGS) {
     paths.push(
       { path: `/${lang}`, changefreq: 'weekly', priority: 1 },

@@ -50,7 +50,7 @@ function PluginDetail() {
           <DefinitionRow label={strings.source}>
             <a href={`https://github.com/${entry.repo}`}>{entry.repo} ↗</a>
           </DefinitionRow>
-          <DefinitionRow label="Author">{entry.author}</DefinitionRow>
+          <DefinitionRow label={strings.author}>{entry.author}</DefinitionRow>
           <DefinitionRow label={strings.permissions}>
             <span className="flex flex-wrap gap-x-5 font-mono text-[0.8125rem]">
               {entry.permissions.map((permission) => (

@@ -25,8 +25,16 @@ const FAMILIES = [
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
 
+// The documented behaviour is "degrade to system fonts when the network is
+// unavailable". A request that hangs rather than fails would instead stall the
+// build indefinitely, so every fetch here carries a deadline.
+const TIMEOUT_MS = 20_000
+
 async function fetchText(url) {
-  const response = await fetch(url, { headers: { 'User-Agent': UA } })
+  const response = await fetch(url, {
+    headers: { 'User-Agent': UA },
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  })
   if (!response.ok) throw new Error(`${response.status} ${response.statusText} for ${url}`)
   return response.text()
 }
@@ -56,7 +64,10 @@ async function main() {
       } catch {
         // not cached yet
       }
-      const response = await fetch(href, { headers: { 'User-Agent': UA } })
+      const response = await fetch(href, {
+        headers: { 'User-Agent': UA },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      })
       if (!response.ok) throw new Error(`${response.status} for ${href}`)
       await writeFile(target, Buffer.from(await response.arrayBuffer()))
       downloaded += 1

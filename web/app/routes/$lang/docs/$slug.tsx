@@ -19,6 +19,7 @@ export const Route = createFileRoute('/$lang/docs/$slug')({
       path: `/docs/${page.slug}`,
       title: page.title,
       description: page.description,
+      contentLang: page.lang,
     })
   },
   component: DocDetail,
@@ -48,7 +49,14 @@ function DocDetail() {
       </h1>
       <p className="mt-4 max-w-[58ch] text-[1.0625rem] text-ink-2">{page.description}</p>
 
-      <div className="prose mt-10">
+      {page.fallbackFrom ? (
+        <div className="mt-8 border-l-2 border-tan pl-5">
+          <p className="text-[0.9375rem] text-ink">{strings.translationMissingTitle}</p>
+          <p className="mt-1 text-sm text-muted">{strings.translationMissingBody}</p>
+        </div>
+      ) : null}
+
+      <div className="prose mt-10" lang={page.fallbackFrom ?? lang}>
         <MDXProvider components={mdxComponents}>
           <Body />
         </MDXProvider>
@@ -78,7 +86,7 @@ function DocDetail() {
       </nav>
 
       <p className="mt-10 font-mono text-xs text-muted">
-        <a href={`${SITE.repoUrl}/blob/develop/web/content/${lang}/docs/${slug}.mdx`}>
+        <a href={`${SITE.repoUrl}/blob/develop/web/content/${page.lang}/docs/${slug}.mdx`}>
           {strings.editOnGitHub} ↗
         </a>
       </p>

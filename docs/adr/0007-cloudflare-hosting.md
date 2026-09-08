@@ -81,8 +81,9 @@ assets binding なら、その 2 つを担う Worker 1 本と静的アセット�
 
 ### 影響
 
-- PR preview が Pages 標準機能ではなくなる。`wrangler versions upload` のプレビュー URL で
-  代替する
+- PR preview が Pages 標準機能ではなくなる。**現時点では自動化していない**: PR では build と
+  prerender 出力の検証までを行い、成果物を artifact として上げるだけ。`wrangler versions upload` の
+  プレビュー URL に置き換えるのは今後の作業
 - デプロイは GitHub Actions の `wrangler deploy` に一本化 ([`docs/web.md`](../web.md) §7)。
   Pages の cron ビルドも使えなくなるため、**週次再ビルドは GitHub Actions の `schedule`** で行う
 - `coverage.nohrs.app` (R2) と noh.rs リダイレクト Worker は本 ADR のまま変更なし

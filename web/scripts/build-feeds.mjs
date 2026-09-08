@@ -17,6 +17,11 @@ const TITLES = {
   ja: { title: 'Nohrs ブログ', description: 'リリースの告知と、Nohrs をどう作っているかの記録です。' },
 }
 
+/** A post URL, path-encoded and then XML-escaped, safe in text or an attribute. */
+function postUrl(lang, slug) {
+  return escapeXml(`${HOST}/${lang}/blog/${encodeURIComponent(slug)}`)
+}
+
 function escapeXml(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -29,20 +34,22 @@ function rss(lang, posts) {
   const meta = TITLES[lang]
   const items = posts
     .map((post) => {
-      const url = `${HOST}/${lang}/blog/${post.slug}`
+      const url = postUrl(lang, post.slug)
+      // `dc:creator`, not `author`: RSS 2.0 defines `author` as an email
+      // address, and these are display names.
       return `    <item>
       <title>${escapeXml(post.title)}</title>
       <link>${url}</link>
       <guid isPermaLink="true">${url}</guid>
       <pubDate>${new Date(post.date).toUTCString()}</pubDate>
       <description>${escapeXml(post.description)}</description>
-      <author>${escapeXml(post.author)}</author>
+      <dc:creator>${escapeXml(post.author)}</dc:creator>
     </item>`
     })
     .join('\n')
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>${escapeXml(meta.title)}</title>
     <link>${HOST}/${lang}/blog</link>
@@ -60,7 +67,7 @@ function atom(lang, posts) {
   const updated = posts[0] ? new Date(posts[0].date).toISOString() : new Date().toISOString()
   const entries = posts
     .map((post) => {
-      const url = `${HOST}/${lang}/blog/${post.slug}`
+      const url = postUrl(lang, post.slug)
       return `  <entry>
     <title>${escapeXml(post.title)}</title>
     <link href="${url}" />

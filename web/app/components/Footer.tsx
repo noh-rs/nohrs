@@ -59,11 +59,10 @@ export function Footer({ lang }: { lang: Lang }) {
             <Link to="/$lang/blog" params={{ lang }} className={linkClass}>
               {strings.nav.blog}
             </Link>
+            {/* Discord is under Social; a second entry here was the same
+                destination twice in one footer. */}
             <a href={SITE.discussionsUrl} className={linkClass}>
               {strings.footer.discussions}
-            </a>
-            <a href={SITE.discordUrl} className={linkClass}>
-              {strings.footer.community}
             </a>
           </Column>
 

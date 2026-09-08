@@ -33,6 +33,20 @@ function firstLine(message) {
   return message.split('\n', 1)[0]
 }
 
+/**
+ * The first line of a release body that reads as a sentence, with Markdown
+ * heading and emphasis markers stripped. Returns null rather than an empty
+ * string so the caller's `??` actually falls through to the release name — a
+ * body that opens with a blank line used to render as nothing at all.
+ */
+function highlightOf(body) {
+  for (const line of (body ?? '').split('\n')) {
+    const text = line.replace(/^\s*#{1,6}\s*/, '').replace(/\*\*/g, '').trim()
+    if (text) return text
+  }
+  return null
+}
+
 async function main() {
   const [repo, releases, commits] = await Promise.all([
     api(`repos/${REPO}`),
@@ -60,7 +74,7 @@ async function main() {
         date: release.published_at?.slice(0, 10) ?? null,
         prerelease: release.prerelease,
         url: release.html_url,
-        highlight: /^##?\s|^\*\*/m.test(release.body ?? '') ? firstLine(release.body ?? '') : null,
+        highlight: highlightOf(release.body),
         assets: (release.assets ?? [])
           .filter((asset) => /\.(dmg|zip|tar\.gz|pkg)$/.test(asset.name))
           .map((asset) => ({ name: asset.name, url: asset.browser_download_url, size: asset.size })),

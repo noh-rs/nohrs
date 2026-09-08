@@ -220,6 +220,7 @@ const en = {
 
   releases: {
     title: 'Releases',
+    lede: 'Every published build, newest first.',
     empty:
       'No release has been published yet. Nohrs is iterating on 0.0.x under P1, and the first tagged build will be 0.1.0 when P2 completes.',
     emptyCta: 'Follow the roadmap',
@@ -260,6 +261,8 @@ const en = {
     editOnGitHub: 'Edit this page on GitHub',
     previous: 'Previous',
     next: 'Next',
+    translationMissingTitle: 'This page has no Japanese translation yet',
+    translationMissingBody: 'The English text is shown below. A translation pull request is very welcome.',
   },
 
   plugins: {
@@ -275,6 +278,7 @@ const en = {
       theme: 'Themes',
     } as Record<string, string>,
     allCategories: 'All',
+    author: 'Author',
     permissions: 'Permissions',
     install: 'Install',
     installUnavailable: 'Install needs the plugin host (P4)',
@@ -293,7 +297,6 @@ const en = {
     social: 'Social',
     preview: 'Preview',
     discussions: 'Discussions',
-    community: 'Community',
     makersNote: "Maker's note",
     contributing: 'Contributing',
     license: 'License',
@@ -525,6 +528,7 @@ const ja: Dict = {
 
   releases: {
     title: 'リリース',
+    lede: '公開したビルドの一覧です。新しいものから並べています。',
     empty:
       'まだリリースは公開していません。P1 のもとで 0.0.x を反復している段階で、最初にタグを打つのは P2 完了時の 0.1.0 です。',
     emptyCta: 'ロードマップを見る',
@@ -566,6 +570,8 @@ const ja: Dict = {
     editOnGitHub: 'GitHub でこのページを編集する',
     previous: '前のページ',
     next: '次のページ',
+    translationMissingTitle: 'このページの日本語訳は、まだありません',
+    translationMissingBody: '以下は英語の本文です。翻訳のプルリクエストを歓迎します。',
   },
 
   plugins: {
@@ -581,6 +587,7 @@ const ja: Dict = {
       theme: 'テーマ',
     },
     allCategories: 'すべて',
+    author: '作者',
     permissions: '権限',
     install: 'インストール',
     installUnavailable: 'インストールにはプラグインホスト (P4) が必要です',
@@ -599,7 +606,6 @@ const ja: Dict = {
     social: 'ソーシャル',
     preview: 'プレビュー',
     discussions: 'ディスカッション',
-    community: 'コミュニティ',
     makersNote: 'メーカーズノート',
     contributing: 'コントリビュート',
     license: 'ライセンス',

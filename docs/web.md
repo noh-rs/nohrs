@@ -207,7 +207,9 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
   - 1024px 未満ではリンク行をバーの下に折り返す。ドロワーは作らない (4 項目のために 2 つ目のナビゲーションモデルを維持する価値がない)
 - **フッタ (zed 風 4 列)**:
   - Product: Download · Releases · Plugins · Roadmap · Docs · GitHub
-  - Resources: FAQ (将来) · Community (Discord) · Discussions · Privacy
+  - Resources: Docs · Blog · Discussions · FAQ (将来) · Privacy (将来)
+    - **Discord をここに置かない** (実装 2026-09-08)。Social 列にあるものと同一の宛先で、
+      1 つのフッタ内に同じリンクが 2 回出ることになるため
   - Project: Blog · About · Brand (将来) · License
   - Social: X · Discord · GitHub
 

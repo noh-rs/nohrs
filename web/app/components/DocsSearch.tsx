@@ -34,6 +34,7 @@ export function DocsSearch({ lang }: { lang: Lang }) {
   const [hits, setHits] = useState<Hit[]>([])
   const [unavailable, setUnavailable] = useState(false)
   const input = useRef<HTMLInputElement>(null)
+  const dialog = useRef<HTMLDivElement>(null)
   const api = useRef<PagefindApi | null>(null)
 
   useEffect(() => {
@@ -56,7 +57,33 @@ export function DocsSearch({ lang }: { lang: Lang }) {
 
   useEffect(() => {
     if (!open) return
+    const restoreTo = document.activeElement
     input.current?.focus()
+
+    // A modal that lets Tab walk out into the page behind it is a modal only
+    // to a mouse. Focus is cycled inside the dialog and handed back to
+    // whatever opened it.
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return
+      const root = dialog.current
+      if (!root) return
+      const focusable = [...root.querySelectorAll<HTMLElement>('input, a[href], button')]
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (!first || !last) return
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', trap)
+    return () => {
+      document.removeEventListener('keydown', trap)
+      if (restoreTo instanceof HTMLElement) restoreTo.focus()
+    }
   }, [open])
 
   const load = useCallback(async () => {
@@ -133,6 +160,7 @@ export function DocsSearch({ lang }: { lang: Lang }) {
           }}
         >
           <div
+            ref={dialog}
             role="dialog"
             aria-modal="true"
             aria-label={strings.searchLabel}
@@ -140,8 +168,12 @@ export function DocsSearch({ lang }: { lang: Lang }) {
           >
             <input
               ref={input}
+              type="search"
               value={term}
               onChange={(event) => setTerm(event.target.value)}
+              // A placeholder is not an accessible name: it is not exposed
+              // reliably and it disappears as soon as anything is typed.
+              aria-label={strings.searchLabel}
               placeholder={strings.searchPlaceholder}
               className="w-full border-b border-line-soft bg-transparent px-4 py-3.5 text-[15px] outline-none"
             />

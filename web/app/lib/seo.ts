@@ -21,6 +21,7 @@ export function seo({
   type = 'website',
   publishedAt,
   noindex = false,
+  contentLang = lang,
 }: {
   lang: Lang
   path: string
@@ -30,8 +31,16 @@ export function seo({
   type?: 'website' | 'article'
   publishedAt?: string
   noindex?: boolean
+  /**
+   * The language the text on the page is actually in. Differs from `lang`
+   * when a translation is missing and the reader is shown the source, and
+   * the canonical URL has to point at that version — otherwise two URLs each
+   * claim to be the definitive copy of the same English text.
+   */
+  contentLang?: Lang
 }): { meta: Meta; links: LinkTag } {
   const url = `${SITE.host}/${lang}${path}`
+  const canonical = `${SITE.host}/${contentLang}${path}`
   const fullTitle = path === '' ? `${SITE.name} — ${title}` : `${title} — ${SITE.name}`
 
   const meta: Meta = [
@@ -42,7 +51,7 @@ export function seo({
     { property: 'og:description', content: description },
     { property: 'og:url', content: url },
     { property: 'og:image', content: `${SITE.host}${image}` },
-    { property: 'og:locale', content: lang === 'ja' ? 'ja_JP' : 'en_US' },
+    { property: 'og:locale', content: contentLang === 'ja' ? 'ja_JP' : 'en_US' },
     { name: 'twitter:title', content: fullTitle },
     { name: 'twitter:description', content: description },
     { name: 'twitter:image', content: `${SITE.host}${image}` },
@@ -52,7 +61,7 @@ export function seo({
   if (noindex) meta.push({ name: 'robots', content: 'noindex' })
 
   const links: LinkTag = [
-    { rel: 'canonical', href: url },
+    { rel: 'canonical', href: canonical },
     ...LANGS.map((alternate) => ({
       rel: 'alternate',
       hrefLang: alternate,
@@ -64,9 +73,18 @@ export function seo({
   return { meta, links }
 }
 
-/** JSON-LD, emitted as a script tag from a route's `head()`. */
+/**
+ * JSON-LD, emitted as a script tag from a route's `head()`.
+ *
+ * `<` is escaped because the JSON goes inside a `<script>` element, where a
+ * `</script>` sequence in any string value would close the block early and
+ * put the remainder into the document as markup.
+ */
 export function jsonLd(data: Record<string, unknown>) {
-  return { type: 'application/ld+json', children: JSON.stringify(data) }
+  return {
+    type: 'application/ld+json',
+    children: JSON.stringify(data).replace(/</g, '\\u003c'),
+  }
 }
 
 export function softwareApplicationLd(lang: Lang, description: string) {

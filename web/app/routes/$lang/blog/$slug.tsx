@@ -26,6 +26,7 @@ export const Route = createFileRoute('/$lang/blog/$slug')({
       image: post.og_image ?? `/og/blog-${post.lang}-${post.slug}.png`,
       type: 'article',
       publishedAt: post.date,
+      contentLang: post.lang,
     })
 
     return {
@@ -38,7 +39,7 @@ export const Route = createFileRoute('/$lang/blog/$slug')({
           headline: post.title,
           description: post.description,
           datePublished: post.date,
-          inLanguage: lang,
+          inLanguage: post.lang,
           author: { '@type': 'Person', name: post.author },
           mainEntityOfPage: `${SITE.host}/${lang}/blog/${post.slug}`,
         }),

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useId, useState, type KeyboardEvent, type ReactNode } from 'react'
 
 /** A short aside inside an article. Marked by a rule, not a coloured panel. */
 function Callout({ title, children }: { title?: string; children: ReactNode }) {
@@ -25,17 +25,38 @@ function Screenshot({ src, alt, caption }: { src: string; alt: string; caption?:
   )
 }
 
+/**
+ * Proper tablist semantics rather than a row of `aria-pressed` buttons: the
+ * options are mutually exclusive, and a screen reader has to be able to tell
+ * that — and to associate the selected label with the code it reveals. Arrow
+ * keys move between tabs, which is what the role promises.
+ */
 function CodeTabs({ tabs }: { tabs: { label: string; children: ReactNode }[] }) {
   const [active, setActive] = useState(0)
+  const id = useId()
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const delta = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0
+    if (!delta) return
+    event.preventDefault()
+    const next = (active + delta + tabs.length) % tabs.length
+    setActive(next)
+    document.getElementById(`${id}-tab-${next}`)?.focus()
+  }
+
   return (
     <div className="my-7">
-      <div className="flex gap-1 border-b border-line-soft">
+      <div role="tablist" className="flex gap-1 border-b border-line-soft" onKeyDown={onKeyDown}>
         {tabs.map((tab, index) => (
           <button
             key={tab.label}
+            id={`${id}-tab-${index}`}
             type="button"
+            role="tab"
+            aria-selected={index === active}
+            aria-controls={`${id}-panel-${index}`}
+            tabIndex={index === active ? 0 : -1}
             onClick={() => setActive(index)}
-            aria-pressed={index === active}
             className={`-mb-px border-b px-3 py-2 font-mono text-xs transition-colors duration-200 ${
               index === active ? 'border-tan-ink text-ink' : 'border-transparent text-muted hover:text-ink'
             }`}
@@ -44,7 +65,18 @@ function CodeTabs({ tabs }: { tabs: { label: string; children: ReactNode }[] }) 
           </button>
         ))}
       </div>
-      <div className="pt-3">{tabs[active]?.children}</div>
+      {tabs.map((tab, index) => (
+        <div
+          key={tab.label}
+          id={`${id}-panel-${index}`}
+          role="tabpanel"
+          aria-labelledby={`${id}-tab-${index}`}
+          hidden={index !== active}
+          className="pt-3"
+        >
+          {tab.children}
+        </div>
+      ))}
     </div>
   )
 }

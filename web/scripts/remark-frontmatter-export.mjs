@@ -45,11 +45,20 @@ export default function remarkFrontmatterExport() {
   }
 }
 
-function valueToEstree(value) {
+function valueToEstree(value, seen = new Set()) {
   if (value === null || value === undefined) return { type: 'Literal', value: null, raw: 'null' }
   if (value instanceof Date) return { type: 'Literal', value: value.toISOString(), raw: JSON.stringify(value.toISOString()) }
+  if (typeof value === 'object') {
+    // YAML anchors can point back at an ancestor. Recursing into one would
+    // not terminate, and one content file would take the whole prerender
+    // build down with it.
+    if (seen.has(value)) {
+      throw new Error('frontmatter contains a cyclic reference, which cannot be serialised')
+    }
+    seen = new Set(seen).add(value)
+  }
   if (Array.isArray(value)) {
-    return { type: 'ArrayExpression', elements: value.map(valueToEstree) }
+    return { type: 'ArrayExpression', elements: value.map((item) => valueToEstree(item, seen)) }
   }
   if (typeof value === 'object') {
     return {
@@ -61,7 +70,7 @@ function valueToEstree(value) {
         shorthand: false,
         computed: false,
         key: { type: 'Literal', value: key, raw: JSON.stringify(key) },
-        value: valueToEstree(item),
+        value: valueToEstree(item, seen),
       })),
     }
   }

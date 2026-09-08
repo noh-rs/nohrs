@@ -186,6 +186,9 @@ export function FluidOrb() {
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)')
     let frame = 0
     let running = false
+    // Tracked rather than re-read: `visibilitychange` must not restart the
+    // loop for an orb that scrolled out of view while the tab was hidden.
+    let onscreen = false
     const start = performance.now()
 
     const loop = () => {
@@ -200,7 +203,7 @@ export function FluidOrb() {
     }
 
     const play = () => {
-      if (running) return
+      if (running || !onscreen || document.hidden) return
       if (reduce.matches) {
         draw(0)
         return
@@ -210,11 +213,27 @@ export function FluidOrb() {
     }
 
     // Off screen or on a hidden tab, the loop is pure waste.
-    const observer = new IntersectionObserver(([entry]) => (entry?.isIntersecting ? play() : stop()))
+    const observer = new IntersectionObserver(([entry]) => {
+      onscreen = entry?.isIntersecting ?? false
+      if (onscreen) play()
+      else stop()
+    })
     observer.observe(canvas)
 
     const onVisibility = () => (document.hidden ? stop() : play())
     document.addEventListener('visibilitychange', onVisibility)
+
+    // Turning reduced motion on mid-visit has to stop an animation already
+    // running, and turning it off has to be allowed to start one.
+    const onReduce = () => {
+      if (reduce.matches) {
+        stop()
+        draw(0)
+      } else {
+        play()
+      }
+    }
+    reduce.addEventListener('change', onReduce)
 
     const themeObserver = new MutationObserver(() => {
       applyTone()
@@ -240,6 +259,7 @@ export function FluidOrb() {
       observer.disconnect()
       themeObserver.disconnect()
       document.removeEventListener('visibilitychange', onVisibility)
+      reduce.removeEventListener('change', onReduce)
       prefersDark.removeEventListener('change', onScheme)
       window.removeEventListener('resize', onResize)
     }

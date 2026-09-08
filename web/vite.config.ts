@@ -49,14 +49,19 @@ export default defineConfig({
       // served from the edge as static HTML. Pagefind needs that HTML too.
       prerender: { enabled: true, concurrency: 4, failOnError: true },
       sitemap: { enabled: true, host: HOST },
-      pages: sitePaths().map((page: { path: string; changefreq: string; priority: number }) => ({
-        path: page.path,
-        sitemap: {
-          changefreq: page.changefreq,
-          priority: page.priority,
-          alternateRefs: alternateRefs(page.path, HOST),
-        },
-      })),
+      pages: sitePaths().map(
+        (page: { path: string; changefreq: string; priority: number; sitemap?: boolean }) => ({
+          path: page.path,
+          sitemap: {
+            // `/` is prerendered but excluded: it is `noindex` and only picks
+            // a language.
+            exclude: page.sitemap === false,
+            changefreq: page.changefreq,
+            priority: page.priority,
+            alternateRefs: alternateRefs(page.path, HOST),
+          },
+        }),
+      ),
     }),
     viteReact(),
   ],
