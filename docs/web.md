@@ -95,7 +95,7 @@ R2 は他用途でも使用:
 - **要素そのものを動かす演出も封印** (改訂 2026-09-08)。ホバーで吸い付くボタン、回転するグリフの類は、罫線と余白で組む他セクションと語彙が食い違い、ページ全体の品位を下げる。動かしてよいのは「状態が変わったこと」を伝える場合に限る
 - 実装は CSS 主体、オーケストレーションが要る所のみ軽量に Motion。`prefers-reduced-motion` 対応必須
 - 基準値: `220ms` / `cubic-bezier(.16,1,.3,1)` / `translateY(6px)` / stagger `50ms`
-- **スクロールスナップは上端と下端の 2 点だけ** (改訂 2026-09-08)。`scroll-snap-type: y proximity` に対し、吸着点は `.hero { scroll-snap-align: start }` と `footer { scroll-snap-align: end }` のみ。セクションごとに吸着点を置くと境界のたびに引っ張られ、通常のスクロールが重く感じられる (一度実装して差し戻した)。`scroll-padding-top` はアンカー遷移が sticky ヘッダに潜らないようにするために残す。`prefers-reduced-motion` では `scroll-snap-type: none` に落とす
+- **スクロールスナップは使わない** (改訂 2026-09-08)。セクションごとの吸着 → 上端下端の 2 点だけ → 全廃、と 2 段階で差し戻した。`proximity` でも吸着点の近傍でホイールが引っ張られ、`scroll-behavior: smooth` を `html` に置くとキーボード / スクロールバー操作まで再タイミングされる。**ホイールの感触はブラウザに完全に任せる**。アンカー遷移のイージングは、クリックハンドラ側で `scrollIntoView({ behavior: "smooth" })` を呼んで与える (`prefers-reduced-motion` では `"auto"`)。`scroll-padding-top` は sticky ヘッダにアンカー先が潜らないよう残す
 
 ### 品質基準 (ローンチ条件)
 

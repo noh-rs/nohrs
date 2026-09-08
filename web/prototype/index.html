@@ -58,15 +58,11 @@
   }
 
   * { box-sizing: border-box; }
-  /* only two snap points, at the very top and the very bottom — a snap point
-     per section pulls at every boundary and makes ordinary scrolling fight back */
-  html {
-    scroll-snap-type: y proximity;
-    scroll-padding-top: 60px;   /* offsets anchor targets under the sticky header */
-    scroll-behavior: smooth;
-  }
-  .hero  { scroll-snap-align: start; }
-  footer { scroll-snap-align: end; }
+  /* the wheel is left entirely to the browser — scroll-snap pulls at its
+     anchors even in `proximity`, and `scroll-behavior: smooth` on the root
+     re-times keyboard and scrollbar scrolling. Anchor jumps get their easing
+     from the click handler instead. */
+  html { scroll-padding-top: 60px; }  /* keeps anchor targets clear of the sticky header */
   body {
     margin: 0;
     background: var(--paper);
@@ -318,7 +314,6 @@
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
     .js-reveal .reveal:not(.in) { opacity: 1; transform: none; }
-    html { scroll-behavior: auto; scroll-snap-type: none; }
   }
 </style>
 
@@ -691,6 +686,19 @@
   const hdr = document.getElementById("hdr");
   const onScroll = () => hdr.classList.toggle("stuck", scrollY > 8);
   addEventListener("scroll", onScroll, { passive: true });
+
+  /* eases anchor jumps without putting `scroll-behavior: smooth` on the
+     root, which would also re-time keyboard and scrollbar scrolling */
+  document.addEventListener("click", e => {
+    const link = e.target.closest('a[href^="#"]');
+    if (!link) return;
+    const id = link.getAttribute("href").slice(1);
+    const target = id ? document.getElementById(id) : document.body;
+    if (!target) return;
+    e.preventDefault();
+    target.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+    history.replaceState(null, "", id ? `#${id}` : location.pathname);
+  });
 
   /* ── reveal: default state is visible; JS only hides below fold */
   if (!reduce && "IntersectionObserver" in window) {
