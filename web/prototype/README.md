@@ -1,0 +1,41 @@
+# web/prototype — nohrs.app デザインプロトタイプ
+
+`index.html` は nohrs.app のランディングページの**視覚検証用プロトタイプ**です。本番コードではありません。
+TanStack Start への実装 ([`docs/web.md`](../../docs/web.md) §3) に着手する前に、デザインの合意を取るために置いています。
+
+ブラウザで `index.html` を直接開けば動きます。ビルド手順も依存もありません。
+
+## 何を確認するためのものか
+
+- [ADR 0008](../../docs/adr/0008-web-design-system.md) のトークン (warm neutral + Rust tan `#DEA584`) が実寸で成立するか
+- ライト / ダーク / OS 設定追従の 3 状態が全て読めるか
+- 日英切替時にレイアウトが崩れないか (和文の方が字数が増える)
+- ヒーロー背景の極薄シェーダーが「マーケ LP 化」せずに済む濃度か
+
+## 本番実装と意図的に違う点
+
+| 項目 | プロトタイプ | 本番 |
+|------|------------|------|
+| フォント | Google Fonts から読み込み | **Cloudflare に self-host** (直リンクは禁止。ADR 0008) |
+| スクリーンショット | data URI で埋め込み | `/assets` から配信、`en` ロケールで撮り直したもの |
+| GitHub の数値 | 2026-09-08 時点の固定値 | ビルド時に GitHub API から取得 |
+| 言語切替 | `data-en` / `data-ja` 属性を JS で差し替え | パス前置ルーティング (`/en/...`, `/ja/...`) |
+| コンポーネント | 素の HTML / CSS | Tailwind v4 + headless プリミティブ再スキン |
+
+## 移植時に持ち込む値
+
+CSS 変数はそのまま Tailwind v4 の `@theme` に移せます。
+
+```
+--paper #FCFAF8   --surface #F4EFE9   --line #E3DBD0
+--ink   #191510   --ink-2   #453C33   --muted #6F6459
+--tan   #DEA584   (装飾のみ)
+--tan-ink #9C5A24 (テキスト / 操作要素。ライト背景で WCAG AA を満たす)
+```
+
+`--tan` と `--tan-ink` を分けているのは、`#DEA584` が白背景でコントラスト比 1.9:1 しかなく、
+テキストやリンクに使うと AA を満たさないためです。ブランド色としての `#DEA584` は
+グロウ・ドット・下線・アクティブ表示にのみ使い、読ませる要素には `--tan-ink` を使ってください。
+
+モーションの基準値は `220ms` / `cubic-bezier(.16,1,.3,1)` / `translateY(6px)` / stagger `50ms`。
+`prefers-reduced-motion` では reveal を無効化し、シェーダーは静止 1 フレームのみ描きます。

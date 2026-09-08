@@ -36,14 +36,14 @@ P1 で web (`nohrs.app`) を立ち上げるにあたり、当初の「MVP・skel
 
 ### タイポグラフィ
 
-- ラテン見出し/本文: グロテスク・サンス (`Geist Sans` / `Inter` 系)
-- アクセント/コード/ラベル: モノ (`Geist Mono` / `JetBrains Mono`)
-- 和文: `Zen Kaku Gothic New` (ラテンとウェイトを揃える)
+- ラテン見出し/本文: `Inter` (改訂 2026-09-08 で確定)
+- アクセント/コード/ラベル: モノ (`JetBrains Mono`)
+- 和文: `Noto Sans JP` (改訂 2026-09-08。当初は `Zen Kaku Gothic New`)
 - 全フォントを Cloudflare に self-host
 
 ### モーション
 
-控えめ・意味のある動きのみ (CSS 主体、一部 Motion、`prefers-reduced-motion` 対応必須)。グラデ/3D/パララックスは封印。
+控えめ・意味のある動きのみ (CSS 主体、一部 Motion、`prefers-reduced-motion` 対応必須)。3D/パララックスは封印。ヒーロー背景の極薄グラデーションのみ例外 (改訂 2026-09-08)。
 
 ### フロントエンドスタック
 
@@ -78,3 +78,22 @@ a11y (WCAG AA)・パフォーマンス予算 (Lighthouse 95+)・フル SEO (site
 | ダーク主 / ダーク固定 | zed DNA の魅力はダークにあるが、アプリ本体がライトテーマでありブランド一致を優先。ライト主 + ダークトグルで両取り |
 | フルスクラッチ CSS (vanilla-extract 等) | 職人度・制御は最高だが最も遅く、a11y を自前で背負う |
 | 意見の強い UI ライブラリ (Mantine/Chakra) | 速いが zed 級の独自美学と衝突し汎用感が出る |
+
+## 改訂 (2026-09-08)
+
+デザインを詰める過程で、本 ADR の 4 点を上書きした。土台 (zed.dev DNA)・カラー (ライト主 + Rust tan `#DEA584`)・フロントエンドスタック (Tailwind v4 + headless プリミティブ再スキン)・品質基準は変更しない。
+
+| 項目 | 当初 | 改訂後 | 理由 |
+|------|------|--------|------|
+| Hero | 製品デモ (額装した Explorer スクショ) を Hero に置く | **大タイポ + 極薄シェーダー**。スクショは直後の Preview セクションへ移す | tagline を `Launcher × Explorer` に確定したことで、Hero は 1 行の宣言に集中させた方が強い。正直主義は Preview セクションで維持する |
+| モーション | グラデ/3D/パララックスを封印 | 3D/パララックスは封印のまま。**ヒーロー背景の極薄グラデーションのみ例外** | 職人トーンを崩さない範囲で、静止画にならない「気配」を残す。WebGL フォールバックと `prefers-reduced-motion` 対応を条件とする |
+| 和文フォント | `Zen Kaku Gothic New` | **`Noto Sans JP`** | ウェイトの選択肢と長文の可読性を優先。docs / blog が主戦場になるため。サブセット化を必須とする |
+| 主 CTA | `Download` 固定 | **公開 release が 0 件の間は `Star on GitHub`**、初回 release 以降 `Download` | pre-alpha でバイナリが存在せず、押した先が「まだありません」になるため |
+
+### 改訂に伴う Consequences
+
+- ヒーロー背景のシェーダーは Lighthouse 95+ とパフォーマンス予算を自分で背負う。低解像度 (実サイズの ~0.28 倍) で描画し、タブ非表示時は `requestAnimationFrame` を止める
+- `Noto Sans JP` はフルセットが重い。self-host 時のサブセット化を怠るとパフォーマンス予算を割る
+- 主 CTA の分岐は GitHub API の release 件数に依存する。API 取得に失敗した場合は `Star on GitHub` にフォールバックする (押せない導線を出さない側に倒す)
+
+実装前の視覚検証として `web/prototype/index.html` を置いた (依存ゼロの単一 HTML)。TanStack Start への移植時の参照であり、本番コードではない。

@@ -81,17 +81,18 @@ R2 は他用途でも使用:
 
 | 用途 | フォント方針 |
 |------|------|
-| 見出し / 本文 (ラテン) | グロテスク・サンス (`Geist Sans` か `Inter` 系) |
-| アクセント / コード / ラベル | モノ (`Geist Mono` か `JetBrains Mono`) — zed/vercel 共通の「mono ラベル」が本格感の鍵 |
-| 和文 | `Zen Kaku Gothic New` (ラテンとウェイトを揃える。Noto 直貼りで和文だけ安っぽくなるのを避ける) |
+| 見出し / 本文 (ラテン) | `Inter` |
+| アクセント / コード / ラベル | `JetBrains Mono` — zed/vercel 共通の「mono ラベル」が本格感の鍵 |
+| 和文 | `Noto Sans JP` (改訂 2026-09-08。当初案は `Zen Kaku Gothic New`) |
 
-全フォントを **Cloudflare に self-host** (FOUT・GDPR・edge 遅延の回避)。
+全フォントを **Cloudflare に self-host** (FOUT・GDPR・edge 遅延の回避)。和文は必ずサブセット化する (Noto Sans JP はフルセットが重いため)。
 
 ### モーション
 
-- スクロール連動の控えめな reveal + 繊細な hover + ヒーローに製品デモ 1 点
-- グラデ/3D/パララックスは封印 (マーケ LP 化を避け職人トーンを維持)
+- スクロール連動の控えめな reveal + 繊細な hover + ヒーロー背景の極薄シェーダー
+- 3D/パララックスは封印 (マーケ LP 化を避け職人トーンを維持)。ヒーロー背景の極薄グラデーションのみ例外 (改訂 2026-09-08)
 - 実装は CSS 主体、オーケストレーションが要る所のみ軽量に Motion。`prefers-reduced-motion` 対応必須
+- 基準値: `220ms` / `cubic-bezier(.16,1,.3,1)` / `translateY(6px)` / stagger `50ms`
 
 ### 品質基準 (ローンチ条件)
 
@@ -174,7 +175,8 @@ web/
 
 zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / Merch) を除いたものを採用。
 
-- **トップナビ**: Features (landing 内アンカー) · Docs · Blog · Plugins · Releases · **Download (目立つ CTA)** · 言語切替
+- **トップナビ**: Features (landing 内アンカー) · Docs · Blog · Plugins · Releases · **主 CTA** · 言語切替 · テーマ切替
+  - 主 CTA は **リリースの有無で切り替える** (改訂 2026-09-08)。公開 release が 0 件の間は `Star on GitHub`、初回 release 以降は `Download`。GitHub API から取得する release 件数で分岐させ、pre-alpha 中に「押しても何も無い」導線を作らない
 - **フッタ (zed 風 4 列)**:
   - Product: Download · Releases · Plugins · Roadmap · Docs · GitHub
   - Resources: FAQ (将来) · Community (Discord) · Discussions · Privacy
@@ -185,8 +187,11 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 
 ページ全体像 (上から下のスクロール、zed.dev のホーム構成を nohrs 流に):
 
-1. **Hero**: tagline + 製品デモ (額装した Explorer スクショ) + Download CTA + GitHub star
-   - **ヒーロー素材は正直主義**: 実在する Explorer のみを上質なウィンドウクローム + warm 背景 + Rust-tan グロウで額装。**当面は静止スクショで代替**し（**en ロケールで撮り直し**）、操作 GIF は後日差し替える（README 約束分）。Launcher/Plugins/Search は **偽装せず**下部の機能カードで mock/Preview + "Coming in v0.x" として見せる。
+1. **Hero**: tagline (大タイポ) + サブコピー + 主 CTA。**製品スクショは Hero に置かない** (改訂 2026-09-08)
+   - tagline は **`Launcher × Explorer`** で確定。`×` のみ mono + Rust tan で組み、他は Inter。リポジトリ description の冒頭と一致させる
+   - サブコピーは事実のみ 1〜2 行 (何であるか・何で書かれているか・ライセンス)。バッジや煽り文句を足さない
+   - 背景は **極薄のシェーダー** (warm bloom)。WebGL が使えない環境では CSS グラデーションにフォールバックし、`prefers-reduced-motion` では静止 1 フレームを描く
+   - **正直主義は維持**: 実在する Explorer の額装スクショは Hero ではなく直後の Preview セクションに置く。**当面は静止スクショで代替**し（**en ロケールで撮り直し**）、操作 GIF は後日差し替える（README 約束分）。Launcher/Plugins/Search は **偽装せず** mock も作らず、"Coming in v0.x" のテキストカードのみで見せる
 2. **"Why nohrs?"** — 3-4 ポイントで差別化 (Launcher first-class / Explorer first-class / WASM plugins / Spotlight 非依存の検索。README の柱を流用)
 3. **主要機能ハイライト** (Explorer=実在 / Launcher・Plugin・Search=Coming カードで mock 提示)
 4. **Built in Rust / craft セクション** (tan ブランド・性能の語り。zed の care & craftsmanship 相当)
