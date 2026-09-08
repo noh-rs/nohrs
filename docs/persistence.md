@@ -170,8 +170,8 @@ const HOST_KV: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("kv"
 
 #### キーの名前空間は型で強制する
 
-key は `&str` ではなく **`KvKey`** です。`<namespace>.<name>` のドット区切りで、セグメントは
-1 つ以上・小文字 ASCII / 数字 / `_`。
+key は `&str` ではなく **`KvKey`** です。`<namespace>.<name>` のドット区切りで、**セグメントは
+2 つ以上**（つまり必ず名前空間を持つ）。各セグメントは 1 文字以上の小文字 ASCII / 数字 / `_`。
 
 名前空間は「文字列の慣習」だった時期があり、それだと `put("tabs", …)` が普通にコンパイルされ、
 書けて読み戻せてしまいます。壊れるのは後から別の場所で、`list_*` が行を取りこぼす形です。

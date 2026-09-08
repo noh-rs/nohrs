@@ -104,11 +104,23 @@ impl KvStore for RedbKvStore {
             if !key.starts_with(&prefix) {
                 break;
             }
-            // Every key was a `KvKey` on the way in, so this only fails if the
-            // file was written by something else; such a row is not ours to
-            // return.
-            let Ok(key) = KvKey::parse(key) else {
-                continue;
+            // Every key written through this API is a `KvKey`, so a row that
+            // does not parse predates the validation (or came from another
+            // writer). It is skipped rather than returned, because the caller
+            // asked for keys and this is not one — but *reported*, since a row
+            // vanishing from a listing with no explanation is the kind of thing
+            // that gets diagnosed as data loss. Failing the whole listing
+            // instead would let one stale row break session restore, which is a
+            // worse trade for the same problem.
+            let key = match KvKey::parse(key) {
+                Ok(key) => key,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "nohrs_store::redb",
+                        "skipping unparseable key in namespace {namespace}: {error}"
+                    );
+                    continue;
+                }
             };
             matches.push((key, value.value().to_vec()));
         }
@@ -176,6 +188,34 @@ mod tests {
         assert_eq!(session.len(), 2);
         assert_eq!(session[0].0.as_str(), "session.active");
         assert_eq!(session[1].0.as_str(), "session.tabs");
+    }
+
+    #[test]
+    fn a_row_that_predates_the_validation_is_skipped_not_returned() {
+        // An older build could write any string. Such a row is not a `KvKey`, so
+        // `list_namespace` cannot hand it back — but the valid rows beside it
+        // must still come through, rather than one stale key failing the whole
+        // listing and taking session restore with it.
+        let store = store();
+        store.put(&kv_key!("session.tabs"), b"mine").unwrap();
+        // Written past the API, the way an older build would have.
+        {
+            let write_txn = store.database.begin_write().unwrap();
+            {
+                let mut table = write_txn.open_table(HOST_KV).unwrap();
+                table.insert("session.Legacy", &b"theirs"[..]).unwrap();
+            }
+            write_txn.commit().unwrap();
+        }
+
+        let listed = store.list_namespace("session").unwrap();
+
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].0.as_str(), "session.tabs");
+        // Still reachable by an exact read, so it is skipped, not destroyed.
+        let read_txn = store.database.begin_read().unwrap();
+        let table = read_txn.open_table(HOST_KV).unwrap();
+        assert!(table.get("session.Legacy").unwrap().is_some());
     }
 
     #[test]

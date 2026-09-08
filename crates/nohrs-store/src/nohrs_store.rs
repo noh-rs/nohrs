@@ -291,7 +291,18 @@ impl KvKey {
     }
 
     /// A key from a namespace and a name, both checked.
+    ///
+    /// The namespace must be a *single* segment. Joining a dotted one would
+    /// build a key whose [`KvKey::namespace`] is not the namespace that was
+    /// passed in — `new("a.b", "c")` would answer `"a"` — so the key would not
+    /// be listed under the namespace its own caller believed it wrote it to.
     pub fn new(namespace: &str, name: &str) -> Result<Self> {
+        if namespace.contains('.') {
+            return Err(StoreError::InvalidKey {
+                key: format!("{namespace}.{name}"),
+                reason: "the namespace must be a single segment, without a '.'",
+            });
+        }
         Self::parse(format!("{namespace}.{name}"))
     }
 
@@ -340,8 +351,8 @@ impl TryFrom<&str> for KvKey {
 /// and made of lowercase ASCII, digits or `_`.
 ///
 /// Written as a hand-rolled loop rather than `split`/`all` because it has to be
-/// a `const fn` for [`KvKey::from_static`] to reject a bad literal at build
-/// time, and iterators are not available there.
+/// a `const fn` for [`kv_key!`] to reject a bad literal at build time, and
+/// iterators are not available there.
 const fn is_valid_key(key: &str) -> bool {
     let bytes = key.as_bytes();
     let mut index = 0;
@@ -529,6 +540,15 @@ mod tests {
         assert!(KvKey::new("session", "").is_err());
         assert!(KvKey::new("", "tabs").is_err());
         assert!(KvKey::new("session", ".tabs").is_err());
+
+        // A dotted namespace joins into a *valid* key, which is why it needs
+        // rejecting on its own: `namespace()` would answer "window", not
+        // "window.main", so the key would not be listed under the namespace its
+        // caller believed it wrote it to.
+        assert!(KvKey::parse("window.main.position").is_ok());
+        let error = KvKey::new("window.main", "position")
+            .expect_err("a dotted namespace is not a namespace");
+        assert!(error.to_string().contains("single segment"), "{error}");
     }
 
     #[test]
