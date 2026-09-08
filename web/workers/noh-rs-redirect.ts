@@ -23,6 +23,24 @@ const LANG_SHORTCUTS: Record<string, string> = {
 const RELEASE_PREFIX = '/r/'
 const GITHUB_RELEASE_TAG = 'https://github.com/noh-rs/nohrs/releases/tag/'
 
+/**
+ * The tag a `/r/...` path names, ready to be re-encoded once.
+ *
+ * A trailing slash is not part of the tag — encoding it would produce `%2F`
+ * and a 404 — and the segment arrives already percent-encoded, so it has to be
+ * decoded before `encodeURIComponent` sees it or a `+` becomes `%252B`.
+ * Malformed escapes are left as-is rather than throwing.
+ */
+function releaseTag(segment: string): string {
+  const trimmed = segment.replace(/\/+$/, '')
+  if (!trimmed) return ''
+  try {
+    return decodeURIComponent(trimmed)
+  } catch {
+    return trimmed
+  }
+}
+
 function permanent(location: string): Response {
   return new Response(null, { status: 301, headers: { Location: location } })
 }
@@ -40,7 +58,7 @@ export default {
     const lang = negotiateLang(request.headers.get('accept-language'))
 
     if (url.pathname.startsWith(RELEASE_PREFIX)) {
-      const tag = url.pathname.slice(RELEASE_PREFIX.length)
+      const tag = releaseTag(url.pathname.slice(RELEASE_PREFIX.length))
       if (tag) return permanent(`${GITHUB_RELEASE_TAG}${encodeURIComponent(tag)}`)
     }
 

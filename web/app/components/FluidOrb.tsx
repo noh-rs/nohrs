@@ -93,7 +93,10 @@ export function FluidOrb() {
   const [unsupported, setUnsupported] = useState(false)
 
   useEffect(() => {
-    const wide = window.matchMedia('(min-width: 1081px)')
+    // Must match the `max-[1080px]:hidden` on the canvas exactly. Tailwind
+    // compiles that to `not (min-width: 1080px)`, so 1080px itself is a width
+    // where the canvas is visible — a 1081px guard left it blank there.
+    const wide = window.matchMedia('(min-width: 1080px)')
     const sync = () => setWideEnough(wide.matches)
     sync()
     wide.addEventListener('change', sync)
@@ -256,6 +259,14 @@ export function FluidOrb() {
 
     return () => {
       stop()
+      // Crossing the breakpoint re-runs this effect on the same canvas, so the
+      // previous program, shaders and buffer have to go back; otherwise a
+      // window resized back and forth accumulates them on the GPU.
+      gl.deleteBuffer(buffer)
+      gl.deleteProgram(program)
+      gl.deleteShader(vertex)
+      gl.deleteShader(fragment)
+      gl.getExtension('WEBGL_lose_context')?.loseContext()
       observer.disconnect()
       themeObserver.disconnect()
       document.removeEventListener('visibilitychange', onVisibility)

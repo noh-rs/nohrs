@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { DefinitionRow, DefinitionRows, PageHeader, Section } from '~/components/Page'
 import { GitHubMark } from '~/components/Mark'
-import { github, hasReleases } from '~/lib/github'
+import { github, hasDownloads } from '~/lib/github'
 import { formatDate, t, type Lang } from '~/lib/i18n'
 import { seo } from '~/lib/seo'
 import { SITE } from '~/lib/site'
@@ -14,7 +14,7 @@ export const Route = createFileRoute('/$lang/download')({
       lang,
       path: '/download',
       title: strings.title,
-      description: hasReleases ? strings.ledeReleased : strings.ledePreRelease,
+      description: hasDownloads ? strings.ledeReleased : strings.ledePreRelease,
     })
   },
   component: Download,
@@ -30,7 +30,7 @@ function Download() {
       <PageHeader
         eyebrow={strings.nav.download}
         title={strings.download.title}
-        lede={hasReleases ? strings.download.ledeReleased : strings.download.ledePreRelease}
+        lede={hasDownloads ? strings.download.ledeReleased : strings.download.ledePreRelease}
       />
 
       {/* Nothing here offers a download while `releases` is empty: a button

@@ -23,7 +23,11 @@ on:
 # and never deploy in its place.
 concurrency:
   group: web-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Only a pull-request run is worth superseding. Cancelling a push, schedule
+  # or dispatch run would kill the deploy job it contains — including between
+  # the two wrangler steps — which the job's own `cancel-in-progress: false`
+  # cannot prevent, because the cancellation happens at the run level.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -42,6 +46,11 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
+    # The exact revision this job validated. `deploy` checks that out rather
+    # than the branch name, so a push landing between the two jobs cannot
+    # publish a commit nothing has checked.
+    outputs:
+      sha: ${{ steps.revision.outputs.sha }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -49,6 +58,9 @@ jobs:
           # `npm ci` runs below, and a dependency lifecycle script must not be
           # able to read the checkout's persisted token.
           persist-credentials: false
+
+      - id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -108,9 +120,11 @@ jobs:
       group: web-deploy-production
       cancel-in-progress: false
     steps:
+      # The commit `build` validated, not the branch it was on: `wrangler.jsonc`
+      # and the Workers have to come from the same revision as the assets.
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ env.DEPLOY_REF }}
+          ref: ${{ needs.build.outputs.sha }}
           persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

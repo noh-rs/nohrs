@@ -105,7 +105,9 @@ export function DocsSearch({ lang }: { lang: Lang }) {
       return
     }
     let cancelled = false
-    void (async () => {
+    // Debounced: each result's payload is a separate fetch, and resolving
+    // forty of them per keystroke made the dialog feel slow on a slow link.
+    const timer = setTimeout(async () => {
       const pagefind = await load()
       if (!pagefind || cancelled) return
       // The index covers both language trees, and the locale is only known
@@ -127,9 +129,10 @@ export function DocsSearch({ lang }: { lang: Lang }) {
             excerpt: entry.excerpt,
           })),
       )
-    })()
+    }, 180)
     return () => {
       cancelled = true
+      clearTimeout(timer)
     }
   }, [open, term, lang, load])
 

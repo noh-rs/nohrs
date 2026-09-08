@@ -134,8 +134,25 @@ test('noh.rs sends a release tag to GitHub, not to a page we do not have', () =>
     status: 301,
     location: 'https://github.com/noh-rs/nohrs/releases/tag/v0.1.0',
   })
-  // A bare `/r/` is not a tag; it falls through to the path-preserving rule.
-  assert.equal(short('https://noh.rs/r/').status, 302)
+  // A trailing slash is not part of the tag: encoding it would produce %2F.
+  assert.deepEqual(short('https://noh.rs/r/v0.1.0/'), {
+    status: 301,
+    location: 'https://github.com/noh-rs/nohrs/releases/tag/v0.1.0',
+  })
+  // The segment arrives percent-encoded, so it must not be encoded twice.
+  assert.deepEqual(short('https://noh.rs/r/v0.1.0%2Bbuild.1'), {
+    status: 301,
+    location: 'https://github.com/noh-rs/nohrs/releases/tag/v0.1.0%2Bbuild.1',
+  })
+  // A malformed escape is passed through rather than throwing.
+  assert.equal(short('https://noh.rs/r/v0.1%ZZ').status, 301)
+})
+
+test('a bare /r/ is not a tag and falls through to the path rule', () => {
+  assert.deepEqual(short('https://noh.rs/r/?x=1', { 'accept-language': 'ja' }), {
+    status: 302,
+    location: 'https://nohrs.app/ja/r/?x=1',
+  })
 })
 
 test('noh.rs root goes to the apex root, which then negotiates', () => {

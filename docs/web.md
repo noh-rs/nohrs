@@ -247,7 +247,8 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 - 各カードクリックで GitHub の release URL に遷移
 - macOS バイナリの直接ダウンロードリンク (release asset 経由)
 - 主要 release は frontmatter で `highlight: true` を付けて目立たせる
-- Cloudflare Pages の cron で **週次再ビルド** (latest release を追従)
+- **週次再ビルドは GitHub Actions の `schedule`** で行う (`.github/workflows/web.yml`、月曜 06:00 UTC)。
+  latest release を追従するため。Pages の cron は使わない (§7)
 
 ### 6.3 `/blog`
 
@@ -370,8 +371,8 @@ Worker が 1 回起きる代わりに、正規ホストの規則がダッシュ�
 - `noh.rs/en/...` のように**すでに言語が付いているパス**は恒久的な対応なので **301**
 - `noh.rs/docs/installation` のように**言語が付いていないパス**は `Accept-Language` で解決する必要が
   あるので **302 + `Vary`**。ここで 301 を返すと、最初の訪問者の言語が全員に焼き付いてしまう
-- 短縮スキーム `noh.rs/p/<plugin-id>` → `/<lang>/plugins/<plugin-id>`、
-  `noh.rs/r/<tag>` → `/<lang>/releases/<tag>`
+- 短縮スキーム `noh.rs/p/<plugin-id>` → `/<lang>/plugins/<plugin-id>` (302)。
+  `noh.rs/r/<tag>` → **GitHub の release ページに 301** (個別 release のページが無いため。§1)
 
 ---
 

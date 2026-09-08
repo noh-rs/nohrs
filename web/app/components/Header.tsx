@@ -6,7 +6,7 @@ import { DocsSearch } from './DocsSearch'
 import { useTheme } from '~/lib/theme'
 import { swapLang, t, type Lang } from '~/lib/i18n'
 import { LANG_COOKIE } from '~/lib/negotiate'
-import { github, hasReleases } from '~/lib/github'
+import { github, hasDownloads } from '~/lib/github'
 import { SITE } from '~/lib/site'
 
 export function Header({ lang }: { lang: Lang }) {
@@ -95,7 +95,7 @@ export function Header({ lang }: { lang: Lang }) {
             ]}
           />
 
-          {hasReleases ? (
+          {hasDownloads ? (
             <Link to="/$lang/download" params={{ lang }} className="btn btn-primary hidden sm:inline-flex">
               {strings.nav.download}
             </Link>

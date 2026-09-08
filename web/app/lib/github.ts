@@ -37,9 +37,13 @@ const generated = Object.values(
 
 export const github: GitHubData = generated?.default ?? (fallbackData as GitHubData)
 
-/**
- * Drives the primary CTA and the download page. While this is false the site
- * must never offer a download: there is nothing behind the link
- * (ADR 0008, 改訂 2026-09-08).
- */
+/** Whether anything has been released at all — drives the releases page. */
 export const hasReleases: boolean = github.releases.length > 0
+
+/**
+ * Whether a release carries a macOS binary. This, not `hasReleases`, drives
+ * the primary CTA and the download page: ADR 0008's rule is that the site must
+ * never offer a download with nothing behind the link, and a release published
+ * with notes but no attached asset is exactly that case.
+ */
+export const hasDownloads: boolean = github.releases.some((release) => release.assets.length > 0)

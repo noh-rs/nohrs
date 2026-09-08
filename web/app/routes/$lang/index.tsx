@@ -4,7 +4,7 @@ import { GitHubMark } from '~/components/Mark'
 import { Phases } from '~/components/Phases'
 import { Reveal } from '~/components/Reveal'
 import { Section } from '~/components/Page'
-import { github, hasReleases } from '~/lib/github'
+import { github, hasDownloads } from '~/lib/github'
 import { formatDate, t, type Lang } from '~/lib/i18n'
 import { jsonLd, seo, softwareApplicationLd } from '~/lib/seo'
 import { SITE } from '~/lib/site'
@@ -108,7 +108,7 @@ function Hero({ lang }: { lang: Lang }) {
           </p>
 
           <div className="mt-10 flex flex-wrap gap-3">
-            {hasReleases ? (
+            {hasDownloads ? (
               <Link to="/$lang/download" params={{ lang }} className="btn btn-primary">
                 {strings.nav.download}
               </Link>
@@ -129,7 +129,7 @@ function Hero({ lang }: { lang: Lang }) {
               "so how do I try this today". */}
           <div className="mt-13 max-w-[62ch] border-t border-line pt-6.5">
             <p className="mb-3.5 text-sm text-muted">
-              {hasReleases ? strings.hero.tryTitleReleased : strings.hero.tryTitle}
+              {hasDownloads ? strings.hero.tryTitleReleased : strings.hero.tryTitle}
             </p>
             <pre className="cmd">
               <code>
