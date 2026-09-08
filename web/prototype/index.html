@@ -22,6 +22,7 @@
     --ease: cubic-bezier(.16,1,.3,1);
     --dur: 220ms;
     --frame: 1120px;
+    --orb-strength: 0.46;
     --sans: "Inter", "Noto Sans JP", ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
     --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   }
@@ -38,6 +39,7 @@
       --tan:     #DEA584;
       --tan-ink: #E7B693;
       --tan-wash:#241A13;
+      --orb-strength: 0.55;
     }
   }
   :root[data-theme="dark"] {
@@ -52,17 +54,19 @@
     --tan:     #DEA584;
     --tan-ink: #E7B693;
     --tan-wash:#241A13;
+    --orb-strength: 0.55;
   }
 
   * { box-sizing: border-box; }
-  /* proximity, not mandatory: several sections are taller than the viewport,
-     and mandatory would fight the reader trying to stop inside one */
+  /* only two snap points, at the very top and the very bottom — a snap point
+     per section pulls at every boundary and makes ordinary scrolling fight back */
   html {
     scroll-snap-type: y proximity;
-    scroll-padding-top: 60px;   /* clears the sticky header */
+    scroll-padding-top: 60px;   /* offsets anchor targets under the sticky header */
     scroll-behavior: smooth;
   }
-  section, footer { scroll-snap-align: start; }
+  .hero  { scroll-snap-align: start; }
+  footer { scroll-snap-align: end; }
   body {
     margin: 0;
     background: var(--paper);
@@ -192,7 +196,16 @@
 
   /* ── hero ──────────────────────────────────────────────────── */
   .hero { border-top: 0; }
-  .hero > .frame { padding-block: clamp(56px, 8vw, 104px) clamp(56px, 7vw, 92px); }
+  .hero > .frame { position: relative; padding-block: clamp(56px, 8vw, 104px) clamp(56px, 7vw, 92px); }
+  .hero > .frame > :not(.orb) { position: relative; z-index: 1; }
+
+  /* a contained form, not a full-bleed wash — it reads as an object, not a stain */
+  .orb {
+    position: absolute; z-index: 0; pointer-events: none;
+    right: 8px; top: 52%; translate: 0 -50%;
+    width: clamp(220px, 22vw, 330px); aspect-ratio: 1;
+  }
+  @media (max-width: 1080px) { .orb { display: none; } }
 
   h1 {
     margin: 0;
@@ -344,6 +357,8 @@
   <!-- ── Hero ─────────────────────────────────────────────────── -->
   <section class="hero">
     <div class="frame">
+      <canvas class="orb" id="orb" aria-hidden="true"></canvas>
+
       <h1>Launcher <span class="x">×</span> Explorer</h1>
 
       <p class="sub"
@@ -688,6 +703,130 @@
       else io.observe(el);
     });
   }
+
+  /* ── hero orb ──────────────────────────────────────────────────
+     Fluid shading in a circle: domain-warped fbm drifts colour patches
+     through a vertical band ramp, paper at the crown to tan at the base. */
+  (() => {
+    const cv = document.getElementById("orb");
+    if (!cv) return;
+    const drop = () => cv.remove();
+
+    let gl = null;
+    try { gl = cv.getContext("webgl", { alpha: false, antialias: false, depth: false }); } catch { gl = null; }
+    if (!gl) return drop();
+
+    const VS = "attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}";
+    const FS = `precision mediump float;
+      uniform vec2 u_res; uniform float u_t;
+      uniform vec3 u_bg, u_top, u_mid, u_bot;
+
+      vec2 hash(vec2 p){
+        p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+        return fract(sin(p) * 43758.5453) * 2.0 - 1.0;
+      }
+      float noise(vec2 p){
+        vec2 i = floor(p), f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(dot(hash(i), f), dot(hash(i + vec2(1,0)), f - vec2(1,0)), u.x),
+                   mix(dot(hash(i + vec2(0,1)), f - vec2(0,1)),
+                       dot(hash(i + vec2(1,1)), f - vec2(1,1)), u.x), u.y);
+      }
+      float fbm(vec2 p){
+        float v = 0.0, a = 0.5;
+        for (int i = 0; i < 4; i++) { v += a * noise(p); p *= 2.03; a *= 0.5; }
+        return v;
+      }
+
+      void main(){
+        vec2 uv = gl_FragCoord.xy / u_res;
+        float r = length(uv * 2.0 - 1.0);
+        float t = u_t * 0.05;
+
+        vec2 warp = vec2(fbm(uv * 2.3 + vec2(0.0, t)),
+                         fbm(uv * 2.3 + vec2(4.7, -t * 0.8)));
+        float n = fbm(uv * 2.0 + warp * 0.9 + vec2(t * 0.35, -t * 0.22));
+
+        float y = clamp(uv.y + n * 0.46, 0.0, 1.0);
+        vec3 col = mix(u_bot, u_mid, smoothstep(0.04, 0.58, y));
+        col = mix(col, u_top, smoothstep(0.50, 1.0, y));
+
+        // a lit core, carried around by the flow, so the form has volume
+        // instead of reading as a flat blurred disc
+        vec2 core = (uv - vec2(0.5 + warp.x * 0.12, 0.38 + warp.y * 0.12)) * 2.0;
+        col = mix(col, u_bot, (1.0 - smoothstep(0.0, 0.9, length(core))) * 0.38);
+
+        gl_FragColor = vec4(mix(u_bg, col, 1.0 - smoothstep(0.84, 1.0, r)), 1.0);
+      }`;
+
+    const compile = (type, src) => {
+      const sh = gl.createShader(type);
+      gl.shaderSource(sh, src); gl.compileShader(sh);
+      return gl.getShaderParameter(sh, gl.COMPILE_STATUS) ? sh : null;
+    };
+    const vs = compile(gl.VERTEX_SHADER, VS), fs = compile(gl.FRAGMENT_SHADER, FS);
+    if (!vs || !fs) return drop();
+
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return drop();
+    gl.useProgram(prog);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    const attr = gl.getAttribLocation(prog, "p");
+    gl.enableVertexAttribArray(attr);
+    gl.vertexAttribPointer(attr, 2, gl.FLOAT, false, 0, 0);
+
+    const at = name => gl.getUniformLocation(prog, name);
+    const uRes = at("u_res"), uT = at("u_t");
+    const uBg = at("u_bg"), uTop = at("u_top"), uMid = at("u_mid"), uBot = at("u_bot");
+
+    const probe = document.createElement("canvas").getContext("2d");
+    const rgb = name => {
+      probe.fillStyle = getComputedStyle(root).getPropertyValue(name).trim();
+      const hex = probe.fillStyle;
+      return [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+    };
+    const lerp = (a, b, k) => a.map((v, i) => v + (b[i] - v) * k);
+
+    let tone = null;
+    function readTone() {
+      const bg = rgb("--paper"), tan = rgb("--tan");
+      const s = parseFloat(getComputedStyle(root).getPropertyValue("--orb-strength")) || 0.5;
+      tone = { bg, top: lerp(bg, tan, s * 0.06), mid: lerp(bg, tan, s * 0.42), bot: lerp(bg, tan, s) };
+    }
+    function resize() {
+      const box = cv.getBoundingClientRect();
+      const size = Math.max(2, Math.round(Math.min(box.width, 420) * Math.min(devicePixelRatio || 1, 2)));
+      if (cv.width !== size) { cv.width = cv.height = size; gl.viewport(0, 0, size, size); }
+    }
+    function draw(ms) {
+      gl.uniform2f(uRes, cv.width, cv.height);
+      gl.uniform1f(uT, ms / 1000);
+      gl.uniform3fv(uBg, tone.bg); gl.uniform3fv(uTop, tone.top);
+      gl.uniform3fv(uMid, tone.mid); gl.uniform3fv(uBot, tone.bot);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    let raf = 0, onscreen = true;
+    const loop = ms => { draw(ms); raf = requestAnimationFrame(loop); };
+    const start = () => { if (!raf && !reduce && onscreen && !document.hidden) raf = requestAnimationFrame(loop); };
+    const stop = () => { if (raf) { cancelAnimationFrame(raf); raf = 0; } };
+    const repaint = () => { readTone(); if (!raf) draw(performance.now()); };
+
+    readTone(); resize(); draw(0);
+
+    addEventListener("resize", () => { resize(); if (!raf) draw(performance.now()); }, { passive: true });
+    themeSeg.addEventListener("click", repaint);
+    prefersDark.addEventListener("change", repaint);
+
+    if (!reduce) {
+      new IntersectionObserver(([e]) => { onscreen = e.isIntersecting; onscreen ? start() : stop(); }).observe(cv);
+      document.addEventListener("visibilitychange", () => document.hidden ? stop() : start());
+      start();
+    }
+  })();
 
   /* ── boot ──────────────────────────────────────────────────── */
   syncThemeSeg();

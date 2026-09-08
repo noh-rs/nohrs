@@ -90,11 +90,12 @@ R2 は他用途でも使用:
 ### モーション
 
 - スクロール連動の控えめな reveal + 繊細な hover のみ
-- グラデ/3D/パララックスは封印 (マーケ LP 化を避け職人トーンを維持)
+- 3D/パララックス、および**背景全面を覆う**グラデーションは封印 (マーケ LP 化を避け職人トーンを維持)
+- ただし **輪郭を持つ 1 個の形は可** (改訂 2026-09-08)。全面の滲みは「汚れ」に見えるが、円に閉じた orb は「意図して置かれた物体」として読める。境界は面か形かであって、シェーダーを使うか否かではない
 - **要素そのものを動かす演出も封印** (改訂 2026-09-08)。ホバーで吸い付くボタン、回転するグリフの類は、罫線と余白で組む他セクションと語彙が食い違い、ページ全体の品位を下げる。動かしてよいのは「状態が変わったこと」を伝える場合に限る
 - 実装は CSS 主体、オーケストレーションが要る所のみ軽量に Motion。`prefers-reduced-motion` 対応必須
 - 基準値: `220ms` / `cubic-bezier(.16,1,.3,1)` / `translateY(6px)` / stagger `50ms`
-- **セクション単位のスクロールスナップを入れる** (改訂 2026-09-08)。`scroll-snap-type: y proximity` + `section { scroll-snap-align: start }` + `scroll-padding-top` で sticky ヘッダ分を逃がす。`mandatory` は使わない — メーカーズノートやロードマップはビューポートより高く、途中で止まりたい読者と衝突するため。`prefers-reduced-motion` では `scroll-snap-type: none` に落とす
+- **スクロールスナップは上端と下端の 2 点だけ** (改訂 2026-09-08)。`scroll-snap-type: y proximity` に対し、吸着点は `.hero { scroll-snap-align: start }` と `footer { scroll-snap-align: end }` のみ。セクションごとに吸着点を置くと境界のたびに引っ張られ、通常のスクロールが重く感じられる (一度実装して差し戻した)。`scroll-padding-top` はアンカー遷移が sticky ヘッダに潜らないようにするために残す。`prefers-reduced-motion` では `scroll-snap-type: none` に落とす
 
 ### 品質基準 (ローンチ条件)
 
@@ -192,7 +193,12 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 1. **Hero**: tagline (大タイポ) + サブコピー + 主 CTA。**製品スクショは Hero に置かない** (改訂 2026-09-08)
    - tagline は **`Launcher × Explorer`** で確定。`×` のみ mono + Rust tan で組み、他は Inter。リポジトリ description の冒頭と一致させる
    - サブコピーは事実のみ 1〜2 行 (何であるか・何で書かれているか・ライセンス)。バッジや煽り文句を足さない
-   - **背景は無地**。Hero に置くのは見出し・サブコピー・CTA の 3 つだけで、ステータスバッジの類は置かない。pre-alpha であることはサブコピーの文中で述べる
+   - **背景は無地**。ステータスバッジの類は置かない。pre-alpha であることはサブコピーの文中で述べる
+   - 右側の余白に **fluid orb** を 1 個だけ置く (改訂 2026-09-08)。WebGL の circle 内で domain-warped fbm を流し、上端 = 地色 → 下端 = tan の帯を色パッチが漂う。参照は [rareui FluidOrb](https://www.rareui.com/components/fluidorb)。実装条件:
+     - 濃度はテーマ別に `--orb-strength` で持つ (ライト `0.46` / ダーク `0.55`)。**ダークで地色寄りにすると茶色い汚れに見える**ため、ダークの方を強く振る
+     - 1080px 未満では非表示 (本文に重なるため)
+     - `IntersectionObserver` で画面外なら rAF を止める。タブ非表示でも止める。解像度は DPR 2 倍で上限 420px
+     - `prefers-reduced-motion` では静止 1 フレームのみ描く。WebGL が使えなければ canvas ごと削除する
    - **バッジ・タグ・中黒区切りを禁止する** (改訂 2026-09-08)。`Pre-alpha · macOS · MIT` のような属性の羅列、枠線付きの小ラベル、見出し上のカテゴリタグは使わない。伝えるべき属性は本文の文として書くか、罫線で区切った行に落とす
    - CTA の下に罫線を挟んで **build from source のコマンド** を置く (改訂 2026-09-08)。公開 release が 0 件の間、「では今どう試すのか」に答える導線がページ上に存在しないため。release が出たら、このブロックは `/download` へのリンクに差し替える
    - **正直主義は維持**: 実在する Explorer のスクショは Hero ではなく直後の Preview セクションに置く。**当面は静止スクショで代替**し（**en ロケールで撮り直し**）、操作 GIF は後日差し替える（README 約束分）。Launcher/Plugins/Search は **偽装せず** mock も作らず、テキスト行のみで見せる
