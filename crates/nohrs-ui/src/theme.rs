@@ -75,8 +75,6 @@ pub mod theme {
     pub const ACCENT: u32 = 0xB85214;
     /// Accent color on hover / pressed.
     pub const ACCENT_HOVER: u32 = 0x93400F;
-    /// Light accent, for borders bounding an accent-tinted surface.
-    pub const ACCENT_LIGHT: u32 = 0xF0C3A1;
     /// Faint accent tint, for selected rows and active chip backgrounds.
     pub const ACCENT_SUBTLE: u32 = 0xFDF1E9;
     /// Text and icon color on top of an `ACCENT`-filled surface.

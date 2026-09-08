@@ -84,6 +84,9 @@ impl ExplorerPane {
         if path == self.cwd {
             return;
         }
+        // The rename field is positioned by row index, so it must not outlive the
+        // listing it points into — same reason `change_dir` cancels it.
+        self.discard_rename(cx);
         // Clear search state so mirrored navigation doesn't leave a stale filter
         // or full-text results from the previous directory visible. This mirrors
         // the `close_search` reset on `change_dir`, minus the window-bound editor

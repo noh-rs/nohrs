@@ -193,24 +193,48 @@ fn footer_item<V: gpui::Render>(
                 div()
                     .text_xs()
                     .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
                     .text_color(rgb(theme::GRAY_600))
                     .child(label),
             )
         })
 }
 
+/// Hard cap on the elided path's final component. The middle-elided form keeps
+/// that component whole, so on its own a pathological directory name is
+/// unbounded and — the label being `whitespace_nowrap` — would push the footer's
+/// right-hand section past the window edge. Set well above ordinary names so
+/// real paths are untouched.
+const MAX_TAIL_CHARS: usize = 40;
+
+/// The last `max_chars` characters of `s`. Counts characters rather than bytes:
+/// byte slicing panics when the cut lands inside a multi-byte character, which a
+/// non-ASCII path would hit.
+fn tail_chars(s: &str, max_chars: usize) -> String {
+    let count = s.chars().count();
+    if count <= max_chars {
+        return s.to_string();
+    }
+    s.chars().skip(count - max_chars).collect()
+}
+
 fn truncate_path(path: &str, max_len: usize) -> String {
-    if path.len() <= max_len {
+    if path.chars().count() <= max_len {
         return path.to_string();
     }
 
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() <= 2 {
-        return format!("...{}", &path[path.len().saturating_sub(max_len)..]);
+        return format!("...{}", tail_chars(path, max_len));
     }
 
     // Show first and last parts
-    format!("{}/.../{}", parts[0], parts[parts.len() - 1])
+    format!(
+        "{}/.../{}",
+        parts[0],
+        tail_chars(parts[parts.len() - 1], MAX_TAIL_CHARS)
+    )
 }
 
 #[cfg(test)]
@@ -227,6 +251,23 @@ mod tests {
     fn long_multi_segment_paths_elide_the_middle() {
         let path = "/usr/local/share/nohrs/config.toml";
         assert_eq!(truncate_path(path, 10), "/.../config.toml");
+    }
+
+    #[test]
+    fn elided_paths_bound_their_final_component() {
+        // The status bar renders this with `whitespace_nowrap`, so an unbounded
+        // tail would push the right-hand section off-window.
+        let path = format!("/home/user/{}", "d".repeat(300));
+        let truncated = truncate_path(&path, 30);
+        assert!(truncated.starts_with("/.../"));
+        assert!(truncated.chars().count() <= 5 + super::MAX_TAIL_CHARS);
+    }
+
+    #[test]
+    fn multibyte_paths_do_not_panic() {
+        // Byte slicing here used to cut inside a multi-byte character.
+        let truncated = truncate_path("日本語のとても長いファイル名です", 5);
+        assert!(truncated.starts_with("..."));
     }
 
     #[test]

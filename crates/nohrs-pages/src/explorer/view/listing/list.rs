@@ -182,9 +182,13 @@ fn render_resizable_column_header(
     // ... .child(div()... on_mouse_down(... this.start_column_resize ...))
 
     // The name column's rows lead with a chevron gutter and a type icon, so its
-    // heading is indented to match; the other columns start flush.
+    // heading is indented to match; the other columns start flush. The column
+    // resizes down to `MIN_COLUMN_WIDTH` (80px), where the full indent would
+    // push the label and sort icon over the Type column, so give those a
+    // reserved slice and let the indent absorb the rest.
+    const HEADING_RESERVE: f32 = 52.0;
     let leading_indent = if column_index == 0 {
-        super::row::NAME_INDENT
+        (width - HEADING_RESERVE).clamp(0.0, super::row::NAME_INDENT)
     } else {
         0.0
     };

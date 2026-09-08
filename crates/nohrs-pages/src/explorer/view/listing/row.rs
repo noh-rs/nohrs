@@ -183,9 +183,15 @@ pub fn render(
                                 .when(has_content_matches, |this| {
                                     this.child(
                                         div()
+                                            // Same width as the empty gutter
+                                            // below, so a row with matches keeps
+                                            // its name aligned with the rest.
+                                            .w(px(20.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
                                             .cursor_pointer()
                                             .hover(|s| s.bg(rgb(theme::BG_HOVER)).rounded(px(4.0)))
-                                            .p(px(2.0))
                                             .on_mouse_down(
                                                 gpui::MouseButton::Left,
                                                 cx.listener({

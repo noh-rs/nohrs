@@ -470,10 +470,20 @@ impl ExplorerPane {
     /// positioned by row index and would otherwise re-attach to whichever entry
     /// now occupies that slot.
     pub(crate) fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.renaming.take().is_some() {
+        if self.discard_rename(cx) {
             cx.focus_self(window);
-            cx.notify();
         }
+    }
+
+    /// [`cancel_rename`](Self::cancel_rename) for callers without a `Window`
+    /// (pane-sync navigation). Returns whether a rename was in progress. Focus
+    /// is left alone, so the field's own blur handling settles it.
+    pub(crate) fn discard_rename(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.renaming.take().is_some() {
+            cx.notify();
+            return true;
+        }
+        false
     }
 
     /// Commits the in-progress rename, resolving a name collision by numbering

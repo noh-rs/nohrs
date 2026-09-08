@@ -102,7 +102,9 @@ fn render_shortcuts(
 
     for (i, (label, path)) in shortcuts.into_iter().enumerate() {
         let p = path.clone();
-        let is_current = cwd == path;
+        // `cwd` comes from whichever navigation last ran, so it may carry a
+        // trailing separator the shortcut's own path does not.
+        let is_current = trim_trailing_separator(&cwd) == trim_trailing_separator(&path);
         let icon = if is_current {
             Icon::new(IconName::FolderOpen)
         } else {
@@ -120,6 +122,13 @@ fn render_shortcuts(
     }
 
     shortcuts_el
+}
+
+/// Drops a trailing path separator, but never the one that *is* the root — "/"
+/// would otherwise compare equal to the empty string.
+fn trim_trailing_separator(path: &str) -> &str {
+    let trimmed = path.trim_end_matches(std::path::MAIN_SEPARATOR);
+    if trimmed.is_empty() { path } else { trimmed }
 }
 
 fn get_shortcuts() -> Vec<(String, String)> {

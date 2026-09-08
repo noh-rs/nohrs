@@ -45,7 +45,7 @@ fn render_grid_item(
     _window: &mut Window,
     cx: &mut Context<ExplorerPane>,
 ) -> AnyElement {
-    use nohrs_ui::components::file_list::{format_date, human_bytes};
+    use nohrs_ui::components::file_list::{format_date, get_file_type, human_bytes};
 
     let rename_input = page
         .renaming
@@ -71,7 +71,13 @@ fn render_grid_item(
             human_bytes(item.size),
             format_date(&item.modified)
         ),
-        other => format!("{} · {}", other, format_date(&item.modified)),
+        // Anything else (a symlink, say) shows the same user-facing label the
+        // list view's Type column uses, not the raw internal kind.
+        other => format!(
+            "{} · {}",
+            get_file_type(&item.name, other),
+            format_date(&item.modified)
+        ),
     };
     let activation_item = item.clone();
     let preview_item = item.clone();
