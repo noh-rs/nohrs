@@ -39,17 +39,23 @@
 | 項目 | 採用 |
 |------|------|
 | Framework | TanStack Start + Vite+ |
-| ホスティング | **Cloudflare Pages + Workers** |
-| デプロイ | `main` ブランチ → 本番、PR → preview (`<branch>.nohrs-web.pages.dev`) |
+| ホスティング | **Cloudflare Workers + assets binding** (実装 2026-09-08。ADR 0007 の Pages から変更。理由は下記) |
+| レンダリング | **全ページをビルド時に prerender** して静的配信。SSR は残すが、リクエストごとに変わるのは `/` の言語振り分けだけなので Worker 1 本で足りる |
+| デプロイ | `main` ブランチ → 本番。加えて**週次で再ビルド**する (star 数・コミット・release はビルド時に読むため) |
 | スタイリング | **Tailwind v4 + CSS 変数デザイントークン** (ライト/ダーク・warm neutral・tan アクセントを変数で一元管理) |
 | コンポーネント | **shadcn / Radix headless プリミティブを取り込み、自前トークンで再スキン** (a11y を担保しつつ汎用 LP 感を回避) |
-| フォント | self-host (Google Fonts 直リンクは禁止)。ラテン=グロテスク + モノ、和文=Zen Kaku Gothic New。詳細 §2.5 |
+| フォント | self-host (Google Fonts 直リンクは禁止)。ラテン=`Inter` + `JetBrains Mono`、和文=`Noto Sans JP`。詳細 §2.5。**ビルド時にダウンロードして `public/fonts/` に置き、リポジトリには入れない** (Noto Sans JP はウェイトごとに約 120 のサブセットファイルになるため) |
 | モーション | 控えめ・意味のある動きのみ (CSS 主体、一部 Motion)。`prefers-reduced-motion` 必須対応 |
 | ドキュメント検索 | **Pagefind** (ビルド時に静的インデックス生成、CJK セグメンテーション内蔵で和文 docs も対応) |
 | 分析 | **Cloudflare Web Analytics** (cookie 不要、cookie banner 不要) |
-| OG 画像 | Satori で自動生成 (Cloudflare Workers から)。**P1 から有効** |
+| OG 画像 | Satori で自動生成。**Worker ではなくビルド時に生成する** (入力はビルド時に確定しており、エッジでラスタライザを動かして毎回同じ画像を作る理由がない)。**P1 から有効** |
 | コメント (blog) | giscus (GitHub Discussions backed)。**P1 から有効** |
-| RSS / Atom | 両方提供 (`/blog/rss.xml`, `/blog/atom.xml`)、言語別。**P1 から有効** |
+| RSS / Atom | 両方提供 (`/<lang>/blog/rss.xml`, `/<lang>/blog/atom.xml`)、言語別。**ルートではなくビルドスクリプトで出力する** (全ページ prerender のため、フィードのためだけにサーバを残す理由がない)。**P1 から有効** |
+
+ホスティングを Pages から Workers + assets binding に変えたのは、**成果物を 1 つにするため**。
+assets binding なら、`/` だけを Worker が受けて言語を振り分け、それ以外のパスは Worker を起こさずに
+静的ストレージから直接返せる。ADR 0007 の判断根拠 (Cloudflare にエコシステムを一本化する・無料枠が広い)
+は変わらない。
 
 R2 は他用途でも使用:
 - `coverage.nohrs.app` (PR ごとの HTML カバレッジレポートを保管。詳細は [`docs/testing.md`](./testing.md))
@@ -110,37 +116,46 @@ R2 は他用途でも使用:
 ```text
 web/
 ├── package.json
-├── vite.config.ts
+├── vite.config.ts             # prerender 対象と sitemap の hreflang をここで組む
+├── wrangler.jsonc             # nohrs.app (Worker + assets binding)
 ├── app/                       # TanStack Start app
 │   ├── routes/
 │   │   ├── __root.tsx
-│   │   ├── $lang.tsx          # /en/... or /ja/...
+│   │   ├── index.tsx          # `/` — 言語振り分け (Worker が先に応答する。ここは fallback)
+│   │   ├── $lang.tsx          # /en/... or /ja/... のレイアウト
 │   │   ├── $lang/index.tsx    # landing
-│   │   ├── $lang/about.tsx    # プロジェクトの物語 + values + メーカーズノート
-│   │   ├── $lang/download.tsx # ダウンロード専用導線
-│   │   ├── $lang/roadmap.tsx  # ROADMAP.md の web 化 (P1–P6 進捗)
-│   │   ├── $lang/blog/...
-│   │   ├── $lang/docs/...
-│   │   ├── $lang/releases/...
-│   │   └── $lang/plugins/...
-│   ├── components/
+│   │   ├── $lang/about.tsx
+│   │   ├── $lang/download.tsx
+│   │   ├── $lang/roadmap.tsx
+│   │   ├── $lang/releases.tsx
+│   │   ├── $lang/blog/{index,$slug}.tsx
+│   │   ├── $lang/docs.tsx     # サイドバーのレイアウト
+│   │   ├── $lang/docs/{index,$slug}.tsx
+│   │   └── $lang/plugins/{index,$id}.tsx
+│   ├── components/            # Header / Footer / Section / Phases / FluidOrb / DocsSearch …
+│   ├── data/github.json       # API が使えないときのフォールバック (コミット済)
 │   ├── lib/
-│   │   ├── content.ts         # mdx loader
-│   │   ├── github.ts          # GitHub API client (build-time)
-│   │   └── i18n.ts
-│   └── styles/
+│   │   ├── content.ts         # mdx loader + plugin レジストリ
+│   │   ├── github.ts          # ビルド時に取得した GitHub のスナップショット
+│   │   ├── negotiate.ts       # 言語判定。Worker からも import する (依存ゼロ)
+│   │   ├── seo.ts             # canonical / hreflang / OG / JSON-LD
+│   │   └── strings.ts         # UI 文言。`ja: typeof en` で対訳漏れを型エラーにする
+│   └── styles/app.css         # トークン (3 状態テーマ) + コンポーネント層
 ├── content/
-│   ├── en/
-│   │   ├── blog/
-│   │   ├── docs/
-│   │   └── pages/
-│   ├── ja/
-│   └── plugins/               # Plugin Store エントリ (PR ベース登録)
-│       └── <plugin-id>.toml
+│   ├── en/{blog,docs}/*.mdx
+│   ├── ja/{blog,docs}/*.mdx
+│   └── plugins/<plugin-id>.toml
+├── scripts/                   # fetch-fonts / fetch-github / build-og / build-feeds
 ├── public/
 └── workers/
-    └── noh-rs-redirect.ts     # noh.rs リダイレクト Worker
+    ├── site.ts                # 静的配信 + `/` の言語振り分け
+    ├── noh-rs-redirect.ts     # noh.rs リダイレクト Worker
+    └── wrangler.noh-rs.jsonc
 ```
+
+ビルド時スクリプト (`scripts/`) は**失敗してもビルドを止めない**。ネットワークが無い環境では、
+システムフォント・コミット済みの GitHub スナップショット・OG 画像なしに縮退する。壊れたデプロイを
+出すより、欠けた状態で出す方が安全なため。
 
 ---
 
@@ -178,8 +193,10 @@ web/
 
 zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / Merch) を除いたものを採用。
 
-- **トップナビ**: Features (landing 内アンカー) · Docs · Blog · Plugins · Releases · **主 CTA** · 言語切替 · テーマ切替
+- **トップナビ**: Docs · Blog · Plugins · Releases · 検索 · **主 CTA** · 言語切替 · テーマ切替
   - 主 CTA は **リリースの有無で切り替える** (改訂 2026-09-08)。公開 release が 0 件の間は `Star on GitHub`、初回 release 以降は `Download`。GitHub API から取得する release 件数で分岐させ、pre-alpha 中に「押しても何も無い」導線を作らない
+  - **Features (landing 内アンカー) はトップナビに置かない** (実装 2026-09-08)。全ページに出るナビからランディング内のアンカーへ飛ばすのは行き先が一貫しない。項目数も、和文ラベル + 検索 + トグル 2 つ + CTA を 1440px の 1 行に収める上限が 4 だった
+  - 1024px 未満ではリンク行をバーの下に折り返す。ドロワーは作らない (4 項目のために 2 つ目のナビゲーションモデルを維持する価値がない)
 - **フッタ (zed 風 4 列)**:
   - Product: Download · Releases · Plugins · Roadmap · Docs · GitHub
   - Resources: FAQ (将来) · Community (Discord) · Discussions · Privacy
@@ -271,43 +288,55 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 
 ## 7. ビルド・デプロイ
 
+### ビルドの流れ
+
+```text
+npm run build
+├── prebuild
+│   ├── fetch-fonts.mjs    → public/fonts/          self-host する woff2 と @font-face CSS
+│   ├── fetch-github.mjs   → app/data/…generated    star / release / 直近コミット
+│   └── build-og.mjs       → public/og/             OG 画像 (Satori)
+├── vite build             → dist/client/           全ページ prerender + sitemap.xml
+├── build-feeds.mjs        → dist/client/<lang>/blog/{rss,atom}.xml
+└── pagefind               → dist/client/_pagefind/ docs 検索インデックス
+```
+
 ### CI (GitHub Actions)
 
-- PR open → Cloudflare Pages の preview デプロイが自動で立つ
-- `main` への merge → 本番デプロイ
-- `paths` filter で `web/**` と `docs/**` 変更時のみ web ビルドを走らせる
+- ワークフローは `.github/workflows/web.yml`。`paths: web/**` で Rust の CI と分離する (ADR 0006)
+- PR → typecheck + build + prerender 出力の存在チェック
+- `main` への push → `wrangler deploy` で nohrs.app と noh.rs の両 Worker を更新
+- **週次 (月曜 06:00 UTC) に再ビルド + デプロイ**。star 数・コミット・release はビルド時に読むため、
+  再ビルドしない限り公開サイトはリポジトリに追従しない
 
-### 環境変数 (Cloudflare Pages secrets)
+### 環境変数 (GitHub Actions secrets)
 
-| 変数 | 用途 |
-|------|------|
-| `GITHUB_TOKEN` | ビルド時の GitHub API rate limit 回避 |
-| `GISCUS_REPO_ID` | giscus コメント |
-| `CF_ANALYTICS_TOKEN` | Cloudflare Web Analytics |
+| 変数 | 用途 | 無いとどうなるか |
+|------|------|-----------------|
+| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | デプロイ | デプロイできない |
+| `GITHUB_TOKEN` | ビルド時の GitHub API rate limit 回避 | コミット済みスナップショットにフォールバック |
+| `GISCUS_REPO_ID` / `GISCUS_CATEGORY_ID` | giscus コメント | コメント欄を出さない |
+| `CF_ANALYTICS_TOKEN` | Cloudflare Web Analytics | ビーコンを埋め込まない |
+
+fork でビルドしたときに本家の Discussions へ書き込んだり、本家の Analytics に計上したりしないよう、
+**secret が無い場合は機能ごと出さない**方に倒す。
+
+### Worker (`nohrs.app`)
+
+`workers/site.ts`。全ページが prerender 済みなので、Worker が起きるのは `/` だけ
+(`run_worker_first: ["/"]`)。そこで Cookie → `Accept-Language` の順に言語を決めて 302 で
+`/en` か `/ja` に送り、Cookie に記憶する。`Vary: Accept-Language, Cookie` を付けて、
+別の言語設定の訪問者が同じリダイレクトをキャッシュから受け取らないようにする。
 
 ### Worker (`noh.rs`)
 
-```ts
-// workers/noh-rs-redirect.ts (擬似コード)
-export default {
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
+`workers/noh-rs-redirect.ts`。`nohrs.app` へパスを保ってリダイレクトする。
 
-    // 短縮スキームの展開
-    if (url.pathname.startsWith("/p/")) {
-      const id = url.pathname.slice(3);
-      return Response.redirect(`https://nohrs.app/plugins/${id}${url.search}`, 301);
-    }
-    if (url.pathname.startsWith("/r/")) {
-      const tag = url.pathname.slice(3);
-      return Response.redirect(`https://nohrs.app/releases/${tag}${url.search}`, 301);
-    }
-
-    // path 保持リダイレクト
-    return Response.redirect(`https://nohrs.app${url.pathname}${url.search}`, 301);
-  },
-};
-```
+- `noh.rs/en/...` のように**すでに言語が付いているパス**は恒久的な対応なので **301**
+- `noh.rs/docs/installation` のように**言語が付いていないパス**は `Accept-Language` で解決する必要が
+  あるので **302 + `Vary`**。ここで 301 を返すと、最初の訪問者の言語が全員に焼き付いてしまう
+- 短縮スキーム `noh.rs/p/<plugin-id>` → `/<lang>/plugins/<plugin-id>`、
+  `noh.rs/r/<tag>` → `/<lang>/releases/<tag>`
 
 ---
 

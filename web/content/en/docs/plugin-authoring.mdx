@@ -1,0 +1,56 @@
+---
+title: Writing a plugin
+description: How the WASM component model, the WIT interface and the permission model fit together.
+category: plugins
+order: 4
+---
+
+<Callout title="Not built yet">
+The plugin host is P4 work. The interfaces described here are drafted in the repository, and
+they will change before anything can load them. This page exists so the shape of the design
+can be argued with early, not so you can ship a plugin today.
+</Callout>
+
+## What a plugin is
+
+A plugin is a WebAssembly component, not a script and not a dynamic library. It is compiled
+against a WIT interface, and the host instantiates it in a sandbox with no ambient
+authority: no file system, no network, no process spawning, until it is granted.
+
+That choice is what makes the permission model meaningful. A plugin cannot read your home
+directory and promise not to — it cannot reach it at all unless the capability was handed
+over.
+
+## Languages
+
+The component model is the interface, so any language that compiles to a WASM component
+works. Three templates will ship with the host:
+
+<CodeTabs tabs={[
+  { label: 'Rust', children: <pre className="cmd"><code>cargo generate noh-rs/plugin-template-rust</code></pre> },
+  { label: 'TypeScript', children: <pre className="cmd"><code>npm create @noh-rs/plugin</code></pre> },
+  { label: 'Python', children: <pre className="cmd"><code>componentize-py bindings ./wit</code></pre> },
+]} />
+
+## Permissions
+
+Every capability a plugin holds is one the user granted explicitly, and the grant is
+recorded rather than implied. The set is deliberately small and concrete:
+
+| Permission | What it allows |
+| --- | --- |
+| `fs:read` | Read the paths the user opened the plugin against |
+| `fs:write` | Write within those same paths |
+| `process:spawn` | Run a named external binary |
+| `clipboard:read` | Read the clipboard when invoked |
+| `net:fetch` | Reach a declared list of hosts |
+| `storage:local` | Keep its own state, scoped to the plugin |
+
+A plugin that asks for more than it visibly needs should be treated the way you would treat
+any other program that did that.
+
+## Distribution
+
+Plugins are listed in this repository as one TOML file each, under
+`web/content/plugins/`. Registration is a pull request; the build reads the rest — README,
+license, stars, last commit — from the plugin's own GitHub repository.

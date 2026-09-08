@@ -1,0 +1,45 @@
+{
+  "name": "nohrs-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prebuild": "node scripts/fetch-fonts.mjs && node scripts/fetch-github.mjs && node scripts/build-og.mjs",
+    "build": "vite build && node scripts/build-feeds.mjs && pagefind --site dist/client --output-subdir _pagefind",
+    "dev": "vite dev --port 3000",
+    "serve": "vite preview --port 3000",
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "deploy:redirect": "wrangler deploy --config workers/wrangler.noh-rs.jsonc"
+  },
+  "dependencies": {
+    "@mdx-js/react": "^3.1.1",
+    "@tanstack/react-router": "^1.170.33",
+    "@tanstack/react-start": "^1.168.50",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@mdx-js/rollup": "^3.1.1",
+    "@resvg/resvg-js": "^2.6.2",
+    "@shikijs/rehype": "^3.14.0",
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/mdx": "^2.0.13",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "pagefind": "^1.4.0",
+    "rehype-autolink-headings": "^7.1.0",
+    "rehype-slug": "^6.0.0",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gfm": "^4.0.1",
+    "satori": "^0.19.3",
+    "shiki": "^3.14.0",
+    "smol-toml": "^1.4.2",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12",
+    "wrangler": "^4.45.0",
+    "yaml": "^2.9.0"
+  }
+}

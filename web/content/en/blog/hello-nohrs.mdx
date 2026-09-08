@@ -1,0 +1,65 @@
+---
+title: Why we are building Nohrs
+date: '2026-09-08'
+description: A launcher and an explorer are the same problem, and macOS ships them as two.
+author: shuya goto
+tags: ['project']
+canonical: en
+---
+
+Most of the time you spend on files is not spent doing anything with them. It is spent
+getting to them. On a stock Mac that means opening a window, walking down a hierarchy, and —
+when the hierarchy turns out not to know where the thing is — abandoning it for a search
+field in a different application.
+
+Each of those steps is small enough to be invisible. Together they are the job.
+
+## Two halves of one problem
+
+The launcher and the file manager are usually treated as separate products. Raycast and
+Alfred are launchers; Finder, Path Finder and Marta are file managers. Using both means
+context-switching between two mental models of the same file system, and a plugin that
+bridges them is still a bridge.
+
+Nohrs puts them in one application because they are one problem: *get me to the thing I am
+thinking about, then let me act on it*. Summon it with a global hotkey, type enough of the
+name, and land in a window where you can preview it, rename it, move it, or open it — without
+having gone anywhere else first.
+
+## Why Rust, why gpui
+
+"Quickly and reliably" is easy to write in a README and expensive to hold. A file manager
+that stutters when a directory has forty thousand entries in it has failed at the only thing
+it does.
+
+Rust means the fast path and the safe path are the same path — no garbage collector pause in
+the middle of a scroll, and no class of memory bug to trade performance against. gpui gives
+us GPU-accelerated rendering that was built for exactly this kind of dense, keyboard-driven
+interface, by people shipping an editor with the same constraints.
+
+<Callout title="Where this is today">
+Pre-alpha. The explorer runs and does real work; the launcher and the search index are the
+next phase, and the plugin host is after that. The [roadmap](/en/roadmap) lists all six
+phases with their status, and none of them are marked done that are not.
+</Callout>
+
+## Extensions, without asking for trust
+
+The interesting parts of a file manager are the ones nobody can anticipate — the conversion
+you run twenty times a day, the status column that only makes sense for your repository.
+Those have to be extensions.
+
+Extensions normally arrive with a request to trust their author. Nohrs will not make that
+request. Plugins are WASM components in a sandbox with no ambient authority: no file system,
+no network, no subprocesses, until a specific capability is granted. A plugin cannot promise
+not to read your home directory, because it cannot reach it.
+
+## In the open
+
+Every design decision lands as an ADR in the repository before the code does, including the
+ones that were argued and lost. If you want to know why the search index is SQLite and
+Tantivy rather than the system index, that reasoning is a file you can read, not a sentence
+on a marketing page.
+
+The source is at [noh-rs/nohrs](https://github.com/noh-rs/nohrs). It is early. That is the
+best time to disagree with it.
