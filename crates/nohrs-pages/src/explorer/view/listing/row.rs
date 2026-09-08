@@ -222,13 +222,20 @@ pub fn render(
                                 .when(!has_content_matches, |this| this.child(div().w(px(20.0))))
                                 .child(Icon::new(icon_name).size_4().text_color(icon_color))
                                 .child(match rename_input {
-                                    // The trailing gap keeps the field off the
-                                    // Type column, which it otherwise butts
-                                    // straight into.
+                                    // Borderless and flush with the label it
+                                    // stands in for, so the row keeps its shape
+                                    // and only the caret marks the edit.
                                     Some(input) => div()
                                         .flex_1()
                                         .min_w(px(0.0))
-                                        .child(Input::new(&input).small())
+                                        .child(
+                                            Input::new(&input)
+                                                .small()
+                                                .appearance(false)
+                                                .px(px(0.0))
+                                                .text_sm()
+                                                .text_color(rgb(theme::FG)),
+                                        )
                                         .into_any_element(),
                                     // `flex_1` + `min_w(0)` give the ellipsis a
                                     // width to clamp against; without them a long

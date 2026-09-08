@@ -143,7 +143,14 @@ fn render_grid_item(
         .child(match rename_input {
             Some(input) => div()
                 .w_full()
-                .child(Input::new(&input).small())
+                .child(
+                    Input::new(&input)
+                        .small()
+                        .appearance(false)
+                        .px(px(0.0))
+                        .text_sm()
+                        .text_color(rgb(theme::FG)),
+                )
                 .into_any_element(),
             None => div()
                 .w_full()

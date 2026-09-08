@@ -39,6 +39,13 @@ pub fn render(
             let modifiers = event.keystroke.modifiers;
             let with_modifier = modifiers.platform || modifiers.control;
             let is_f = key_lc == "f" || event.keystroke.key == "KeyF";
+            // Escape abandons an open rename before anything else can claim it —
+            // the field has focus, so this is the only Escape the user means.
+            if key_lc == "escape" && this.renaming.is_some() {
+                this.cancel_rename(window, cx);
+                cx.stop_propagation();
+                return;
+            }
             let close_with_escape = key_lc == "escape" && this.search_visible;
             if (is_f && with_modifier) || close_with_escape {
                 this.toggle_search(window, cx);
