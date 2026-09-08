@@ -39,7 +39,9 @@ export function seo({
    */
   contentLang?: Lang
 }): { meta: Meta; links: LinkTag } {
-  const url = `${SITE.host}/${lang}${path}`
+  // One URL for both `canonical` and `og:url`: a share card that names the
+  // route while the page disowns it as a duplicate splits the counts a
+  // sharing service keeps, and the two tags would contradict each other.
   const canonical = `${SITE.host}/${contentLang}${path}`
   const fullTitle = path === '' ? `${SITE.name} — ${title}` : `${title} — ${SITE.name}`
 
@@ -49,7 +51,7 @@ export function seo({
     { property: 'og:type', content: type },
     { property: 'og:title', content: fullTitle },
     { property: 'og:description', content: description },
-    { property: 'og:url', content: url },
+    { property: 'og:url', content: canonical },
     { property: 'og:image', content: `${SITE.host}${image}` },
     { property: 'og:locale', content: contentLang === 'ja' ? 'ja_JP' : 'en_US' },
     { name: 'twitter:title', content: fullTitle },

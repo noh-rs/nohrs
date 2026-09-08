@@ -41,7 +41,9 @@ export const Route = createFileRoute('/$lang/blog/$slug')({
           datePublished: post.date,
           inLanguage: post.lang,
           author: { '@type': 'Person', name: post.author },
-          mainEntityOfPage: `${SITE.host}/${lang}/blog/${post.slug}`,
+          // `post.lang`, matching `inLanguage` and the canonical link: the
+          // article is one thing, and it lives at one URL.
+          mainEntityOfPage: `${SITE.host}/${post.lang}/blog/${post.slug}`,
         }),
       ],
     }

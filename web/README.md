@@ -123,10 +123,12 @@ scheduled run's ref is the default branch — so a `main`-only rule silently sto
 rebuild. Making these environment secrets already limits them to the deploy job, which is
 the point; the job's own `if:` decides when it runs.
 
-**Running it.** Actions → *Web* → Run workflow. A manual run deploys the ref it was
-dispatched on, so the site can go up from a branch before that branch is merged. After
-merging, a push to `main` deploys on its own, and a Monday schedule redeploys `main` so the
-star count, commit list and release list follow the repository.
+**Running it.** Actions → *Web* → Run workflow. A manual run builds and checks whichever ref
+it was dispatched on, but **only `main` deploys** — production credentials must not be
+reachable from an arbitrary branch that anyone with write access can push. So the way to put
+something on the site is to merge it. After merging, a push to `main` deploys on its own, and
+a Monday schedule redeploys `main` so the star count, commit list and release list follow the
+repository.
 
 **By hand**, if you would rather (`wrangler login` first):
 

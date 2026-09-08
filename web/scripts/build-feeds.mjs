@@ -17,9 +17,16 @@ const TITLES = {
   ja: { title: 'Nohrs ブログ', description: 'リリースの告知と、Nohrs をどう作っているかの記録です。' },
 }
 
-/** A post URL, path-encoded and then XML-escaped, safe in text or an attribute. */
-function postUrl(lang, slug) {
-  return escapeXml(`${HOST}/${lang}/blog/${encodeURIComponent(slug)}`)
+/**
+ * A post URL, path-encoded and then XML-escaped, safe in text or an attribute.
+ *
+ * Built from the post's own language rather than the feed's, so an entry the
+ * feed is carrying as a fallback points at the version that actually holds the
+ * text — the same URL the page declares canonical, and a `guid` that stays put
+ * once the translation lands.
+ */
+function postUrl(post) {
+  return escapeXml(`${HOST}/${post.lang}/blog/${encodeURIComponent(post.slug)}`)
 }
 
 function escapeXml(value) {
@@ -34,7 +41,7 @@ function rss(lang, posts) {
   const meta = TITLES[lang]
   const items = posts
     .map((post) => {
-      const url = postUrl(lang, post.slug)
+      const url = postUrl(post)
       // `dc:creator`, not `author`: RSS 2.0 defines `author` as an email
       // address, and these are display names.
       return `    <item>
@@ -67,7 +74,7 @@ function atom(lang, posts) {
   const updated = posts[0] ? new Date(posts[0].date).toISOString() : new Date().toISOString()
   const entries = posts
     .map((post) => {
-      const url = postUrl(lang, post.slug)
+      const url = postUrl(post)
       return `  <entry>
     <title>${escapeXml(post.title)}</title>
     <link href="${url}" />

@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react'
 import type { Lang } from './i18n'
-import { CANONICAL_LANG } from './i18n'
+import { localize, withFallback } from './fallback.mjs'
 
 export type BlogFrontmatter = {
   title: string
@@ -67,44 +67,8 @@ const allDocs: DocPage[] = Object.entries(docModules).map(([key, module]) => {
   return { ...module.frontmatter, lang, slug, Body: module.default }
 })
 
-/**
- * The one place the translation fallback is decided, for both collections.
- *
- * docs/web.md §4 requires full parity at launch, so this only covers the
- * window between publishing something and translating it. Within that window
- * the reader must still be able to reach the page: dropping it would turn a
- * missing translation into a 404 and, for a doc, into a hole in the sidebar.
- *
- * The source language is whichever the author wrote in — `canonical: ja` in a
- * post's frontmatter makes Japanese the original, so an untranslated English
- * route falls back to it rather than the other way round.
- */
-function withFallback<T extends { lang: Lang; slug: string; canonical?: Lang }>(
-  entries: T[],
-  lang: Lang,
-  slug: string,
-): (T & { fallbackFrom?: Lang }) | undefined {
-  const exact = entries.find((entry) => entry.lang === lang && entry.slug === slug)
-  if (exact) return exact
-
-  const sameSlug = entries.filter((entry) => entry.slug === slug)
-  if (sameSlug.length === 0) return undefined
-
-  const declared = sameSlug.find((entry) => entry.canonical && entry.lang === entry.canonical)
-  const source = declared ?? sameSlug.find((entry) => entry.lang === CANONICAL_LANG) ?? sameSlug[0]
-  return { ...source, fallbackFrom: source.lang }
-}
-
-/** Every slug in either language, so an untranslated entry still gets listed. */
-function slugsFor<T extends { lang: Lang; slug: string }>(entries: T[]): string[] {
-  return [...new Set(entries.map((entry) => entry.slug))]
-}
-
 export function blogPosts(lang: Lang): BlogPost[] {
-  return slugsFor(allPosts)
-    .map((slug) => blogPost(lang, slug))
-    .filter((post): post is BlogPost => post !== undefined)
-    .sort((a, b) => b.date.localeCompare(a.date))
+  return localize(allPosts, lang).sort((a, b) => b.date.localeCompare(a.date))
 }
 
 export function blogPost(lang: Lang, slug: string): BlogPost | undefined {
@@ -112,10 +76,9 @@ export function blogPost(lang: Lang, slug: string): BlogPost | undefined {
 }
 
 export function docPages(lang: Lang): DocPage[] {
-  return slugsFor(allDocs)
-    .map((slug) => docPage(lang, slug))
-    .filter((page): page is DocPage => page !== undefined)
-    .sort((a, b) => (a.order ?? 999) - (b.order ?? 999) || a.slug.localeCompare(b.slug))
+  return localize(allDocs, lang).sort(
+    (a, b) => (a.order ?? 999) - (b.order ?? 999) || a.slug.localeCompare(b.slug),
+  )
 }
 
 export function docPage(lang: Lang, slug: string): DocPage | undefined {

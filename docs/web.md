@@ -205,13 +205,15 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
   - 主 CTA は **リリースの有無で切り替える** (改訂 2026-09-08)。公開 release が 0 件の間は `Star on GitHub`、初回 release 以降は `Download`。GitHub API から取得する release 件数で分岐させ、pre-alpha 中に「押しても何も無い」導線を作らない
   - **Features (landing 内アンカー) はトップナビに置かない** (実装 2026-09-08)。全ページに出るナビからランディング内のアンカーへ飛ばすのは行き先が一貫しない。項目数も、和文ラベル + 検索 + トグル 2 つ + CTA を 1440px の 1 行に収める上限が 4 だった
   - 1024px 未満ではリンク行をバーの下に折り返す。ドロワーは作らない (4 項目のために 2 つ目のナビゲーションモデルを維持する価値がない)
-- **フッタ (zed 風 4 列)**:
-  - Product: Download · Releases · Plugins · Roadmap · Docs · GitHub
-  - Resources: Docs · Blog · Discussions · FAQ (将来) · Privacy (将来)
-    - **Discord をここに置かない** (実装 2026-09-08)。Social 列にあるものと同一の宛先で、
-      1 つのフッタ内に同じリンクが 2 回出ることになるため
-  - Project: Blog · About · Brand (将来) · License
-  - Social: X · Discord · GitHub
+- **フッタ (zed 風 4 列)** — 実装に合わせて改訂 (2026-09-08):
+  - Product: Download · Releases · Plugins · Roadmap
+  - Resources: Docs · Blog · Discussions
+  - Project: About · Contributing · License
+  - Social: GitHub · Discord · X
+  - **同じ宛先を 2 列に置かない** (実装 2026-09-08)。当初案では Docs が Product と Resources に、
+    Blog が Resources と Project に、GitHub が Product と Social に重複していた。宛先ごとに列を 1 つ決める
+  - **存在しないページを列に書かない** (実装 2026-09-08)。FAQ / Privacy / Brand は「(将来)」付きで
+    載っていたが、リンク先が無い項目はフッタに置きようがない。作ってから足す
 
 ### 6.1 `/` (ランディング)
 

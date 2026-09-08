@@ -3,6 +3,7 @@ import { join, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse as parseYaml } from 'yaml'
 import { parse as parseToml } from 'smol-toml'
+import { localize } from '../app/lib/fallback.mjs'
 
 export const WEB_ROOT = fileURLToPath(new URL('..', import.meta.url))
 export const CONTENT_ROOT = join(WEB_ROOT, 'content')
@@ -32,14 +33,34 @@ function readCollection(lang, collection) {
     })
 }
 
+/** Every source file in a collection, in every language, unresolved. */
+function everyLang(collection) {
+  return LANGS.flatMap((lang) => readCollection(lang, collection))
+}
+
+/**
+ * The blog and docs as one language sees them, fallbacks included.
+ *
+ * These go through the same `localize` the app uses, so a slug that exists in
+ * only one language is prerendered — and listed in the sitemap and feeds —
+ * under both. Reading one directory per language instead would leave the app
+ * willing to render a URL the build never produced.
+ */
 export function blogPosts(lang) {
-  return readCollection(lang, 'blog').sort((a, b) => String(b.date).localeCompare(String(a.date)))
+  return localize(everyLang('blog'), lang).sort((a, b) =>
+    String(b.date).localeCompare(String(a.date)),
+  )
 }
 
 export function docPages(lang) {
-  return readCollection(lang, 'docs').sort(
+  return localize(everyLang('docs'), lang).sort(
     (a, b) => (a.order ?? 999) - (b.order ?? 999) || a.slug.localeCompare(b.slug),
   )
+}
+
+/** Every article that exists as a file, for work keyed to the text itself. */
+export function allBlogPosts() {
+  return everyLang('blog')
 }
 
 export function plugins() {

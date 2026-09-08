@@ -72,6 +72,10 @@ function CodeTabs({ tabs }: { tabs: { label: string; children: ReactNode }[] }) 
           role="tabpanel"
           aria-labelledby={`${id}-tab-${index}`}
           hidden={index !== active}
+          // A panel holding only a `<pre>` has nothing focusable in it, so
+          // without this Tab leaves the tablist and skips the code entirely —
+          // and a keyboard reader can never scroll a wide block sideways.
+          tabIndex={0}
           className="pt-3"
         >
           {tab.children}

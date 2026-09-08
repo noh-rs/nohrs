@@ -34,14 +34,25 @@ function firstLine(message) {
 }
 
 /**
- * The first line of a release body that reads as a sentence, with Markdown
- * heading and emphasis markers stripped. Returns null rather than an empty
- * string so the caller's `??` actually falls through to the release name — a
- * body that opens with a blank line used to render as nothing at all.
+ * The first line of a release body that reads as a sentence.
+ *
+ * The body is Markdown but this is rendered as plain text, so the markers that
+ * would otherwise show through are removed: heading hashes, asterisks and
+ * backticks, and links reduced to their text. Underscores are deliberately
+ * left alone — in release notes they are far more often part of an identifier
+ * than an emphasis marker.
+ *
+ * Returns null rather than an empty string so the caller's `??` actually falls
+ * through to the release name — a body that opens with a blank line used to
+ * render as nothing at all.
  */
 function highlightOf(body) {
   for (const line of (body ?? '').split('\n')) {
-    const text = line.replace(/^\s*#{1,6}\s*/, '').replace(/\*\*/g, '').trim()
+    const text = line
+      .replace(/^\s*#{1,6}\s*/, '')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/[*`]/g, '')
+      .trim()
     if (text) return text
   }
   return null

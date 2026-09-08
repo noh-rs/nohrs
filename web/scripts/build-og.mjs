@@ -13,7 +13,7 @@ import { mkdir, writeFile, readFile, access } from 'node:fs/promises'
 import { join } from 'node:path'
 import satori from 'satori'
 import { Resvg } from '@resvg/resvg-js'
-import { WEB_ROOT, LANGS, blogPosts } from './content-index.mjs'
+import { WEB_ROOT, allBlogPosts } from './content-index.mjs'
 
 const OUT_DIR = join(WEB_ROOT, 'public', 'og')
 const FONT_CACHE = join(WEB_ROOT, 'node_modules', '.cache', 'og-fonts')
@@ -140,17 +140,16 @@ async function main() {
   })
 
   let count = 1
-  for (const lang of LANGS) {
-    for (const post of blogPosts(lang)) {
-      // Keyed by language as well as slug: the card carries the article's own
-      // title, which differs between the two trees.
-      await render(fonts, `blog-${lang}-${post.slug}.png`, {
-        eyebrow: lang === 'ja' ? 'ブログ' : 'Blog',
-        title: post.title,
-        footer: post.author,
-      })
-      count += 1
-    }
+  // One card per source file, keyed by the language that file is written in.
+  // A route falling back to another language asks for that language's card, so
+  // rendering per localized listing would put an English title behind `-ja-`.
+  for (const post of allBlogPosts()) {
+    await render(fonts, `blog-${post.lang}-${post.slug}.png`, {
+      eyebrow: post.lang === 'ja' ? 'ブログ' : 'Blog',
+      title: post.title,
+      footer: post.author,
+    })
+    count += 1
   }
 
   console.log(`og: ${count} cards in public/og`)
