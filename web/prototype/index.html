@@ -214,7 +214,6 @@
   /* ── pillars ───────────────────────────────────────────────── */
   .pillars { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); }
   .pillar { background: var(--paper); padding: 30px 28px; }
-  .pillar .tag { font: 500 .6875rem/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--tan-ink); display: block; margin-bottom: 14px; }
   .pillar p { font-size: .9375rem; margin: 0; color: var(--muted); }
   @media (max-width: 760px) { .pillars { grid-template-columns: 1fr; } }
 
@@ -234,17 +233,7 @@
   .shot .chrome i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); display: block; }
   .shot .chrome .title { margin-left: 8px; font: 400 .6875rem/1 var(--mono); color: var(--muted); letter-spacing: .06em; }
   .shot img { display: block; width: 100%; height: auto; }
-  .shot-cap { display: flex; gap: 10px; align-items: baseline; margin-top: 14px; font: 400 .75rem/1.6 var(--mono); color: var(--muted); }
-
-  .coming { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 44px; }
-  .coming-item { border-top: 1px solid var(--line); padding-top: 18px; }
-  .coming-item .when {
-    font: 500 .6875rem/1 var(--mono); letter-spacing: .1em; text-transform: uppercase;
-    color: var(--muted); background: var(--surface); border: 1px solid var(--line);
-    border-radius: 3px; padding: 4px 7px; display: inline-block; margin-bottom: 12px;
-  }
-  .coming-item p { font-size: .875rem; color: var(--muted); margin: 0; }
-  @media (max-width: 760px) { .coming { grid-template-columns: 1fr; } }
+  .shot-cap { margin-top: 14px; font: 400 .75rem/1.6 var(--mono); color: var(--muted); }
 
   /* ── roadmap: same hairline-row vocabulary as the community list */
   .phases { border-top: 1px solid var(--line); }
@@ -260,12 +249,17 @@
   .p-id    { font: 500 .875rem/1.6 var(--mono); color: var(--muted); }
   .p-ver   { font: 400 .875rem/1.6 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
   .p-theme { font-size: .9375rem; color: var(--ink-2); }
+  .p-title { font-size: .9375rem; color: var(--ink); }
   .p-state { font: 400 .75rem/1.6 var(--mono); letter-spacing: .06em; color: var(--muted); white-space: nowrap; }
   .phase[data-now] .p-id    { color: var(--ink); }
   .phase[data-now] .p-state { color: var(--tan-ink); }
+  /* the "not built yet" list: same rows, no version or status column */
+  .phases.upcoming { margin-top: 44px; }
+  .phases.upcoming .phase { grid-template-columns: 48px minmax(0, 1fr) minmax(0, 1.6fr); }
+  .phases.upcoming .p-theme { color: var(--muted); }
   @media (max-width: 720px) {
-    .phase { grid-template-columns: 48px 1fr; gap: 6px 24px; }
-    .p-ver, .p-theme, .p-state { grid-column: 2; }
+    .phase, .phases.upcoming .phase { grid-template-columns: 48px 1fr; gap: 6px 24px; }
+    .p-ver, .p-theme, .p-title, .p-state { grid-column: 2; }
   }
 
   /* ── signals ───────────────────────────────────────────────── */
@@ -346,14 +340,12 @@
   <!-- ── Hero ─────────────────────────────────────────────────── -->
   <section class="hero">
     <div class="frame">
-      <p class="eyebrow"><span data-en="Pre-alpha · macOS · MIT" data-ja="Pre-alpha · macOS · MIT">Pre-alpha · macOS · MIT</span></p>
-
       <h1>Launcher <span class="x">×</span> Explorer</h1>
 
       <p class="sub"
-         data-en="Nohrs is a keyboard-driven file explorer for macOS with a built-in launcher. Written in Rust. Open source."
-         data-ja="Nohrs は、ランチャーを内蔵した macOS 向けのファイルエクスプローラーです。Rust で書いています。オープンソース。">
-        Nohrs is a keyboard-driven file explorer for macOS with a built-in launcher. Written in Rust. Open source.
+         data-en="Nohrs is a keyboard-driven file explorer for macOS with a built-in launcher. Written in Rust. Open source, and still pre-alpha."
+         data-ja="Nohrs は、ランチャーを内蔵した macOS 向けのファイルエクスプローラーです。Rust で書いています。オープンソースで、まだ pre-alpha です。">
+        Nohrs is a keyboard-driven file explorer for macOS with a built-in launcher. Written in Rust. Open source, and still pre-alpha.
       </p>
 
       <div class="cta">
@@ -401,25 +393,21 @@
           data-ja="妥協しない四つのこと。">Four things it refuses to compromise on.</h2>
       <div class="pillars reveal">
         <div class="pillar">
-          <span class="tag">Launcher</span>
-          <h3 data-en="First-class, not bolted on" data-ja="後付けではない、一級市民">First-class, not bolted on</h3>
+          <h3 data-en="A launcher, not an afterthought" data-ja="後付けではない、ランチャー">A launcher, not an afterthought</h3>
           <p data-en="A built-in launcher you summon from a global hotkey — designed with the explorer, not added to it later."
              data-ja="グローバルホットキーで呼び出せる内蔵ランチャー。後から足したものではなく、エクスプローラーと一緒に設計しています。">A built-in launcher you summon from a global hotkey — designed with the explorer, not added to it later.</p>
         </div>
         <div class="pillar">
-          <span class="tag">Explorer</span>
           <h3 data-en="Everything a modern file manager owes you" data-ja="現代のファイルマネージャに求められること">Everything a modern file manager owes you</h3>
           <p data-en="Split view, tabs, drag-and-drop and bulk operations — the baseline, done properly."
              data-ja="分割ビュー、タブ、ドラッグ＆ドロップ、一括操作。当たり前のことを、きちんと。">Split view, tabs, drag-and-drop and bulk operations — the baseline, done properly.</p>
         </div>
         <div class="pillar">
-          <span class="tag">Plugins</span>
           <h3 data-en="Sandboxed WASM components" data-ja="サンドボックス化された WASM コンポーネント">Sandboxed WASM components</h3>
           <p data-en="Extend Nohrs in Rust, TypeScript or Python. Every plugin runs sandboxed under an explicit-consent permission model."
              data-ja="Rust・TypeScript・Python で拡張できます。すべてのプラグインは、明示的な許可に基づくサンドボックスの中で動きます。">Extend Nohrs in Rust, TypeScript or Python. Every plugin runs sandboxed under an explicit-consent permission model.</p>
         </div>
         <div class="pillar">
-          <span class="tag">Search</span>
           <h3 data-en="No dependency on the OS index" data-ja="OS の検索インデックスに依存しない">No dependency on the OS index</h3>
           <p data-en="A self-contained SQLite + Tantivy hybrid index that understands code bases — it does not wait on the system search daemon."
              data-ja="SQLite と Tantivy によるハイブリッドインデックスを自前で持ちます。コードベースを理解し、OS の検索デーモンを待ちません。">A self-contained SQLite + Tantivy hybrid index that understands code bases — it does not wait on the system search daemon.</p>
@@ -450,28 +438,27 @@
         </figure>
       </div>
       <p class="shot-cap">
-        <span style="color:var(--tan-ink)">●</span>
         <span data-en="Implemented — explorer, list &amp; grid views, preview pane" data-ja="実装済み — エクスプローラー、リスト／グリッド表示、プレビューペイン">Implemented — explorer, list &amp; grid views, preview pane</span>
       </p>
 
-      <div class="coming">
-        <div class="coming-item">
-          <span class="when">P3 · v0.2.0</span>
-          <h3 data-en="Global-hotkey launcher" data-ja="グローバルホットキーのランチャー">Global-hotkey launcher</h3>
-          <p data-en="Not written yet. No screenshot exists, so we are not showing one."
-             data-ja="まだ書かれていません。スクリーンショットも存在しないので、掲載していません。">Not written yet. No screenshot exists, so we are not showing one.</p>
+      <div class="phases upcoming">
+        <div class="phase">
+          <span class="p-id">P3</span>
+          <span class="p-title" data-en="Global-hotkey launcher" data-ja="グローバルホットキーのランチャー">Global-hotkey launcher</span>
+          <span class="p-theme" data-en="Not written yet. No screenshot exists, so we are not showing one."
+                data-ja="まだ書かれていません。スクリーンショットも存在しないので、掲載していません。">Not written yet. No screenshot exists, so we are not showing one.</span>
         </div>
-        <div class="coming-item">
-          <span class="when">P3 · v0.2.0</span>
-          <h3 data-en="SQLite + Tantivy search" data-ja="SQLite + Tantivy の検索">SQLite + Tantivy search</h3>
-          <p data-en="Design is settled in ADR 0001. Implementation follows the launcher."
-             data-ja="設計は ADR 0001 で確定しています。実装はランチャーの次です。">Design is settled in ADR 0001. Implementation follows the launcher.</p>
+        <div class="phase">
+          <span class="p-id">P3</span>
+          <span class="p-title" data-en="SQLite + Tantivy search" data-ja="SQLite + Tantivy の検索">SQLite + Tantivy search</span>
+          <span class="p-theme" data-en="Design is settled in ADR 0001. Implementation follows the launcher."
+                data-ja="設計は ADR 0001 で確定しています。実装はランチャーの次です。">Design is settled in ADR 0001. Implementation follows the launcher.</span>
         </div>
-        <div class="coming-item">
-          <span class="when">P4 · v0.3.0</span>
-          <h3 data-en="WASM plugin host" data-ja="WASM プラグインホスト">WASM plugin host</h3>
-          <p data-en="WIT interfaces are drafted. Three language templates ship with the host."
-             data-ja="WIT のインターフェースは草案ができています。3 言語のテンプレートをホストと同時に出します。">WIT interfaces are drafted. Three language templates ship with the host.</p>
+        <div class="phase">
+          <span class="p-id">P4</span>
+          <span class="p-title" data-en="WASM plugin host" data-ja="WASM プラグインホスト">WASM plugin host</span>
+          <span class="p-theme" data-en="WIT interfaces are drafted. Three language templates ship with the host."
+                data-ja="WIT のインターフェースは草案ができています。3 言語のテンプレートをホストと同時に出します。">WIT interfaces are drafted. Three language templates ship with the host.</span>
         </div>
       </div>
     </div>
@@ -623,7 +610,7 @@
       </div>
     </div>
     <div class="fbase">
-      <span>© 2026 Nohrs · MIT</span>
+      <span>© 2026 Nohrs</span>
       <span data-en="Design prototype for nohrs.app — not the live site"
             data-ja="nohrs.app のデザインプロトタイプ（本番サイトではありません）">Design prototype for nohrs.app — not the live site</span>
     </div>

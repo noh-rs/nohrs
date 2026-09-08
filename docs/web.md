@@ -191,7 +191,8 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 1. **Hero**: tagline (大タイポ) + サブコピー + 主 CTA。**製品スクショは Hero に置かない** (改訂 2026-09-08)
    - tagline は **`Launcher × Explorer`** で確定。`×` のみ mono + Rust tan で組み、他は Inter。リポジトリ description の冒頭と一致させる
    - サブコピーは事実のみ 1〜2 行 (何であるか・何で書かれているか・ライセンス)。バッジや煽り文句を足さない
-   - **背景は無地**。ステータス表記 (`Pre-alpha · macOS · MIT`) はピルバッジにせず、他セクションと同じ mono の eyebrow + 罫線で組む。Hero だけが別の視覚言語を喋らないようにする
+   - **背景は無地**。Hero に置くのは見出し・サブコピー・CTA の 3 つだけで、ステータスバッジの類は置かない。pre-alpha であることはサブコピーの文中で述べる
+   - **バッジ・タグ・中黒区切りを禁止する** (改訂 2026-09-08)。`Pre-alpha · macOS · MIT` のような属性の羅列、枠線付きの小ラベル、見出し上のカテゴリタグは使わない。伝えるべき属性は本文の文として書くか、罫線で区切った行に落とす
    - **正直主義は維持**: 実在する Explorer の額装スクショは Hero ではなく直後の Preview セクションに置く。**当面は静止スクショで代替**し（**en ロケールで撮り直し**）、操作 GIF は後日差し替える（README 約束分）。Launcher/Plugins/Search は **偽装せず** mock も作らず、"Coming in v0.x" のテキストカードのみで見せる
 2. **"Why nohrs?"** — 3-4 ポイントで差別化 (Launcher first-class / Explorer first-class / WASM plugins / Spotlight 非依存の検索。README の柱を流用)
 3. **主要機能ハイライト** (Explorer=実在 / Launcher・Plugin・Search=Coming カードで mock 提示)
