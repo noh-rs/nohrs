@@ -226,14 +226,59 @@ redb = "4"
 // crates/nohrs-store/src/nohrs_store.rs (擬似コード)
 use redb::TableDefinition;
 
-// 単一テーブル。key は "window.position" / "session.tabs" 等の名前空間付き文字列。
+// 単一テーブル。key は `KvKey` (= "window.position" / "session.tabs")。
 const HOST_KV: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("kv");
 ```
 
 - `KvStore::get` / `put` / `delete` は `HOST_KV` への単純な点アクセス
-- `KvStore::list_prefix(prefix)` は `range(prefix..)` を走査し prefix 不一致で打ち切る
+- `KvStore::list_namespace(ns)` は `range("<ns>.".. )` を走査し prefix 不一致で打ち切る
 - `KvStore::batch(ops)` は 1 つの write transaction にまとめて atomic commit
 - value は JSON or MessagePack で serialize した blob (タブ群のスナップショット等)
+
+#### キーの名前空間は型で強制する
+
+key は `&str` ではなく **`KvKey`** です。`<namespace>.<name>` のドット区切りで、**セグメントは
+2 つ以上**（つまり必ず名前空間を持つ）。各セグメントは 1 文字以上の小文字 ASCII / 数字 / `_`。
+
+名前空間は「文字列の慣習」だった時期があり、それだと `put("tabs", …)` が普通にコンパイルされ、
+書けて読み戻せてしまいます。壊れるのは後から別の場所で、`list_*` が行を取りこぼす形です。
+そこで:
+
+| 作り方 | 検査 | 用途 |
+|--------|------|------|
+| `kv_key!("session.explorer_tabs")` | **コンパイル時** | サブシステムが持つ固定キー。ほぼ全部これ |
+| `KvKey::new(ns, name)` / `KvKey::parse(s)` | 実行時 (`Result`) | 実行時に組み立てるキー |
+
+`kv_key!("tabs")` は実行時エラーではなく**ビルドエラー**です。これが「規約」を規約以上のものに
+している部分です。
+
+**効いているのはマクロの `const { … }` ブロックです。** 検証関数を `const fn` にしただけでは
+足りません — `const fn` は通常式から呼ばれたとき const 評価が*許される*だけで*強制されない*ので、
+素の呼び出しでは assert がそのまま実行時 panic になります。マクロは:
+
+```rust
+macro_rules! kv_key {
+    ($key:literal) => { const { $crate::KvKey::from_static_checked($key) } };
+}
+```
+
+- `const { … }` が全呼び出し箇所で const 評価を強制する
+- `$key:literal` が、実行時に選ばれた `&'static str` の混入を防ぐ
+
+素のコンストラクタ (`from_static_checked`) は `#[doc(hidden)]` です。マクロが他クレートで
+展開されるために public なだけで、直接呼ぶものではありません。この保証は 3 本の doctest
+（正しいリテラル / 名前空間なし `compile_fail` / 非リテラル `compile_fail`）で固定しています。
+
+`list_namespace` が prefix ではなく名前空間を取るのも同じ理由です。自由な prefix だと
+`list_prefix("sess")` が `session.*` にたまたま一致し、`list_prefix("window")` は
+`window_backup.*` まで拾います。末尾のドットを内部で足すことで、走査は名前空間の中で閉じます。
+
+**「名前空間」を受け取る引数は 1 セグメントです。** キー自体は 3 セグメント以上でも構いません
+(`kv_key!("window.main.position")` は有効) が、`namespace()` は**最初の**セグメントを返すので、
+このキーは `list_namespace("window")` に並びます。逆に `"window.main"` を名前空間として渡すのは
+`KvKey::new` でも `list_namespace` でもエラーです — 通してしまうと、呼び出し側が思っている
+名前空間とキーが実際に属する名前空間がずれます。両者は `KvKey::check_namespace` を共有していて、
+片方だけ緩むことがないようにしてあります。
 
 > **書き込み頻度に関する注意**: redb の commit はデフォルトで durable (fsync) なので、window ドラッグ等の高頻度更新を 1 操作ずつ `put` すると fsync が多発する。呼び出し側 (UI 層) で **debounce してから書く**、複数キーは `batch` でまとめる、を原則とする。
 
@@ -281,6 +326,9 @@ fn cache_for(plugin_id: &str) -> TableDefinition<'static, &str, (i64, &[u8])>;
 ```rust
 // crates/nohrs-store/src/nohrs_store.rs
 
+// このスケッチ内だけの略記。実装では値はそのまま `Vec<u8>` です。
+type Bytes = Vec<u8>;
+
 pub trait MetadataQuery: Send + Sync {
     fn get_file(&self, path: &Path) -> Result<Option<FileRecord>>;
     fn list_children(&self, parent: &Path) -> Result<Vec<FileRecord>>;
@@ -295,10 +343,10 @@ pub trait MetadataStore: MetadataQuery {
 }
 
 pub trait KvStore: Send + Sync {
-    fn get(&self, key: &str) -> Result<Option<Bytes>>;
-    fn put(&self, key: &str, value: &[u8]) -> Result<()>;
-    fn delete(&self, key: &str) -> Result<()>;
-    fn list_prefix(&self, prefix: &str) -> Result<Vec<(String, Bytes)>>;
+    fn get(&self, key: &KvKey) -> Result<Option<Bytes>>;
+    fn put(&self, key: &KvKey, value: &[u8]) -> Result<()>;
+    fn delete(&self, key: &KvKey) -> Result<()>;
+    fn list_namespace(&self, namespace: &str) -> Result<Vec<(KvKey, Bytes)>>;
     fn batch(&self, ops: Vec<KvOp>) -> Result<()>;
 }
 

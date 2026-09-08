@@ -34,6 +34,22 @@ pub enum StoreError {
     /// otherwise bloat every `Result` in this crate (`clippy::result_large_err`).
     #[error("redb error: {0}")]
     Redb(Box<redb::Error>),
+    /// A string was not a well-formed [`KvKey`].
+    #[error("invalid kv key {key:?}: {reason}")]
+    InvalidKey {
+        /// The string that was rejected.
+        key: String,
+        /// What was wrong with it.
+        reason: &'static str,
+    },
+    /// A string was not a well-formed KV namespace.
+    #[error("invalid kv namespace {namespace:?}: {reason}")]
+    InvalidNamespace {
+        /// The string that was rejected.
+        namespace: String,
+        /// What was wrong with it.
+        reason: &'static str,
+    },
 }
 
 // redb surfaces a family of error types from its different stages. Funnel each
@@ -224,14 +240,14 @@ pub enum KvOp {
     /// Insert or overwrite `key` with `value`.
     Put {
         /// The key to write.
-        key: String,
+        key: KvKey,
         /// The value to store.
         value: Vec<u8>,
     },
     /// Remove `key` if present.
     Delete {
         /// The key to remove.
-        key: String,
+        key: KvKey,
     },
 }
 
@@ -261,16 +277,212 @@ pub trait MetadataStore: MetadataQuery {
     fn mark_indexed(&self, id: FileId, indexed_at_ns: i64) -> Result<()>;
 }
 
+/// A host KV key: a namespace, then a name within it.
+///
+/// Keys are dot-separated segments and there are always at least two, so every
+/// key names a namespace — `session.explorer_tabs`, `window.position`. Segments
+/// are lowercase ASCII, digits and `_`.
+///
+/// The namespace is what lets [`KvStore::list_namespace`] hand a subsystem its
+/// own state and nobody else's, and what stops two subsystems both reaching for
+/// a bare `tabs`. That was a documented convention nothing checked: `put("tabs",
+/// …)` compiled, round-tripped correctly, and went wrong only later and
+/// elsewhere, as a listing quietly missing rows.
+///
+/// A literal key is checked at compile time by [`kv_key!`], which is where
+/// nearly all of them come from. [`KvKey::new`] and [`KvKey::parse`] cover the
+/// built-at-runtime rest.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KvKey(std::borrow::Cow<'static, str>);
+
+/// A key from a literal, rejected **at compile time** if malformed.
+///
+/// ```
+/// # use nohrs_store::kv_key;
+/// let key = kv_key!("session.explorer_tabs");
+/// assert_eq!(key.namespace(), "session");
+/// ```
+///
+/// A key without a namespace does not compile:
+///
+/// ```compile_fail
+/// # use nohrs_store::kv_key;
+/// let key = kv_key!("tabs");
+/// ```
+///
+/// Nor does a non-literal, which is what would let the check slip to runtime:
+///
+/// ```compile_fail
+/// # use nohrs_store::kv_key;
+/// let name: &'static str = "tabs";
+/// let key = kv_key!(name);
+/// ```
+///
+/// The `const { … }` block is the load-bearing part. A `const fn` called from an
+/// ordinary expression is *permitted* to run at compile time but is not required
+/// to, so a bare call would turn the assertion into a runtime panic — the exact
+/// thing this exists to prevent, and one the no-panic rule forbids. The block
+/// forces const evaluation at every call site, and `$key:literal` keeps a
+/// runtime-selected `&'static str` from reaching it at all.
+#[macro_export]
+macro_rules! kv_key {
+    ($key:literal) => {
+        const { $crate::KvKey::from_static_checked($key) }
+    };
+}
+
+impl KvKey {
+    /// The checked constructor behind [`kv_key!`]. **Call it through the macro.**
+    ///
+    /// Public only because [`kv_key!`] expands into other crates. Calling it
+    /// directly from an ordinary expression evaluates the assertion at runtime,
+    /// which turns a build error into a panic; the macro's `const { … }` block is
+    /// what makes the guarantee real.
+    ///
+    /// # Panics
+    ///
+    /// If `key` is not a valid key. Reached through [`kv_key!`] that panic is a
+    /// const-evaluation failure — a compile error — and cannot reach a running
+    /// program.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn from_static_checked(key: &'static str) -> Self {
+        assert!(
+            is_valid_key(key),
+            "a kv key must be <namespace>.<name>, lowercase ASCII, digits and _"
+        );
+        Self(std::borrow::Cow::Borrowed(key))
+    }
+
+    /// A key from a namespace and a name, both checked.
+    ///
+    /// The namespace must be a *single* segment. Joining a dotted one would
+    /// build a key whose [`KvKey::namespace`] is not the namespace that was
+    /// passed in — `new("a.b", "c")` would answer `"a"` — so the key would not
+    /// be listed under the namespace its own caller believed it wrote it to.
+    pub fn new(namespace: &str, name: &str) -> Result<Self> {
+        Self::check_namespace(namespace)?;
+        Self::parse(format!("{namespace}.{name}"))
+    }
+
+    /// Check that `namespace` names a namespace: one non-empty segment of
+    /// lowercase ASCII, digits or `_`.
+    ///
+    /// Shared by [`KvKey::new`] and every [`KvStore::list_namespace`]
+    /// implementation, so that the two cannot drift. They did: `new` rejected
+    /// `"window.main"` while `list_namespace` accepted it and scanned
+    /// `window.main.`, returning keys whose own [`KvKey::namespace`] is
+    /// `"window"`. One argument, two meanings, on either side of the same API.
+    pub fn check_namespace(namespace: &str) -> Result<()> {
+        if is_valid_segment(namespace) {
+            return Ok(());
+        }
+        Err(StoreError::InvalidNamespace {
+            namespace: namespace.to_string(),
+            reason: "a namespace is one segment of lowercase ASCII, digits and _",
+        })
+    }
+
+    /// A key from an existing string, checked.
+    pub fn parse(key: impl Into<String>) -> Result<Self> {
+        let key: String = key.into();
+        if !is_valid_key(&key) {
+            return Err(StoreError::InvalidKey {
+                key,
+                reason: "expected <namespace>.<name> in lowercase ASCII, digits and _",
+            });
+        }
+        Ok(Self(std::borrow::Cow::Owned(key)))
+    }
+
+    /// The part before the first `.`.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        // A valid key always has one, so the fallback is unreachable in practice
+        // and still not a panic.
+        self.0.split('.').next().unwrap_or(&self.0)
+    }
+
+    /// The whole key, as stored.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for KvKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl TryFrom<&str> for KvKey {
+    type Error = StoreError;
+
+    fn try_from(key: &str) -> Result<Self> {
+        Self::parse(key)
+    }
+}
+
+/// The bytes a segment may contain. Shared by [`is_valid_key`] and
+/// [`is_valid_segment`] so the charset is written once.
+const fn is_segment_byte(byte: u8) -> bool {
+    byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
+}
+
+/// Whether `segment` is one non-empty run of [`is_segment_byte`] — no dots.
+fn is_valid_segment(segment: &str) -> bool {
+    !segment.is_empty() && segment.bytes().all(is_segment_byte)
+}
+
+/// Whether `key` is `<segment>.<segment>[.<segment>…]`, each segment non-empty
+/// and made of lowercase ASCII, digits or `_`.
+///
+/// Written as a hand-rolled loop rather than `split`/`all` because it has to be
+/// a `const fn` for [`kv_key!`] to reject a bad literal at build time, and
+/// iterators are not available there.
+const fn is_valid_key(key: &str) -> bool {
+    let bytes = key.as_bytes();
+    let mut index = 0;
+    let mut segment_len = 0;
+    let mut segments = 1;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'.' {
+            if segment_len == 0 {
+                return false;
+            }
+            segments += 1;
+            segment_len = 0;
+        } else if is_segment_byte(byte) {
+            segment_len += 1;
+        } else {
+            return false;
+        }
+        index += 1;
+    }
+    segment_len > 0 && segments >= 2
+}
+
 /// A simple key/value blob store (host KV, backed by redb).
 pub trait KvStore: Send + Sync {
     /// Fetch the value for `key`, or `None` if absent.
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>>;
+    fn get(&self, key: &KvKey) -> Result<Option<Vec<u8>>>;
     /// Insert or overwrite `key` with `value`.
-    fn put(&self, key: &str, value: &[u8]) -> Result<()>;
+    fn put(&self, key: &KvKey, value: &[u8]) -> Result<()>;
     /// Remove `key` if present.
-    fn delete(&self, key: &str) -> Result<()>;
-    /// Return every `(key, value)` whose key begins with `prefix`.
-    fn list_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>>;
+    fn delete(&self, key: &KvKey) -> Result<()>;
+    /// Return every `(key, value)` in `namespace`.
+    ///
+    /// Takes the namespace rather than a free prefix so that a listing cannot
+    /// straddle one: `list_prefix("sess")` used to match `session.*` by
+    /// accident, and `list_prefix("window")` would also return `window_backup.*`
+    /// if such a namespace were ever added.
+    ///
+    /// Errors when `namespace` is not one, per [`KvKey::check_namespace`] — the
+    /// same rule [`KvKey::new`] applies, so that a namespace which cannot be
+    /// written to cannot be listed either.
+    fn list_namespace(&self, namespace: &str) -> Result<Vec<(KvKey, Vec<u8>)>>;
     /// Apply `ops` atomically in a single transaction.
     fn batch(&self, ops: Vec<KvOp>) -> Result<()>;
 }
@@ -372,5 +584,84 @@ mod tests {
             assert_eq!(HistoryKind::parse(kind.as_str()), Some(kind));
         }
         assert_eq!(HistoryKind::parse("unknown"), None);
+    }
+
+    #[test]
+    fn a_key_needs_a_namespace_and_a_name() {
+        for key in [
+            "session.explorer_tabs",
+            "window.position",
+            "window.main.position",
+            "plugin.acme_2.state",
+        ] {
+            assert!(KvKey::parse(key).is_ok(), "{key} should be a valid key");
+        }
+        for key in [
+            // The one this exists for: a bare name, which used to compile and
+            // then be missing from every namespace listing.
+            "tabs",
+            "",
+            ".",
+            ".leading",
+            "trailing.",
+            "double..dot",
+            "Upper.case",
+            "has space.x",
+            "dash-ed.x",
+        ] {
+            assert!(KvKey::parse(key).is_err(), "{key} should be rejected");
+        }
+    }
+
+    #[test]
+    fn a_key_reports_the_namespace_it_belongs_to() {
+        assert_eq!(kv_key!("session.explorer_tabs").namespace(), "session");
+        // The namespace is the *first* segment, not everything before the last
+        // dot: `list_namespace("window")` has to find this key.
+        assert_eq!(kv_key!("window.main.position").namespace(), "window");
+    }
+
+    #[test]
+    fn new_joins_and_checks_both_halves() {
+        let key = KvKey::new("session", "explorer_tabs").unwrap();
+        assert_eq!(key.as_str(), "session.explorer_tabs");
+        assert_eq!(key.to_string(), "session.explorer_tabs");
+
+        // A name that smuggles in its own separator is still checked as a whole,
+        // so it cannot produce an empty segment.
+        assert!(KvKey::new("session", "").is_err());
+        assert!(KvKey::new("", "tabs").is_err());
+        assert!(KvKey::new("session", ".tabs").is_err());
+
+        // A dotted namespace joins into a *valid* key, which is why it needs
+        // rejecting on its own: `namespace()` would answer "window", not
+        // "window.main", so the key would not be listed under the namespace its
+        // caller believed it wrote it to.
+        assert!(KvKey::parse("window.main.position").is_ok());
+        let error = KvKey::new("window.main", "position")
+            .expect_err("a dotted namespace is not a namespace");
+        assert!(error.to_string().contains("one segment"), "{error}");
+        assert!(error.to_string().contains("window.main"), "{error}");
+    }
+
+    #[test]
+    fn the_compile_time_and_runtime_checks_agree() {
+        // `from_static` is a `const fn` and `parse` is not, so they are two
+        // paths to one rule. A literal that `parse` rejects has to be a build
+        // error, not a key that only `from_static` lets through.
+        for key in ["session.tabs", "window.main.position"] {
+            assert!(is_valid_key(key) && KvKey::parse(key).is_ok(), "{key}");
+        }
+        for key in ["tabs", "trailing.", "Upper.case"] {
+            assert!(!is_valid_key(key) && KvKey::parse(key).is_err(), "{key}");
+        }
+    }
+
+    #[test]
+    fn an_invalid_key_says_what_it_was() {
+        let error = KvKey::parse("tabs").unwrap_err();
+        let rendered = error.to_string();
+        assert!(rendered.contains("tabs"), "{rendered}");
+        assert!(rendered.contains("namespace"), "{rendered}");
     }
 }
