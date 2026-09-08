@@ -21,6 +21,7 @@ gui = ["dep:gpui", "dep:syntect"]
 [dependencies]
 nohrs-core   = { path = "../nohrs-core" }
 nohrs-models = { path = "../nohrs-models" }
+nohrs-store  = { path = "../nohrs-store" }
 anyhow.workspace  = true
 serde.workspace   = true
 tracing.workspace = true
@@ -36,6 +37,13 @@ notify-debouncer-mini = "0.7"
 trash = "5"
 gpui = { version = "0.2", optional = true }
 syntect = { version = "5", default-features = false, features = ["default-fancy"], optional = true }
+
+# Restoring from the trash must not replace a file that appeared at the original
+# path in the meantime, and `std` has no no-replace rename. rustix wraps
+# `renameat2`/`renamex_np` without any `unsafe` of ours, which the workspace's
+# `unsafe_code = "deny"` requires.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 tempfile = "3"

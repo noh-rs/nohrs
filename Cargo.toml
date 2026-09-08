@@ -41,6 +41,7 @@ authors      = ["nohrs contributors"]
 [workspace.dependencies]
 anyhow             = "1"
 clap               = { version = "4", features = ["derive"] }
+clap_complete      = "4"
 thiserror          = "1"
 tracing            = "0.1"
 # `json` renders the file sink as JSON Lines, which is what `noh log` and the

@@ -10,11 +10,14 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::{
     FileId, FileRecord, FileUpsert, HistoryEntry, HistoryKind, HistoryStore, MetadataQuery,
-    MetadataStore, Result, StoreLogConfig, now_ns,
+    MetadataStore, Result, StoreLogConfig, TrashEntry, TrashId, TrashLedger, TrashRecord, now_ns,
 };
 
 /// Forward-only migrations, applied in order and recorded in `_migrations`.
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/001_init.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/001_init.sql")),
+    (2, include_str!("../migrations/002_trash.sql")),
+];
 
 // rusqlite's `trace_v2` profile hook takes a bare `fn` pointer (not a closure),
 // so the query-logging thresholds are kept in process-global atomics that the
@@ -257,6 +260,74 @@ impl MetadataStore for SqliteStore {
     }
 }
 
+/// Columns selected by every `trash` query, in the order [`row_to_trash`] reads.
+const TRASH_COLUMNS: &str = "id, original_path, file_name, size, modified_ns, trashed_at, is_dir";
+
+fn row_to_trash(row: &Row<'_>) -> rusqlite::Result<TrashRecord> {
+    let original_path: String = row.get(1)?;
+    let size: i64 = row.get(3)?;
+    Ok(TrashRecord {
+        id: row.get(0)?,
+        entry: TrashEntry {
+            original_path: PathBuf::from(original_path),
+            file_name: row.get(2)?,
+            size: size as u64,
+            modified_ns: row.get(4)?,
+            trashed_at: row.get(5)?,
+            is_dir: row.get(6)?,
+        },
+    })
+}
+
+impl TrashLedger for SqliteStore {
+    fn append(&self, entry: &TrashEntry) -> Result<TrashId> {
+        let connection = self.connection();
+        connection
+            .prepare_cached(
+                "INSERT INTO trash \
+                 (original_path, file_name, size, modified_ns, trashed_at, is_dir) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?
+            .execute(params![
+                path_str(&entry.original_path),
+                entry.file_name,
+                entry.size as i64,
+                entry.modified_ns,
+                entry.trashed_at,
+                entry.is_dir,
+            ])?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    fn entries(&self) -> Result<Vec<TrashRecord>> {
+        let connection = self.connection();
+        // The row id breaks a tie between two items trashed in the same instant,
+        // and it is monotonic, so the order is always the deletion order.
+        let mut statement = connection.prepare_cached(&format!(
+            "SELECT {TRASH_COLUMNS} FROM trash ORDER BY trashed_at DESC, id DESC"
+        ))?;
+        let rows = statement.query_map([], row_to_trash)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    fn forget(&self, ids: &[TrashId]) -> Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let mut removed = 0;
+        {
+            let mut statement = transaction.prepare_cached("DELETE FROM trash WHERE id = ?1")?;
+            for id in ids {
+                removed += statement.execute([id])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(removed)
+    }
+}
+
 impl HistoryStore for SqliteStore {
     fn record(&self, entry: HistoryEntry) -> Result<()> {
         let connection = self.connection();
@@ -440,6 +511,108 @@ mod tests {
                 .is_some()
         );
         store.mark_indexed(id, 1).unwrap();
+    }
+
+    fn trashed(path: &str, trashed_at: i64) -> TrashEntry {
+        TrashEntry {
+            original_path: PathBuf::from(path),
+            file_name: Path::new(path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            size: 7,
+            modified_ns: Some(trashed_at - 1_000),
+            trashed_at,
+            is_dir: false,
+        }
+    }
+
+    #[test]
+    fn a_trashed_item_round_trips() {
+        let store = store();
+        let entry = trashed("/home/user/notes.txt", 100);
+
+        let id = store.append(&entry).unwrap();
+        let records = store.entries().unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, id);
+        assert_eq!(records[0].entry, entry);
+    }
+
+    #[test]
+    fn entries_come_back_most_recently_trashed_first() {
+        let store = store();
+        store.append(&trashed("/home/user/old.txt", 100)).unwrap();
+        store.append(&trashed("/home/user/new.txt", 300)).unwrap();
+        store.append(&trashed("/home/user/mid.txt", 200)).unwrap();
+
+        let names: Vec<String> = store
+            .entries()
+            .unwrap()
+            .into_iter()
+            .map(|record| record.entry.file_name)
+            .collect();
+
+        assert_eq!(names, ["new.txt", "mid.txt", "old.txt"]);
+    }
+
+    #[test]
+    fn items_trashed_in_the_same_instant_keep_their_insertion_order() {
+        let store = store();
+        store.append(&trashed("/home/user/first.txt", 100)).unwrap();
+        store
+            .append(&trashed("/home/user/second.txt", 100))
+            .unwrap();
+
+        let first = store.entries().unwrap().remove(0);
+
+        assert_eq!(
+            first.entry.file_name, "second.txt",
+            "the row id has to break a tie the timestamp cannot"
+        );
+    }
+
+    #[test]
+    fn the_same_path_can_be_trashed_more_than_once() {
+        let store = store();
+        store.append(&trashed("/home/user/notes.txt", 100)).unwrap();
+        store.append(&trashed("/home/user/notes.txt", 200)).unwrap();
+
+        assert_eq!(store.entries().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn forget_removes_only_the_named_rows() {
+        let store = store();
+        let first = store.append(&trashed("/home/user/a.txt", 100)).unwrap();
+        let second = store.append(&trashed("/home/user/b.txt", 200)).unwrap();
+
+        // An id that is not there is not an error, and is not counted.
+        let removed = store.forget(&[second, 9_999]).unwrap();
+
+        assert_eq!(removed, 1);
+        let remaining = store.entries().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, first);
+        assert_eq!(store.forget(&[]).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_trashed_directory_records_no_size() {
+        let store = store();
+        let entry = TrashEntry {
+            is_dir: true,
+            size: 0,
+            ..trashed("/home/user/project", 100)
+        };
+
+        store.append(&entry).unwrap();
+
+        let record = store.entries().unwrap().remove(0);
+        assert!(record.entry.is_dir);
+        assert_eq!(record.entry.size, 0);
     }
 
     #[test]

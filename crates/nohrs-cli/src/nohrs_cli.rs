@@ -6,16 +6,23 @@
 //! installed *in front of* the system `rm` by symlinking the binary under that
 //! name earlier on `PATH`; [`Invocation`] picks the entry point from argv[0].
 
+/// `doctor`: check that the pieces `noh rm` relies on are in place.
+pub mod doctor;
+/// Opening the trash ledger the CLI writes to and restores from.
+pub mod ledger;
 /// `log`: read back the rolling log file nohrs writes about itself.
 pub mod log;
 /// `rm`: trash-by-default removal.
 pub mod rm;
+/// `shim`: install and remove the symlinks that shadow a system command.
+pub mod shim;
+/// `trash` and `restore`: the recoverable half of `rm`.
+pub mod trash;
 
 use std::ffi::{OsStr, OsString};
-use std::io;
 use std::path::Path;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 /// The program name a symlink must have to be treated as the `rm` applet.
 const RM_APPLET: &str = "rm";
@@ -42,10 +49,27 @@ pub enum Command {
     /// Remove files and directories, moving them to the trash unless
     /// `--permanent` is given.
     Rm(rm::Args),
+    /// Put trashed items back where they came from.
+    Restore(trash::RestoreArgs),
+    /// Inspect and empty the trash.
+    #[command(subcommand)]
+    Trash(trash::Command),
     /// Show what nohrs recorded about itself, including how long each
     /// operation took.
     #[command(subcommand)]
     Log(log::Command),
+    /// Check that the pieces `noh rm` relies on are in place.
+    Doctor,
+    /// Install or remove the symlinks that put `noh` in front of a system
+    /// command.
+    #[command(subcommand)]
+    Shim(shim::Command),
+    /// Print a shell completion script for `noh`.
+    Completions {
+        /// The shell to generate for.
+        #[arg(value_name = "SHELL")]
+        shell: clap_complete::Shell,
+    },
 }
 
 /// Entry point for a binary invoked through an `rm` symlink, where there is no
@@ -115,18 +139,21 @@ impl Invocation {
         )
     }
 
-    /// Run the parsed command against the real filesystem, returning the process
-    /// exit code. The error case is a failure to write to stdout/stderr.
-    pub fn run(&self) -> io::Result<u8> {
-        match self {
-            Invocation::Direct(Cli {
-                command: Command::Rm(args),
-            })
-            | Invocation::Rm(RmCli { args }) => run_rm(args),
-            Invocation::Direct(Cli {
-                command: Command::Log(command),
-            }) => run_log(command),
-        }
+    /// The clap command tree for `noh`, for generating completions.
+    pub fn command() -> clap::Command {
+        Cli::command()
+    }
+}
+
+/// Render an error for a terminal user.
+///
+/// [`nohrs_core::errors::Error::Other`] displays itself as `other error: ...`,
+/// which is useful in a log line and noise in a diagnostic the user reads: the
+/// message it carries is already a complete sentence.
+pub fn message(error: &nohrs_core::errors::Error) -> String {
+    match error {
+        nohrs_core::errors::Error::Other(message) => message.clone(),
+        error => error.to_string(),
     }
 }
 
@@ -137,23 +164,6 @@ fn is_rm_applet(program: &OsStr) -> bool {
     Path::new(program)
         .file_name()
         .is_some_and(|name| name == OsStr::new(RM_APPLET) || name == OsStr::new(RM_APPLET_EXE))
-}
-
-fn run_rm(args: &rm::Args) -> io::Result<u8> {
-    let mut backend = rm::OsBackend;
-    let mut confirm = rm::StdinConfirm;
-    let mut output = io::stdout().lock();
-    let mut errors = io::stderr().lock();
-    let summary =
-        rm::Session::new(args, &mut backend, &mut confirm, &mut output, &mut errors).run()?;
-    Ok(summary.exit_code())
-}
-
-fn run_log(command: &log::Command) -> io::Result<u8> {
-    let directory = nohrs_core::config::paths::log_dir();
-    let mut output = io::stdout().lock();
-    let summary = log::Session::new(&directory, &mut output).run(command)?;
-    Ok(summary.exit_code())
 }
 
 #[cfg(test)]
@@ -173,7 +183,7 @@ mod tests {
                 command: Command::Rm(args),
             })
             | Invocation::Rm(RmCli { args }) => args,
-            other => panic!("expected an rm invocation, got {other:?}"),
+            other => panic!("{parts:?} did not parse as rm: {other:?}"),
         }
     }
 

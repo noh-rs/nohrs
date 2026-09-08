@@ -23,11 +23,14 @@ path = "src/main.rs"
 
 [dependencies]
 nohrs-core = { path = "../nohrs-core" }
-# The `gui` feature is deliberately off: the CLI needs only `fs::ops`, so it
-# builds without any UI toolkit (it is part of `default-members`).
+# The `gui` feature is deliberately off: the CLI needs only `fs`, so it builds
+# without any UI toolkit (it is part of `default-members`).
 nohrs-services = { path = "../nohrs-services" }
+nohrs-store = { path = "../nohrs-store" }
 clap.workspace = true
+clap_complete.workspace = true
 serde_json.workspace = true
+dirs = "6"
 
 [dev-dependencies]
 tempfile = "3"
