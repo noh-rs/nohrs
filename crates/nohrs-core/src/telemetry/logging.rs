@@ -274,15 +274,33 @@ where
 /// whatever umask the session has — so the documented `0600` would hold for the
 /// first day of a session and quietly stop holding after it.
 ///
-/// The rollover happens inside the inner `write`, so the new file exists by the
-/// time this runs. The date comparison is what keeps it to one `read_dir` a day
-/// rather than one per record; the clock read is the same one
-/// `RollingFileAppender::write` already makes.
+/// The date is read **before** the inner write and the tightening happens
+/// **after** it, and both halves of that are load-bearing:
+///
+/// * before, because the inner write is where the rollover happens. Reading the
+///   date afterwards lets a record written at 23:59:59.999 see 00:00:00.001 and
+///   mark the new day done — and the file the *next* record actually rolls over
+///   to is then skipped for a whole day.
+/// * after, because the file only exists once the rollover has created it.
+///
+/// This wrapper's clock and the appender's are still two separate reads, so
+/// midnight can fall between them and the rollover can beat the marker by one
+/// record. That resolves itself: the marker is still on yesterday, so the very
+/// next write tightens. A bounded one-record window, rather than a day.
+///
+/// The date comparison is what keeps this to one `read_dir` a day rather than
+/// one per record.
 #[cfg(unix)]
 struct OwnerOnly<W> {
     inner: W,
     directory: PathBuf,
+    /// The last date whose files were successfully tightened. `None` until the
+    /// first write, so startup never has to guess — including when it straddles
+    /// midnight itself.
     restricted_on: Option<time::Date>,
+    /// Injected so the midnight boundary can be tested. It is the only
+    /// interesting case here and there is no way to wait for it.
+    now: Box<dyn FnMut() -> time::Date + Send>,
 }
 
 #[cfg(unix)]
@@ -291,7 +309,8 @@ impl<W: std::io::Write> OwnerOnly<W> {
         Self {
             inner,
             directory,
-            restricted_on: Some(time::OffsetDateTime::now_utc().date()),
+            restricted_on: None,
+            now: Box::new(|| time::OffsetDateTime::now_utc().date()),
         }
     }
 }
@@ -299,11 +318,16 @@ impl<W: std::io::Write> OwnerOnly<W> {
 #[cfg(unix)]
 impl<W: std::io::Write> std::io::Write for OwnerOnly<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let today = (self.now)();
+        let rolled = self.restricted_on != Some(today);
         let written = self.inner.write(buf)?;
-        let today = time::OffsetDateTime::now_utc().date();
-        if self.restricted_on != Some(today) {
-            restrict_log_files(&self.directory).log_err();
-            self.restricted_on = Some(today);
+        if rolled {
+            // Only on success: marking the day done after a failed chmod would
+            // suppress every retry and leave the new file at its umask mode
+            // until tomorrow.
+            if restrict_log_files(&self.directory).log_err().is_some() {
+                self.restricted_on = Some(today);
+            }
         }
         Ok(written)
     }
@@ -358,13 +382,29 @@ fn create_log_dir(directory: &Path) -> std::io::Result<()> {
 #[cfg(unix)]
 fn restrict_log_files(directory: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
+    // One file that cannot be chmodded must not leave every later one at its
+    // umask mode, so the loop runs to the end and reports the first failure
+    // rather than stopping at it.
+    let mut failure = None;
     for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
-        if entry.file_name().to_str().is_some_and(is_log_file_name) {
-            std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o600))?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                failure.get_or_insert(error);
+                continue;
+            }
+        };
+        if entry.file_name().to_str().is_some_and(is_log_file_name)
+            && let Err(error) =
+                std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o600))
+        {
+            failure.get_or_insert(error);
         }
     }
-    Ok(())
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 #[cfg(not(unix))]
@@ -551,17 +591,200 @@ mod tests {
         std::fs::write(&rolled, "{}\n").unwrap();
         std::fs::set_permissions(&rolled, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-        let mut writer = OwnerOnly {
-            inner: std::io::sink(),
-            directory: directory.path().to_path_buf(),
-            // As if this session's last tightening had been on an earlier day,
-            // which is what a rollover leaves behind.
-            restricted_on: time::Date::from_ordinal_date(2000, 1).ok(),
-        };
+        let mut writer = OwnerOnly::wrap(std::io::sink(), directory.path().to_path_buf());
         writer.write_all(b"a record after midnight").unwrap();
 
         let mode = std::fs::metadata(&rolled).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "a rolled-over file must be tightened too");
+    }
+
+    /// A stand-in for the appender, sharing one clock with the wrapper.
+    ///
+    /// Every read of that clock advances it a tick, and `schedule` says which
+    /// day-of-month each tick falls on (the last value repeats). The writer then
+    /// rolls over the way the real appender does: it writes to the file for
+    /// whatever date the clock says *at the moment of its own write*.
+    ///
+    /// That shared, advancing clock is the whole point. The wrapper's read and
+    /// the appender's read are separate ticks, so a schedule can put midnight
+    /// between them — which is exactly the case the ordering has to survive, and
+    /// a clock that only counted calls could not express it.
+    #[cfg(unix)]
+    struct Appenderish {
+        clock: TestClock,
+        directory: std::path::PathBuf,
+    }
+
+    #[cfg(unix)]
+    #[derive(Clone)]
+    struct TestClock {
+        ticks: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        schedule: std::sync::Arc<Vec<u8>>,
+    }
+
+    #[cfg(unix)]
+    impl TestClock {
+        fn new(schedule: Vec<u8>) -> Self {
+            Self {
+                ticks: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                schedule: std::sync::Arc::new(schedule),
+            }
+        }
+
+        /// The day this read falls on, advancing the clock by one tick.
+        fn tick(&self) -> u8 {
+            let index = self.ticks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.schedule
+                .get(index)
+                .or_else(|| self.schedule.last())
+                .copied()
+                .unwrap_or(1)
+        }
+
+        fn date(&self) -> time::Date {
+            let day = self.tick();
+            time::Date::from_calendar_date(2026, time::Month::September, day)
+                .unwrap_or(time::Date::MIN)
+        }
+    }
+
+    #[cfg(unix)]
+    impl std::io::Write for Appenderish {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            use std::os::unix::fs::PermissionsExt;
+            let path = self
+                .directory
+                .join(format!("{LOG_FILE_PREFIX}.2026-09-0{}", self.clock.tick()));
+            if path.exists() {
+                return Ok(buf.len());
+            }
+            // The rollover: a file the appender creates itself, under the
+            // session's umask rather than the mode nohrs documents.
+            std::fs::write(&path, "{}\n")?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// An `OwnerOnly` scanning `scanned`, over an appender writing into
+    /// `written_to`, both driven by one `schedule`. The two directories differ
+    /// only where a test needs the tightening to fail while the write succeeds.
+    #[cfg(unix)]
+    fn wrapped_appender(
+        scanned: &std::path::Path,
+        written_to: &std::path::Path,
+        schedule: Vec<u8>,
+    ) -> OwnerOnly<Appenderish> {
+        let clock = TestClock::new(schedule);
+        OwnerOnly {
+            inner: Appenderish {
+                clock: clock.clone(),
+                directory: written_to.to_path_buf(),
+            },
+            directory: scanned.to_path_buf(),
+            restricted_on: None,
+            now: Box::new(move || clock.date()),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_record_written_across_midnight_does_not_skip_the_next_days_file() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        // The date has to be read *before* the inner write, because the inner
+        // write is where the rollover happens. Reading it after lets the first
+        // record — issued at 23:59:59.999, its date landing on the next day —
+        // mark the new day done, and the file the *second* record actually rolls
+        // over to is then never tightened.
+        //
+        // Ticks: 1 is the wrapper's read for the first record, 2 the appender's
+        // for it, and 3 and 4 the same pair for the second. Midnight falls
+        // between ticks 1 and 2 — between the wrapper and the appender.
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = wrapped_appender(directory.path(), directory.path(), vec![1, 2, 2, 2]);
+
+        writer.write_all(b"just before midnight").unwrap();
+        writer.write_all(b"just after midnight").unwrap();
+
+        let files: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(!files.is_empty(), "the appender should have rolled over");
+        for file in files {
+            let mode = std::fs::metadata(file.path()).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode,
+                0o600,
+                "{:?} was left at its umask mode",
+                file.file_name()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_tightening_is_retried_on_the_next_record() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        // Marking the day done after a failed chmod would suppress every retry
+        // and leave the new file readable until tomorrow. The scanned directory
+        // is absent for the first record, so the tightening fails while the
+        // write itself succeeds — and the second record, on the *same* day, has
+        // to try again.
+        let root = tempfile::tempdir().unwrap();
+        let scanned = root.path().join("scanned");
+        let written_to = root.path().join("written-to");
+        std::fs::create_dir_all(&written_to).unwrap();
+        let mut writer = wrapped_appender(&scanned, &written_to, vec![1]);
+
+        writer.write_all(b"first").unwrap();
+        assert_eq!(
+            writer.restricted_on, None,
+            "a failed tightening must not count as done"
+        );
+
+        // The rolled-over file, still at its umask mode, now reachable.
+        std::fs::rename(&written_to, &scanned).unwrap();
+        writer.inner.directory = scanned.clone();
+        writer.write_all(b"second").unwrap();
+
+        let rolled = scanned.join(format!("{LOG_FILE_PREFIX}.2026-09-01"));
+        let mode = std::fs::metadata(&rolled).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the retry must happen on the same day");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_unchmoddable_file_does_not_leave_the_rest_permissive() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        // A directory carrying a log file's exact name: `set_permissions` on it
+        // succeeds, so instead make the *later* file the readable one and the
+        // earlier a name whose chmod fails — a dangling symlink.
+        let broken = directory
+            .path()
+            .join(format!("{LOG_FILE_PREFIX}.2026-09-01"));
+        std::os::unix::fs::symlink(directory.path().join("nowhere"), &broken).unwrap();
+        let good = directory
+            .path()
+            .join(format!("{LOG_FILE_PREFIX}.2026-09-02"));
+        std::fs::write(&good, "{}\n").unwrap();
+        std::fs::set_permissions(&good, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let result = restrict_log_files(directory.path());
+
+        assert!(result.is_err(), "the failure still has to be reported");
+        let mode = std::fs::metadata(&good).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a later file must still be tightened");
     }
 
     #[cfg(unix)]
