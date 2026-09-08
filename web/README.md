@@ -85,17 +85,43 @@ translating, not the normal state. Launch parity is required
 
 Deploys run from CI, so no Cloudflare credential ever has to sit on a laptop.
 
-**One-time setup.** In the repository's Settings → Secrets and variables → Actions, add:
+**One-time setup.** The five secrets are split by blast radius, not filed together.
+
+Settings → Environments → new environment named `production`, then as **environment
+secrets** there:
+
+| Secret | Where it comes from |
+|--------|--------------------|
+| `CLOUDFLARE_API_TOKEN` | A Cloudflare API token from the **Edit Cloudflare Workers** template, with the `nohrs.app` and `noh.rs` zones included in its zone resources |
+| `CLOUDFLARE_ACCOUNT_ID` | The account ID on any Cloudflare dashboard page |
+
+These two can deploy to production, and an environment secret is only visible to a job
+that declares `environment: production` — which is the deploy job and nothing else. In a
+public repository that is a real boundary: a repository secret can be read by any workflow
+run from any branch someone can push to.
+
+The token needs the zones because the Workers claim `nohrs.app` and `noh.rs` as custom
+domains; an account-only token uploads the script and then fails attaching the routes.
+
+Settings → Secrets and variables → Actions, as **repository secrets**:
 
 | Secret | Where it comes from | Without it |
 |--------|--------------------|------------|
-| `CLOUDFLARE_API_TOKEN` | A Cloudflare API token from the **Edit Cloudflare Workers** template, with the `nohrs.app` and `noh.rs` zones included in its zone resources | Deploy fails |
-| `CLOUDFLARE_ACCOUNT_ID` | The account ID on any Cloudflare dashboard page | Deploy fails |
 | `GISCUS_REPO_ID`, `GISCUS_CATEGORY_ID` | giscus.app, for this repository's Discussions | No comment section |
 | `CF_ANALYTICS_TOKEN` | Cloudflare Web Analytics | No beacon |
 
-The token needs the zones because the Workers claim `nohrs.app` and `noh.rs` as custom
-domains; an account-only token deploys the script and then fails attaching the routes.
+The build job reads these and does not declare an environment, so environment secrets
+would not reach it. They are also not really secrets — all three are served to every
+visitor inside the built HTML. They live in `secrets` so that a fork building this site
+does not post into our Discussions or count against our analytics.
+
+`GITHUB_TOKEN` is provided automatically; there is nothing to add.
+
+**If you put a Deployment branches rule on the `production` environment**, it has to allow
+`develop` as well as `main`. The rule is evaluated against the workflow run's ref, and a
+scheduled run's ref is the default branch — so a `main`-only rule silently stops the Monday
+rebuild. Making these environment secrets already limits them to the deploy job, which is
+the point; the job's own `if:` decides when it runs.
 
 **Running it.** Actions → *Web* → Run workflow. A manual run deploys the ref it was
 dispatched on, so the site can go up from a branch before that branch is merged. After

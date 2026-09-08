@@ -313,15 +313,28 @@ npm run build
 
 ### 環境変数 (GitHub Actions secrets)
 
-| 変数 | 用途 | 無いとどうなるか |
-|------|------|-----------------|
-| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | デプロイ | デプロイできない |
-| `GITHUB_TOKEN` | ビルド時の GitHub API rate limit 回避 | コミット済みスナップショットにフォールバック |
-| `GISCUS_REPO_ID` / `GISCUS_CATEGORY_ID` | giscus コメント | コメント欄を出さない |
-| `CF_ANALYTICS_TOKEN` | Cloudflare Web Analytics | ビーコンを埋め込まない |
+**影響範囲で置き場所を分ける**。
 
-fork でビルドしたときに本家の Discussions へ書き込んだり、本家の Analytics に計上したりしないよう、
-**secret が無い場合は機能ごと出さない**方に倒す。
+| 変数 | 置き場所 | 用途 | 無いとどうなるか |
+|------|---------|------|-----------------|
+| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | **Environment (`production`)** | デプロイ | デプロイできない |
+| `GISCUS_REPO_ID` / `GISCUS_CATEGORY_ID` | Repository | giscus コメント | コメント欄を出さない |
+| `CF_ANALYTICS_TOKEN` | Repository | Cloudflare Web Analytics | ビーコンを埋め込まない |
+| `GITHUB_TOKEN` | (自動供給) | ビルド時の GitHub API rate limit 回避 | コミット済みスナップショットにフォールバック |
+
+Cloudflare の 2 つだけ Environment に置くのは、**`environment: production` を宣言したジョブ
+(= deploy ジョブのみ) からしか見えないため**。public リポジトリでは、repository secret は
+push できるブランチのワークフローから読み出せてしまうので、これは実質的な境界になる。
+
+残り 3 つは build ジョブが読み、build ジョブは `environment:` を持たないので Environment では
+届かない。そして**この 3 つはそもそも秘密ではない** — いずれもビルド後の HTML に入って全訪問者に
+配られる。`secrets` に置いているのは、fork でビルドしたときに本家の Discussions へ書き込んだり、
+本家の Analytics に計上したりしないためだけで、**secret が無い場合は機能ごと出さない**方に倒す。
+
+> `production` Environment に **Deployment branches** 制限をかける場合は、`main` だけでなく
+> **`develop` も許可する**こと。この制限はチェックアウト先ではなくワークフロー実行の ref で判定され、
+> スケジュール実行の ref はデフォルトブランチ (`develop`) になるため、`main` のみにすると
+> 週次リビルドが黙って止まる。
 
 ### Worker (`nohrs.app`)
 
