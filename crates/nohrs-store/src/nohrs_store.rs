@@ -225,27 +225,64 @@ pub trait MetadataStore: MetadataQuery {
 /// …)` compiled, round-tripped correctly, and went wrong only later and
 /// elsewhere, as a listing quietly missing rows.
 ///
-/// A literal key is checked at compile time by [`KvKey::from_static`], which is
-/// where nearly all of them come from. [`KvKey::new`] and [`KvKey::parse`] cover
-/// the built-at-runtime rest.
+/// A literal key is checked at compile time by [`kv_key!`], which is where
+/// nearly all of them come from. [`KvKey::new`] and [`KvKey::parse`] cover the
+/// built-at-runtime rest.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KvKey(std::borrow::Cow<'static, str>);
 
+/// A key from a literal, rejected **at compile time** if malformed.
+///
+/// ```
+/// # use nohrs_store::kv_key;
+/// let key = kv_key!("session.explorer_tabs");
+/// assert_eq!(key.namespace(), "session");
+/// ```
+///
+/// A key without a namespace does not compile:
+///
+/// ```compile_fail
+/// # use nohrs_store::kv_key;
+/// let key = kv_key!("tabs");
+/// ```
+///
+/// Nor does a non-literal, which is what would let the check slip to runtime:
+///
+/// ```compile_fail
+/// # use nohrs_store::kv_key;
+/// let name: &'static str = "tabs";
+/// let key = kv_key!(name);
+/// ```
+///
+/// The `const { … }` block is the load-bearing part. A `const fn` called from an
+/// ordinary expression is *permitted* to run at compile time but is not required
+/// to, so a bare call would turn the assertion into a runtime panic — the exact
+/// thing this exists to prevent, and one the no-panic rule forbids. The block
+/// forces const evaluation at every call site, and `$key:literal` keeps a
+/// runtime-selected `&'static str` from reaching it at all.
+#[macro_export]
+macro_rules! kv_key {
+    ($key:literal) => {
+        const { $crate::KvKey::from_static_checked($key) }
+    };
+}
+
 impl KvKey {
-    /// A key from a literal, rejected **at compile time** if malformed.
+    /// The checked constructor behind [`kv_key!`]. **Call it through the macro.**
     ///
-    /// This is a `const fn`, so `KvKey::from_static("tabs")` is a build error
-    /// rather than a runtime one. Prefer it for the fixed keys a subsystem owns;
-    /// it is the whole reason the convention is now enforceable rather than
-    /// merely written down.
+    /// Public only because [`kv_key!`] expands into other crates. Calling it
+    /// directly from an ordinary expression evaluates the assertion at runtime,
+    /// which turns a build error into a panic; the macro's `const { … }` block is
+    /// what makes the guarantee real.
     ///
     /// # Panics
     ///
-    /// If `key` is not a valid key. In a `const` context — which is where a
-    /// literal belongs — that panic is a compile error and can never reach a
-    /// running program.
+    /// If `key` is not a valid key. Reached through [`kv_key!`] that panic is a
+    /// const-evaluation failure — a compile error — and cannot reach a running
+    /// program.
+    #[doc(hidden)]
     #[must_use]
-    pub const fn from_static(key: &'static str) -> Self {
+    pub const fn from_static_checked(key: &'static str) -> Self {
         assert!(
             is_valid_key(key),
             "a kv key must be <namespace>.<name>, lowercase ASCII, digits and _"
@@ -475,16 +512,10 @@ mod tests {
 
     #[test]
     fn a_key_reports_the_namespace_it_belongs_to() {
-        assert_eq!(
-            KvKey::from_static("session.explorer_tabs").namespace(),
-            "session"
-        );
+        assert_eq!(kv_key!("session.explorer_tabs").namespace(), "session");
         // The namespace is the *first* segment, not everything before the last
         // dot: `list_namespace("window")` has to find this key.
-        assert_eq!(
-            KvKey::from_static("window.main.position").namespace(),
-            "window"
-        );
+        assert_eq!(kv_key!("window.main.position").namespace(), "window");
     }
 
     #[test]

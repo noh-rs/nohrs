@@ -235,6 +235,9 @@ fn cache_for(plugin_id: &str) -> TableDefinition<'static, &str, (i64, &[u8])>;
 ```rust
 // crates/nohrs-store/src/nohrs_store.rs
 
+// このスケッチ内だけの略記。実装では値はそのまま `Vec<u8>` です。
+type Bytes = Vec<u8>;
+
 pub trait MetadataQuery: Send + Sync {
     fn get_file(&self, path: &Path) -> Result<Option<FileRecord>>;
     fn list_children(&self, parent: &Path) -> Result<Vec<FileRecord>>;
