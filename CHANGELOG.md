@@ -12,6 +12,19 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 ## [Unreleased]
 
+### Added
+
+- nohrs now records what it does to a rolling JSON Lines file under
+  `$XDG_STATE_HOME/nohrs/logs/`, so a GUI session's log survives the window
+  closing, and `noh log show` / `path` / `clear` read it back. Every operation
+  carrying `#[tracing::instrument(target = "nohrs::op", …)]` — file operations,
+  directory listings, search, and indexing so far — writes one record with how
+  long it took, which `noh log show --ops` lists. The records name the files
+  touched and the searches run, so on Unix the directory is created `0700` and
+  its files `0600` (Windows has no mode to set: the directory inherits the
+  per-user profile's ACL), and they are dropped after seven days. See
+  [`docs/logging.md`](docs/logging.md).
+
 ### Changed
 
 - Host KV keys are a `KvKey` rather than a `&str`, so the `<namespace>.<name>`

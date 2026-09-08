@@ -1,4 +1,4 @@
--- Where trashed items came from, so they can be put back (docs/cli.md §7.1).
+-- Where trashed items came from, so they can be put back (docs/cli.md §8.1).
 -- Only written on platforms whose own trash keeps no such record (macOS, where
 -- the equivalent lives in Finder's private .DS_Store); Linux and Windows are
 -- restored from the OS trash index instead.

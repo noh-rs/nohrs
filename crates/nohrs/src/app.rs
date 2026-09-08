@@ -11,7 +11,7 @@ use gpui::{App, AppContext, Application, Bounds, px, size};
 use gpui_component::Root;
 use gpui_component::resizable::ResizableState;
 use nohrs_core::config::{self, ConfigOverride};
-use nohrs_core::telemetry::logging::init_logging;
+use nohrs_core::telemetry::logging::{FileLogConfig, init_logging_with_file};
 use nohrs_pages::RootView;
 use nohrs_services::search::SearchService;
 use nohrs_store::{KvStore, RedbKvStore, StoreLogConfig};
@@ -24,7 +24,11 @@ pub struct NohrsApp;
 
 impl NohrsApp {
     pub fn run(cli: &Cli) {
-        init_logging();
+        // Held for the whole run: dropping it stops the log file being written.
+        // Installed before the config is read so a failure to load the config is
+        // itself recorded, which means the file sink uses its defaults rather
+        // than anything the user set — see `docs/logging.md` §4.
+        let _log_guard = init_logging_with_file(&FileLogConfig::default());
 
         // Load configuration before opening the window: defaults < file < env <
         // CLI (config.md §3). A missing file is created with defaults so users

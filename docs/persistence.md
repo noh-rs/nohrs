@@ -122,7 +122,7 @@ CREATE INDEX idx_files_inode  ON files(inode);
 
 -- (ホスト KV は redb `state.redb` に置く。§3 参照。SQLite には持たない)
 
--- ゴミ箱台帳 (どこから捨てたか。docs/cli.md §7.1)
+-- ゴミ箱台帳 (どこから捨てたか。docs/cli.md §8.1)
 -- OS 側が元パスを記録しないプラットフォーム (macOS) でのみ書き込む。
 -- original_path は一意ではない: 同じパスを何度も捨てられる。
 CREATE TABLE trash (

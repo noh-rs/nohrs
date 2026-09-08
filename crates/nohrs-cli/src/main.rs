@@ -8,10 +8,25 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use nohrs_cli::{Cli, Command, Invocation, RmCli, doctor, ledger, rm, shim, trash};
+use nohrs_cli::{Cli, Command, Invocation, RmCli, doctor, ledger, log, rm, shim, trash};
+use nohrs_core::telemetry::logging::{FileLogConfig, init_logging_with_file};
 
 fn main() -> ExitCode {
-    match run(&Invocation::parse_from(std::env::args_os())) {
+    // Parsed before the subscriber is installed, because `noh log` is the
+    // *reader* of the log and must not write one: opening the sink first makes
+    // `show` report on a file it created a moment earlier, and hands `clear`
+    // the file this very process is appending to. Every other command records
+    // what it did, into the same rolling file the GUI writes, so `noh log`
+    // shows both sides.
+    let invocation = Invocation::parse_from(std::env::args_os());
+    let config = FileLogConfig {
+        enabled: !invocation.reads_the_log(),
+        ..FileLogConfig::default()
+    };
+    // Bound to a name, not `_`: dropping the guard would stop the writer before
+    // the command has run.
+    let _log_guard = init_logging_with_file(&config);
+    match run(&invocation) {
         Ok(code) => ExitCode::from(code),
         Err(error) => report_failure(&error),
     }
@@ -36,6 +51,7 @@ fn run_command(command: &Command) -> io::Result<u8> {
             let args = args.as_purge();
             run_trash(|session| session.purge(&args))
         }
+        Command::Log(command) => run_log(command),
         Command::Doctor => {
             let checks = doctor::check(&doctor::Environment::detect());
             doctor::report(&checks, &mut io::stdout().lock())
@@ -52,6 +68,16 @@ fn run_command(command: &Command) -> io::Result<u8> {
             Ok(0)
         }
     }
+}
+
+/// Read back the rolling log file. The directory is resolved here rather than
+/// inside the session, which takes it injected so the tests can point it at a
+/// temporary one.
+fn run_log(command: &log::Command) -> io::Result<u8> {
+    let directory = nohrs_core::config::paths::log_dir();
+    let mut output = io::stdout().lock();
+    let summary = log::Session::new(&directory, &mut output).run(command)?;
+    Ok(summary.exit_code())
 }
 
 fn run_rm(args: &rm::Args) -> io::Result<u8> {

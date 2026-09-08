@@ -10,6 +10,8 @@
 pub mod doctor;
 /// Opening the trash ledger the CLI writes to and restores from.
 pub mod ledger;
+/// `log`: read back the rolling log file nohrs writes about itself.
+pub mod log;
 /// `rm`: trash-by-default removal.
 pub mod rm;
 /// `shim`: install and remove the symlinks that shadow a system command.
@@ -52,6 +54,10 @@ pub enum Command {
     /// Inspect and empty the trash.
     #[command(subcommand)]
     Trash(trash::Command),
+    /// Show what nohrs recorded about itself, including how long each
+    /// operation took.
+    #[command(subcommand)]
+    Log(log::Command),
     /// Check that the pieces `noh rm` relies on are in place.
     Doctor,
     /// Install or remove the symlinks that put `noh` in front of a system
@@ -119,6 +125,20 @@ impl Invocation {
         }
     }
 
+    /// Whether this command reads the log rather than adding to it.
+    ///
+    /// `noh log` is the reader, so a caller must not open the file sink before
+    /// running it: `show` would report on a file it had just created itself,
+    /// and `clear` would be handed the file its own process is appending to.
+    pub fn reads_the_log(&self) -> bool {
+        matches!(
+            self,
+            Invocation::Direct(Cli {
+                command: Command::Log(_)
+            })
+        )
+    }
+
     /// The clap command tree for `noh`, for generating completions.
     pub fn command() -> clap::Command {
         Cli::command()
@@ -165,6 +185,24 @@ mod tests {
             | Invocation::Rm(RmCli { args }) => args,
             other => panic!("{parts:?} did not parse as rm: {other:?}"),
         }
+    }
+
+    #[test]
+    fn only_the_log_command_is_a_reader_of_the_log() {
+        let reads = |parts: &[&str]| {
+            Invocation::try_parse_from(argv(parts))
+                .unwrap()
+                .reads_the_log()
+        };
+        for command in [
+            vec!["noh", "log", "show"],
+            vec!["noh", "log", "path"],
+            vec!["noh", "log", "clear", "--force"],
+        ] {
+            assert!(reads(&command), "{command:?} writes to the log it reads");
+        }
+        assert!(!reads(&["noh", "rm", "notes.txt"]));
+        assert!(!reads(&["rm", "-rf", "build"]));
     }
 
     #[test]
