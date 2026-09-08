@@ -55,6 +55,14 @@
   }
 
   * { box-sizing: border-box; }
+  /* proximity, not mandatory: several sections are taller than the viewport,
+     and mandatory would fight the reader trying to stop inside one */
+  html {
+    scroll-snap-type: y proximity;
+    scroll-padding-top: 60px;   /* clears the sticky header */
+    scroll-behavior: smooth;
+  }
+  section, footer { scroll-snap-align: start; }
   body {
     margin: 0;
     background: var(--paper);
@@ -184,7 +192,7 @@
 
   /* ── hero ──────────────────────────────────────────────────── */
   .hero { border-top: 0; }
-  .hero > .frame { padding-block: clamp(76px, 13vw, 148px) clamp(72px, 10vw, 116px); }
+  .hero > .frame { padding-block: clamp(56px, 8vw, 104px) clamp(56px, 7vw, 92px); }
 
   h1 {
     margin: 0;
@@ -207,6 +215,16 @@
   }
   .hero .sub { margin: 28px 0 0; font-size: clamp(1rem, 1.5vw, 1.1875rem); color: var(--ink-2); max-width: 44ch; }
   .hero .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 40px; }
+
+  /* the honest answer to "how do I try this today", since no binary exists */
+  .try { margin-top: 52px; padding-top: 26px; border-top: 1px solid var(--line); max-width: 62ch; }
+  .try p { margin: 0 0 14px; font-size: .875rem; color: var(--muted); max-width: none; }
+  .cmd {
+    margin: 0; padding: 15px 18px; overflow-x: auto;
+    background: var(--surface); border: 1px solid var(--line-soft); border-radius: 5px;
+    font: 400 .8125rem/1.9 var(--mono); color: var(--ink-2);
+  }
+  .cmd .prompt { color: var(--muted); user-select: none; padding-right: 10px; }
 
   /* ── pillars ───────────────────────────────────────────────── */
   .pillars { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); }
@@ -287,6 +305,7 @@
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
     .js-reveal .reveal:not(.in) { opacity: 1; transform: none; }
+    html { scroll-behavior: auto; scroll-snap-type: none; }
   }
 </style>
 
@@ -343,6 +362,15 @@
           <span data-en="Join Discord" data-ja="Discord に参加">Join Discord</span>
           <span aria-hidden="true">↗</span>
         </a>
+      </div>
+
+      <div class="try">
+        <p data-en="There is no release to download yet. To try it today, build it from source on macOS."
+           data-ja="ダウンロードできるリリースは、まだありません。いま試すには、macOS 上でソースからビルドしてください。">
+          There is no release to download yet. To try it today, build it from source on macOS.
+        </p>
+        <pre class="cmd"><code><span class="prompt">$</span>git clone https://github.com/noh-rs/nohrs
+<span class="prompt">$</span>cargo run -p nohrs</code></pre>
       </div>
     </div>
   </section>
