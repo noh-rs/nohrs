@@ -144,11 +144,14 @@ fn render_grid_item(
             Some(input) => div()
                 .w_full()
                 .child(
+                    // Matches the resting label's typography exactly, so
+                    // committing the rename is not a visible jump.
                     Input::new(&input)
                         .small()
                         .appearance(false)
                         .px(px(0.0))
                         .text_sm()
+                        .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(rgb(theme::FG)),
                 )
                 .into_any_element(),
