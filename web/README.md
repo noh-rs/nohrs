@@ -138,6 +138,25 @@ npx wrangler deploy --config workers/wrangler.noh-rs.jsonc   # noh.rs
 The optional secrets are optional on purpose: comments and analytics are simply absent
 without them, which is what a fork building this site should get.
 
+### While the site is gated
+
+Before launch the deployed site sits behind **Cloudflare Access** (Zero Trust → Access →
+Applications), which is dashboard state and not described by anything in this repository.
+Two consequences to know about:
+
+- **Nothing without a session can read the site.** The `curl` checks below return the
+  Access login page rather than the page you asked for, and no crawler can reach the
+  sitemap. That is the point, but it means the site cannot be verified from a script until
+  the gate comes off or a service token is issued for it.
+- **Deploys are unaffected.** They go through the Cloudflare API, not the hostname, so
+  `wrangler deploy` and the workflow keep working with the gate in place.
+
+`www.nohrs.app` needs no policy of its own: the Worker answers every `*.nohrs.app` request
+with a 301 to the apex before it touches an asset, so it serves no content to gate.
+
+Removing the gate is the launch step. `robots.txt` and the sitemap already assume a public
+site, so nothing in the build has to change.
+
 ## Where this deviates from docs/web.md
 
 | Spec | Built | Why |
