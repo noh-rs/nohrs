@@ -16,9 +16,10 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 - Host KV keys are a `KvKey` rather than a `&str`, so the `<namespace>.<name>`
   convention is enforced instead of merely documented. A literal goes through
-  `KvKey::from_static`, a `const fn`, so a key without a namespace is a build
-  error; keys built at runtime go through `KvKey::new` / `parse` and return a
-  `Result`. `KvStore::list_prefix` becomes `list_namespace`, which appends the
+  the `kv_key!` macro, whose `const { … }` block forces const evaluation, so a
+  key without a namespace is a build error; keys built at runtime go through
+  `KvKey::new` / `parse` and return a `Result`.
+  `KvStore::list_prefix` becomes `list_namespace`, which appends the
   separator itself so a listing cannot straddle into a longer namespace
   (`window` no longer picking up `window_backup.*`). See
   [`docs/persistence.md`](docs/persistence.md) §3.

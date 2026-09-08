@@ -179,11 +179,28 @@ key は `&str` ではなく **`KvKey`** です。`<namespace>.<name>` のドッ�
 
 | 作り方 | 検査 | 用途 |
 |--------|------|------|
-| `KvKey::from_static("session.explorer_tabs")` | **コンパイル時** (`const fn`) | サブシステムが持つ固定キー。ほぼ全部これ |
+| `kv_key!("session.explorer_tabs")` | **コンパイル時** | サブシステムが持つ固定キー。ほぼ全部これ |
 | `KvKey::new(ns, name)` / `KvKey::parse(s)` | 実行時 (`Result`) | 実行時に組み立てるキー |
 
-`from_static` は `const fn` なので、`KvKey::from_static("tabs")` は実行時エラーではなく
-**ビルドエラー**になります。これが「規約」を規約以上のものにしている部分です。
+`kv_key!("tabs")` は実行時エラーではなく**ビルドエラー**です。これが「規約」を規約以上のものに
+している部分です。
+
+**効いているのはマクロの `const { … }` ブロックです。** 検証関数を `const fn` にしただけでは
+足りません — `const fn` は通常式から呼ばれたとき const 評価が*許される*だけで*強制されない*ので、
+素の呼び出しでは assert がそのまま実行時 panic になります。マクロは:
+
+```rust
+macro_rules! kv_key {
+    ($key:literal) => { const { $crate::KvKey::from_static_checked($key) } };
+}
+```
+
+- `const { … }` が全呼び出し箇所で const 評価を強制する
+- `$key:literal` が、実行時に選ばれた `&'static str` の混入を防ぐ
+
+素のコンストラクタ (`from_static_checked`) は `#[doc(hidden)]` です。マクロが他クレートで
+展開されるために public なだけで、直接呼ぶものではありません。この保証は 3 本の doctest
+（正しいリテラル / 名前空間なし `compile_fail` / 非リテラル `compile_fail`）で固定しています。
 
 `list_namespace` が prefix ではなく名前空間を取るのも同じ理由です。自由な prefix だと
 `list_prefix("sess")` が `session.*` にたまたま一致し、`list_prefix("window")` は
