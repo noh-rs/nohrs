@@ -117,7 +117,7 @@ impl KvStore for RedbKvStore {
                 Err(error) => {
                     tracing::warn!(
                         target: "nohrs_store::redb",
-                        "skipping unparseable key in namespace {namespace}: {error}"
+                        "skipping unparsable key in namespace {namespace}: {error}"
                     );
                     continue;
                 }
