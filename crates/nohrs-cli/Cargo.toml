@@ -27,7 +27,6 @@ nohrs-core = { path = "../nohrs-core" }
 # builds without any UI toolkit (it is part of `default-members`).
 nohrs-services = { path = "../nohrs-services" }
 clap.workspace = true
-# `noh log` reads the JSON Lines the file sink writes.
 serde_json.workspace = true
 
 [dev-dependencies]

@@ -101,6 +101,20 @@ impl Invocation {
         }
     }
 
+    /// Whether this command reads the log rather than adding to it.
+    ///
+    /// `noh log` is the reader, so a caller must not open the file sink before
+    /// running it: `show` would report on a file it had just created itself,
+    /// and `clear` would be handed the file its own process is appending to.
+    pub fn reads_the_log(&self) -> bool {
+        matches!(
+            self,
+            Invocation::Direct(Cli {
+                command: Command::Log(_)
+            })
+        )
+    }
+
     /// Run the parsed command against the real filesystem, returning the process
     /// exit code. The error case is a failure to write to stdout/stderr.
     pub fn run(&self) -> io::Result<u8> {
@@ -161,6 +175,24 @@ mod tests {
             | Invocation::Rm(RmCli { args }) => args,
             other => panic!("expected an rm invocation, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn only_the_log_command_is_a_reader_of_the_log() {
+        let reads = |parts: &[&str]| {
+            Invocation::try_parse_from(argv(parts))
+                .unwrap()
+                .reads_the_log()
+        };
+        for command in [
+            vec!["noh", "log", "show"],
+            vec!["noh", "log", "path"],
+            vec!["noh", "log", "clear", "--force"],
+        ] {
+            assert!(reads(&command), "{command:?} writes to the log it reads");
+        }
+        assert!(!reads(&["noh", "rm", "notes.txt"]));
+        assert!(!reads(&["rm", "-rf", "build"]));
     }
 
     #[test]

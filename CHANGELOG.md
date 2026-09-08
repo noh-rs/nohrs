@@ -19,7 +19,9 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   closing, and `noh log show` / `path` / `clear` read it back. Every operation
   carrying `#[tracing::instrument(target = "nohrs::op", …)]` — file operations,
   directory listings, search, and indexing so far — writes one record with how
-  long it took, which `noh log show --ops` lists. See
+  long it took, which `noh log show --ops` lists. The records name the files
+  touched and the searches run, so the directory is created `0700` and its files
+  `0600`, and they are dropped after seven days. See
   [`docs/logging.md`](docs/logging.md).
 
 ### Changed

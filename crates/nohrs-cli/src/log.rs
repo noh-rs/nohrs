@@ -20,7 +20,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
-use nohrs_core::telemetry::logging::LOG_FILE_PREFIX;
+use nohrs_core::telemetry::logging::{current_log_file_name, is_log_file_name};
 
 /// What `noh log` was asked to do.
 #[derive(Subcommand, Debug)]
@@ -29,9 +29,9 @@ pub enum Command {
     Show(ShowArgs),
     /// Print where the log files live.
     Path,
-    /// Delete the log files.
+    /// Empty the log files.
     Clear {
-        /// Delete without asking.
+        /// Empty them without asking.
         #[arg(short, long)]
         force: bool,
     },
@@ -73,8 +73,8 @@ impl Default for ShowArgs {
 pub struct Summary {
     /// Records printed.
     pub printed: usize,
-    /// Files removed by `clear`.
-    pub removed: usize,
+    /// Log files emptied by `clear`, whether unlinked or truncated in place.
+    pub cleared: usize,
     /// Whether the command could not do what was asked.
     pub failed: bool,
 }
@@ -118,18 +118,28 @@ impl<'a> Session<'a> {
     }
 
     fn show(&mut self, args: &ShowArgs) -> io::Result<()> {
-        let files = log_files(self.directory);
+        let files = log_files(self.directory)?;
         if files.is_empty() {
-            writeln!(self.output, "no log files in {}", self.directory.display())?;
             // Not a failure: a fresh install has never written one, and saying
-            // so is the answer to the question that was asked.
+            // so is the answer to the question that was asked. `--json` exists
+            // to be piped into `jq`, though, where a prose line is a parse
+            // error; an empty stream is how JSON Lines spells "no records".
+            if !args.json {
+                writeln!(self.output, "no log files in {}", self.directory.display())?;
+            }
             return Ok(());
         }
         // Newest file last, so reading them in order and keeping the tail gives
         // the most recent records across a rotation boundary.
         let mut records = Vec::new();
         for file in &files {
-            let body = std::fs::read_to_string(file)?;
+            // Bytes rather than `read_to_string`: a live process is appending
+            // to this file, so its tail can be a half-written multibyte
+            // character. `read_to_string` rejects the *whole file* for that,
+            // which would lose every record over one truncated character —
+            // and only while nohrs is busy, which is when the log matters.
+            let body = std::fs::read(file)?;
+            let body = String::from_utf8_lossy(&body);
             records.extend(body.lines().filter_map(Record::parse));
         }
         if args.ops {
@@ -149,14 +159,14 @@ impl<'a> Session<'a> {
 
     fn path(&mut self) -> io::Result<()> {
         writeln!(self.output, "{}", self.directory.display())?;
-        for file in log_files(self.directory) {
+        for file in log_files(self.directory)? {
             writeln!(self.output, "  {}", file.display())?;
         }
         Ok(())
     }
 
     fn clear(&mut self, force: bool) -> io::Result<()> {
-        let files = log_files(self.directory);
+        let files = log_files(self.directory)?;
         if files.is_empty() {
             writeln!(self.output, "no log files to remove")?;
             return Ok(());
@@ -172,41 +182,72 @@ impl<'a> Session<'a> {
             )?;
             return Ok(());
         }
+        let current = current_log_file_name();
         for file in files {
-            match std::fs::remove_file(&file) {
-                Ok(()) => self.summary.removed += 1,
+            let is_current = file.file_name().and_then(|name| name.to_str()) == current.as_deref();
+            let outcome = if is_current {
+                truncate(&file)
+            } else {
+                std::fs::remove_file(&file)
+            };
+            match outcome {
+                Ok(()) => self.summary.cleared += 1,
                 Err(error) => {
                     writeln!(self.output, "{}: {error}", file.display())?;
                     self.summary.failed = true;
                 }
             }
         }
-        writeln!(self.output, "removed {} log file(s)", self.summary.removed)?;
+        writeln!(self.output, "cleared {} log file(s)", self.summary.cleared)?;
         Ok(())
     }
+}
+
+/// Empty a log file without unlinking it.
+///
+/// A running nohrs — the GUI, typically — holds today's file open and appends to
+/// it. Unlinking that file leaves the writer appending to an inode with no name:
+/// every record until the next rotation goes nowhere, and the user who cleared
+/// the log sees it mysteriously stay empty. Truncation is visible to the writer
+/// immediately, and its `O_APPEND` writes simply resume from zero.
+fn truncate(file: &Path) -> io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(file)
+        .map(drop)
 }
 
 /// The log files in `directory`, oldest first.
 ///
 /// `tracing-appender` names them `<prefix>.<date>`, so a lexicographic sort is
-/// also chronological. A directory that cannot be read is reported as empty:
-/// the caller's message ("no log files in …") is the useful thing to say either
-/// way.
-fn log_files(directory: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return Vec::new();
+/// also chronological.
+fn log_files(directory: &Path) -> io::Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        // A directory that was never created is the normal state of a fresh
+        // install, and "no log files" is the honest answer. Every other error
+        // is propagated: reporting a permission denial as "empty" would send
+        // the user hunting for a missing file instead of a wrong mode, and
+        // `clear` would cheerfully report success having removed nothing.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
     };
-    let mut files: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(LOG_FILE_PREFIX))
-        })
-        .collect();
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        // The name alone is not enough: a directory or a FIFO named like a log
+        // file would be read as a record stream, and handed to `clear` to
+        // unlink.
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        if entry.file_name().to_str().is_some_and(is_log_file_name) {
+            files.push(entry.path());
+        }
+    }
     files.sort();
-    files
+    Ok(files)
 }
 
 /// One parsed line of the log file.
@@ -284,6 +325,7 @@ fn span_fields(span: &serde_json::Value) -> String {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use nohrs_core::telemetry::logging::LOG_FILE_PREFIX;
     use tempfile::TempDir;
 
     /// A log directory holding `lines` as one file.
@@ -475,12 +517,38 @@ mod tests {
 
         let (out, summary) = run(directory.path(), &Command::Clear { force: false });
         assert!(out.contains("--force"), "{out}");
-        assert_eq!(summary.removed, 0);
+        assert_eq!(summary.cleared, 0);
         assert!(file.exists(), "nothing should be deleted without --force");
 
         let (out, summary) = run(directory.path(), &Command::Clear { force: true });
-        assert_eq!(summary.removed, 1, "{out}");
-        assert!(!file.exists());
+        assert_eq!(summary.cleared, 1, "{out}");
+        assert!(!file.exists(), "a closed, rotated file is unlinked");
+    }
+
+    #[test]
+    fn clear_truncates_the_file_a_live_process_is_appending_to() {
+        // Unlinking it would leave a running GUI writing to a nameless inode:
+        // its records would vanish until the next rotation, with the log
+        // looking permanently empty to the user who cleared it.
+        let directory = tempfile::tempdir().unwrap();
+        let current = current_log_file_name().expect("today's file name");
+        let live = directory.path().join(&current);
+        std::fs::write(&live, format!("{}\n", event("live"))).unwrap();
+        let rotated = directory
+            .path()
+            .join(format!("{LOG_FILE_PREFIX}.2020-01-01"));
+        std::fs::write(&rotated, format!("{}\n", event("old"))).unwrap();
+
+        let (out, summary) = run(directory.path(), &Command::Clear { force: true });
+
+        assert_eq!(summary.cleared, 2, "{out}");
+        assert!(!rotated.exists(), "a closed file is unlinked");
+        assert!(live.exists(), "the open file must keep its name");
+        assert_eq!(
+            std::fs::metadata(&live).unwrap().len(),
+            0,
+            "the open file must be emptied"
+        );
     }
 
     #[test]
@@ -498,10 +566,92 @@ mod tests {
         let directory = fixture(&[&event("x")]);
         let stray = directory.path().join("notes.txt");
         std::fs::write(&stray, "not a log").unwrap();
+        // A hand-made copy kept beside the real ones. It shares the prefix but
+        // not the appender's `<prefix>.<date>` shape, and `clear` deleting
+        // someone's saved copy of a log is not what they asked for.
+        let saved = directory.path().join(format!("{LOG_FILE_PREFIX}.backup"));
+        std::fs::write(&saved, "kept on purpose").unwrap();
 
         let (_, summary) = run(directory.path(), &Command::Clear { force: true });
 
-        assert_eq!(summary.removed, 1, "only the log file should be removed");
+        assert_eq!(summary.cleared, 1, "only the log file should be removed");
         assert!(stray.exists(), "an unrelated file must survive");
+        assert!(saved.exists(), "a hand-made copy must survive");
+    }
+
+    #[test]
+    fn a_directory_named_like_a_log_file_is_not_treated_as_one() {
+        // `clear` would try to unlink it, and `show` to read it as records.
+        let directory = tempfile::tempdir().unwrap();
+        let decoy = directory
+            .path()
+            .join(format!("{LOG_FILE_PREFIX}.2026-09-07"));
+        std::fs::create_dir(&decoy).unwrap();
+
+        let (out, summary) = run(directory.path(), &Command::Clear { force: true });
+
+        assert!(out.contains("no log files"), "{out}");
+        assert_eq!(summary.cleared, 0);
+        assert!(decoy.is_dir(), "a directory must survive untouched");
+    }
+
+    #[test]
+    fn a_tail_cut_mid_character_still_yields_the_records_before_it() {
+        // The appender is writing while we read, so the last line can stop
+        // inside a multibyte character. `read_to_string` would reject the whole
+        // file for it and `show` would print nothing at all.
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory
+            .path()
+            .join(format!("{LOG_FILE_PREFIX}.2026-09-07"));
+        let mut bytes = format!("{}\n", operation("fs.copy", "5ms")).into_bytes();
+        bytes.extend_from_slice(br#"{"message":""#);
+        // The leading byte of a three-byte sequence, with its two continuation
+        // bytes not yet written.
+        bytes.push(0xE6);
+        std::fs::write(&file, bytes).unwrap();
+
+        let (out, summary) = run(directory.path(), &Command::Show(ShowArgs::default()));
+
+        assert_eq!(summary.printed, 1, "{out}");
+        assert!(out.contains("fs.copy"), "{out}");
+    }
+
+    #[test]
+    fn json_on_an_empty_directory_prints_nothing_parseable_as_prose() {
+        // `--json` is a pipe into `jq`; a prose line there is a parse error.
+        let directory = tempfile::tempdir().unwrap();
+        let args = ShowArgs {
+            json: true,
+            ..ShowArgs::default()
+        };
+
+        let (out, summary) = run(directory.path(), &Command::Show(args));
+
+        assert!(out.is_empty(), "expected an empty stream, got {out:?}");
+        assert_eq!(summary.exit_code(), 0);
+
+        // The human mode still says it, because there is no parser there.
+        let (out, _) = run(directory.path(), &Command::Show(ShowArgs::default()));
+        assert!(out.contains("no log files"), "{out}");
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_read_is_an_error_rather_than_reported_as_empty() {
+        // Only `NotFound` means "no log files" — a fresh install. Anything else
+        // reported as empty would send the user looking for a missing file
+        // instead of the real fault, and `clear` would report success having
+        // removed nothing. A file where the directory should be stands in for
+        // the permission denial, which cannot be staged as root.
+        let directory = tempfile::tempdir().unwrap();
+        let occupied = directory.path().join("logs");
+        std::fs::write(&occupied, "not a directory").unwrap();
+
+        let mut output = Vec::new();
+        let error = Session::new(&occupied, &mut output)
+            .run(&Command::Path)
+            .expect_err("an unreadable directory must not look empty");
+
+        assert_ne!(error.kind(), io::ErrorKind::NotFound, "{error}");
     }
 }
