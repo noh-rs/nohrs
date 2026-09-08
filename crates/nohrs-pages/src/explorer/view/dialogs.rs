@@ -75,10 +75,17 @@ impl ExplorerPane {
             };
 
             let checkbox_weak = weak.clone();
+            let close_weak = weak.clone();
             dialog
                 .title(format!(
                     "\u{201c}{name}\u{201d} already exists in \u{201c}{dest_name}\u{201d}"
                 ))
+                // Dismissing with the title-bar close button has to abandon the
+                // plan exactly as Cancel does, or the pending queue survives and
+                // the next paste resumes into this one.
+                .on_close(move |_, _window, cx| {
+                    close_weak.update(cx, |pane, cx| pane.cancel_paste(cx)).ok();
+                })
                 .child(
                     div()
                         .flex()
@@ -102,12 +109,17 @@ impl ExplorerPane {
                             )
                         }),
                 )
+                // Cancel leads, and Rename — the only choice that loses nothing —
+                // takes the trailing primary slot. Overwrite sits inboard of it:
+                // the destructive action must not occupy the position the eye
+                // (and a stray Return) treats as the default.
                 .footer(move |_ok, _cancel, _window, _cx| {
                     vec![
-                        conflict_button(&weak, "skip", "Skip", ConflictResolution::Skip),
-                        conflict_button(&weak, "rename", "Rename", ConflictResolution::Rename),
                         cancel_button(&weak),
                         overwrite_button(&weak),
+                        conflict_button(&weak, "skip", "Skip", ConflictResolution::Skip),
+                        conflict_button(&weak, "rename", "Rename", ConflictResolution::Rename)
+                            .primary(),
                     ]
                 })
         });
@@ -135,8 +147,7 @@ fn conflict_button(
 }
 
 fn overwrite_button(weak: &WeakEntity<ExplorerPane>) -> Button {
-    // Right-most and danger-coloured to keep it away from the safe defaults
-    // (§1.2 mock).
+    // Danger-coloured, and placed away from the trailing default slot (§1.2).
     conflict_button(
         weak,
         "overwrite",

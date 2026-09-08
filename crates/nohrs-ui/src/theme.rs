@@ -89,4 +89,9 @@ pub mod theme {
     /// Backdrop behind an image preview; deliberately dark so transparent and
     /// light-colored images stay legible.
     pub const PREVIEW_BACKDROP: u32 = GRAY_800;
+
+    /// Opacity of the scrim painted behind a modal dialog. `gpui_component`
+    /// ships 5%, which is invisible against this theme's white surfaces and
+    /// leaves confirmations looking like floating panels rather than modals.
+    pub const MODAL_SCRIM_ALPHA: f32 = 0.40;
 }

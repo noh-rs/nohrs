@@ -464,6 +464,18 @@ impl ExplorerPane {
         cx.notify();
     }
 
+    /// Abandons an in-progress rename without touching the filesystem, returning
+    /// focus to the listing. Used when the row being renamed goes away underneath
+    /// the field — navigating to another directory, say — since the field is
+    /// positioned by row index and would otherwise re-attach to whichever entry
+    /// now occupies that slot.
+    pub(crate) fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.renaming.take().is_some() {
+            cx.focus_self(window);
+            cx.notify();
+        }
+    }
+
     /// Commits the in-progress rename, resolving a name collision by numbering
     /// (§1.2 "Rename"). An empty or unchanged name cancels.
     pub(crate) fn commit_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {

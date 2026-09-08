@@ -2,6 +2,7 @@ use super::truncate_middle;
 use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::Sizable as _;
 use gpui_component::input::Input;
 use gpui_component::{Icon, IconName};
 use nohrs_services::fs::listing::FileEntryDto;
@@ -134,7 +135,10 @@ fn render_grid_item(
             })),
         ))
         .child(match rename_input {
-            Some(input) => div().w_full().child(Input::new(&input)).into_any_element(),
+            Some(input) => div()
+                .w_full()
+                .child(Input::new(&input).small())
+                .into_any_element(),
             None => div()
                 .w_full()
                 .text_sm()

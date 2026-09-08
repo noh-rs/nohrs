@@ -3,6 +3,7 @@ use super::truncate_middle;
 use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::Sizable as _;
 use gpui_component::input::Input;
 use gpui_component::list::ListItem;
 use gpui_component::{Icon, IconName};
@@ -174,6 +175,11 @@ pub fn render(
                                 .gap_1()
                                 .w(px(page.col_name_width))
                                 .flex_shrink_0()
+                                // The gutter before the Type column has to come
+                                // off this container: padding on the label itself
+                                // sits inside its `overflow_hidden` clip, so the
+                                // text would still run to the column edge.
+                                .pr(px(12.0))
                                 .when(has_content_matches, |this| {
                                     this.child(
                                         div()
@@ -210,12 +216,20 @@ pub fn render(
                                 .when(!has_content_matches, |this| this.child(div().w(px(20.0))))
                                 .child(Icon::new(icon_name).size_4().text_color(icon_color))
                                 .child(match rename_input {
+                                    // The trailing gap keeps the field off the
+                                    // Type column, which it otherwise butts
+                                    // straight into.
                                     Some(input) => div()
                                         .flex_1()
                                         .min_w(px(0.0))
-                                        .child(Input::new(&input))
+                                        .child(Input::new(&input).small())
                                         .into_any_element(),
+                                    // `flex_1` + `min_w(0)` give the ellipsis a
+                                    // width to clamp against; without them a long
+                                    // name overflows into the next column.
                                     None => div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
                                         .text_sm()
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(rgb(theme::FG))

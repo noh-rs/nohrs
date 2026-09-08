@@ -53,6 +53,7 @@ impl ExplorerPane {
         if path == self.cwd {
             return;
         }
+        self.cancel_rename(window, cx);
         self.close_search(window, cx);
         self.push_history(path.clone());
         self.cwd = path;
@@ -103,6 +104,7 @@ impl ExplorerPane {
             if let Some(p) = self.history.get(self.history_index).cloned() {
                 self.cwd = p;
                 self.entries.clear();
+                self.cancel_rename(window, cx);
                 self.close_search(window, cx);
                 self.reload();
                 cx.emit(PaneEvent::Navigated(self.cwd.clone()));
@@ -117,6 +119,7 @@ impl ExplorerPane {
             if let Some(p) = self.history.get(self.history_index).cloned() {
                 self.cwd = p;
                 self.entries.clear();
+                self.cancel_rename(window, cx);
                 self.close_search(window, cx);
                 self.reload();
                 cx.emit(PaneEvent::Navigated(self.cwd.clone()));

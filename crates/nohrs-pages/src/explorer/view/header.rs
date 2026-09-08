@@ -38,22 +38,16 @@ pub fn render(
             p.clone()
         };
 
-        let mut path_here = String::new();
+        // `PathBuf::push` knows the root component already ends in a separator;
+        // joining the strings by hand produced "//tmp" for every crumb under "/".
+        let mut prefix = std::path::PathBuf::new();
         for (j, part) in parts.iter().enumerate() {
-            if j == 0 {
-                path_here = if part.is_empty() {
-                    "/".to_string()
-                } else {
-                    part.clone()
-                };
-            } else {
-                path_here.push(std::path::MAIN_SEPARATOR);
-                path_here.push_str(part);
-            }
+            prefix.push(part);
             if j >= actual_i {
                 break;
             }
         }
+        let mut path_here = prefix.to_string_lossy().to_string();
         if path_here.is_empty() {
             path_here = page.cwd.clone();
         }
