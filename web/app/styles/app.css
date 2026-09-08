@@ -98,9 +98,15 @@
   /* The wheel is left entirely to the browser — scroll-snap pulls at its
      anchors even in `proximity`, and `scroll-behavior: smooth` on the root
      re-times keyboard and scrollbar scrolling too. Anchor jumps get their
-     easing from the click handler in `useAnchorScroll` instead. */
+     easing from the click handler in `useAnchorScroll` instead.
+
+     `overscroll-behavior: none` is the one thing the page does assert: the
+     document stops dead at its ends instead of rubber-banding past them, and
+     an overscroll gesture cannot chain out to the browser (pull-to-refresh,
+     back-swipe). It changes what happens *past* the ends, not the wheel. */
   html {
     scroll-padding-top: 76px;
+    overscroll-behavior: none;
   }
 
   body {

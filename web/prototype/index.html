@@ -62,7 +62,13 @@
      anchors even in `proximity`, and `scroll-behavior: smooth` on the root
      re-times keyboard and scrollbar scrolling. Anchor jumps get their easing
      from the click handler instead. */
-  html { scroll-padding-top: 60px; }  /* keeps anchor targets clear of the sticky header */
+  /* `overscroll-behavior: none` stops the document dead at its ends instead of
+     rubber-banding past them, and keeps an overscroll gesture from chaining out
+     to the browser. It changes what happens past the ends, not the wheel. */
+  html {
+    scroll-padding-top: 60px;   /* keeps anchor targets clear of the sticky header */
+    overscroll-behavior: none;
+  }
   body {
     margin: 0;
     background: var(--paper);

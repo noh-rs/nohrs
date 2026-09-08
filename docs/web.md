@@ -102,6 +102,7 @@ R2 は他用途でも使用:
 - 実装は CSS 主体、オーケストレーションが要る所のみ軽量に Motion。`prefers-reduced-motion` 対応必須
 - 基準値: `220ms` / `cubic-bezier(.16,1,.3,1)` / `translateY(6px)` / stagger `50ms`
 - **スクロールスナップは使わない** (改訂 2026-09-08)。セクションごとの吸着 → 上端下端の 2 点だけ → 全廃、と 2 段階で差し戻した。`proximity` でも吸着点の近傍でホイールが引っ張られ、`scroll-behavior: smooth` を `html` に置くとキーボード / スクロールバー操作まで再タイミングされる。**ホイールの感触はブラウザに完全に任せる**。アンカー遷移のイージングは、クリックハンドラ側で `scrollIntoView({ behavior: "smooth" })` を呼んで与える (`prefers-reduced-motion` では `"auto"`)。`scroll-padding-top` は sticky ヘッダにアンカー先が潜らないよう残す
+- **`overscroll-behavior: none` を `html` に置く**。ページ端でのラバーバンドを止め、オーバースクロールのジェスチャがブラウザ側 (pull-to-refresh・戻るスワイプ) に連鎖しないようにする。**端より先で起きることを変えるだけで、ホイールの感触自体には触らない**
 
 ### 品質基準 (ローンチ条件)
 
