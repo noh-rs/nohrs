@@ -206,6 +206,13 @@ macro_rules! kv_key {
 `list_prefix("sess")` が `session.*` にたまたま一致し、`list_prefix("window")` は
 `window_backup.*` まで拾います。末尾のドットを内部で足すことで、走査は名前空間の中で閉じます。
 
+**「名前空間」を受け取る引数は 1 セグメントです。** キー自体は 3 セグメント以上でも構いません
+(`kv_key!("window.main.position")` は有効) が、`namespace()` は**最初の**セグメントを返すので、
+このキーは `list_namespace("window")` に並びます。逆に `"window.main"` を名前空間として渡すのは
+`KvKey::new` でも `list_namespace` でもエラーです — 通してしまうと、呼び出し側が思っている
+名前空間とキーが実際に属する名前空間がずれます。両者は `KvKey::check_namespace` を共有していて、
+片方だけ緩むことがないようにしてあります。
+
 > **書き込み頻度に関する注意**: redb の commit はデフォルトで durable (fsync) なので、window ドラッグ等の高頻度更新を 1 操作ずつ `put` すると fsync が多発する。呼び出し側 (UI 層) で **debounce してから書く**、複数キーは `batch` でまとめる、を原則とする。
 
 ### プラグイン KV テーブル設計 (P4)
