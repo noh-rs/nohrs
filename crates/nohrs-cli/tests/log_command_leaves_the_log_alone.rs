@@ -5,10 +5,17 @@
 //! command runs, so a unit test on `Session` cannot see it. Cargo builds the
 //! binary for integration tests and hands us its path in `CARGO_BIN_EXE_noh`.
 
+// `clippy.toml` bans the synchronous `std::fs` helpers so that blocking IO does
+// not reach the GPUI foreground thread. These tests must stage and inspect real
+// log files on disk — that is what they are checking — and there is no UI
+// thread in a test binary to keep responsive.
 #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+
+use nohrs_core::telemetry::logging::current_log_file_name;
 
 /// Run `noh` with `args`, with the log directory redirected into `state`.
 fn noh(state: &Path, args: &[&str]) -> std::process::Output {
@@ -69,6 +76,47 @@ fn clear_removes_the_files_and_leaves_none_behind() {
     assert!(
         remaining.is_empty(),
         "clear should leave the directory empty, found {remaining:?}"
+    );
+}
+
+#[test]
+fn clear_empties_the_open_file_without_taking_its_name() {
+    // The case the whole truncate-instead-of-unlink rule exists for: a GUI is
+    // holding today's file open while `noh log clear --force` runs. Unlinking it
+    // would leave that writer appending to an inode with no name, and everything
+    // it logged until the next rotation would be invisible.
+    let state = tempfile::tempdir().unwrap();
+    let directory = log_dir(state.path());
+    std::fs::create_dir_all(&directory).unwrap();
+    let today = directory.join(current_log_file_name().expect("today's file name"));
+    std::fs::write(&today, "{\"message\":\"before\"}\n").unwrap();
+    let mut writer = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&today)
+        .unwrap();
+
+    let output = noh(state.path(), &["log", "clear", "--force"]);
+    assert!(output.status.success(), "{output:?}");
+
+    assert!(today.exists(), "the open file must keep its name");
+    assert_eq!(
+        std::fs::metadata(&today).unwrap().len(),
+        0,
+        "the open file must be emptied"
+    );
+
+    // The writer never learned anything happened; its next record has to land in
+    // the file `noh log show` will read, not in a lost inode.
+    writer.write_all(b"{\"message\":\"after\"}\n").unwrap();
+    writer.flush().unwrap();
+    let body = std::fs::read_to_string(&today).unwrap();
+    assert!(
+        body.contains("after"),
+        "a later write must be visible: {body:?}"
+    );
+    assert!(
+        !body.contains("before"),
+        "the old records must be gone: {body:?}"
     );
 }
 

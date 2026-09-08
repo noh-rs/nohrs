@@ -20,8 +20,9 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   carrying `#[tracing::instrument(target = "nohrs::op", …)]` — file operations,
   directory listings, search, and indexing so far — writes one record with how
   long it took, which `noh log show --ops` lists. The records name the files
-  touched and the searches run, so the directory is created `0700` and its files
-  `0600`, and they are dropped after seven days. See
+  touched and the searches run, so on Unix the directory is created `0700` and
+  its files `0600` (Windows has no mode to set: the directory inherits the
+  per-user profile's ACL), and they are dropped after seven days. See
   [`docs/logging.md`](docs/logging.md).
 
 ### Changed

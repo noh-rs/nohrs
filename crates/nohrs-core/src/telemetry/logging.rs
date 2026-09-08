@@ -121,15 +121,22 @@ pub fn init_logging() {
 /// A file sink that cannot be created is reported and skipped rather than
 /// failing the process: losing the log is not a reason to refuse to start.
 pub fn init_logging_with_file(config: &FileLogConfig) -> LogGuard {
-    // The failure is *carried*, not logged, because nothing is listening yet:
-    // reporting it here would go to a subscriber that does not exist, and the
-    // file sink would vanish with no diagnostic at all. It is emitted below,
-    // once stderr is installed.
-    let (file_layer, guard, failure) = match config.enabled {
-        false => (None, None, None),
+    // The diagnostics are *carried*, not logged, because nothing is listening
+    // yet: reporting them here would go to a subscriber that does not exist, and
+    // the file sink would vanish with no diagnostic at all. They are emitted
+    // below, once stderr is installed.
+    let mut notes = Vec::new();
+    let (file_layer, guard) = match config.enabled {
+        false => (None, None),
         true => match open_file_layer(config) {
-            Ok((layer, guard)) => (Some(layer), Some(guard), None),
-            Err(failure) => (None, None, Some(failure)),
+            Ok((layer, guard, warning)) => {
+                notes.extend(warning);
+                (Some(layer), Some(guard))
+            }
+            Err(failure) => {
+                notes.push(format!("{failure}; continuing without a log file"));
+                (None, None)
+            }
         },
     };
     let stderr = fmt::layer()
@@ -140,21 +147,26 @@ pub fn init_logging_with_file(config: &FileLogConfig) -> LogGuard {
         .with(file_layer)
         .try_init()
         .log_err();
-    if let Some(failure) = failure {
-        tracing::warn!("{failure}; continuing without a log file");
+    for note in notes {
+        tracing::warn!("{note}");
     }
     LogGuard(guard)
 }
 
-/// Name of the file the appender is appending to right now, if it can be
-/// determined.
+/// Name of the file the appender writes to right now, if it can be determined.
 ///
-/// Rotation is daily on the **UTC** date (`tracing-appender` rounds
-/// `now_utc()`), so exactly one file in the directory can be held open by a live
-/// process and every other one is closed. `noh log clear` needs the distinction:
-/// unlinking the open file would leave a running GUI writing to an inode with no
+/// Rotation is daily on the **UTC** date, so this names the one file a live
+/// process can still append to. `noh log clear` needs the distinction:
+/// unlinking that file would leave a running GUI appending to an inode with no
 /// name, losing every record until the next rotation, where truncating it is
 /// seen by the writer at once.
+///
+/// A writer idle across midnight still *holds* yesterday's file open, and this
+/// already names today's — deliberately. `RollingFileAppender::write` tests for
+/// rollover **before** each write, so that writer's next record opens today's
+/// file and lands there; nothing is ever appended to yesterday's inode again,
+/// and unlinking it loses nothing. Naming the open-but-finished file instead
+/// would leave a stale file that `clear` never empties.
 ///
 /// `None` means the date could not be formatted, which leaves the caller to
 /// treat every file as closed — the behaviour before this existed.
@@ -199,7 +211,7 @@ fn stderr_filter() -> EnvFilter {
 #[allow(clippy::type_complexity)]
 fn open_file_layer<S>(
     config: &FileLogConfig,
-) -> Result<(Box<dyn Layer<S> + Send + Sync>, WorkerGuard), String>
+) -> Result<(Box<dyn Layer<S> + Send + Sync>, WorkerGuard, Option<String>), String>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
@@ -220,10 +232,18 @@ where
         )
     })?;
     // The appender creates the file itself and offers no way to set its mode, so
-    // it is tightened afterwards. The directory's own `0700` already denies
-    // traversal during the gap, which is what actually keeps the records
-    // private; this is the second lock on the same door.
-    restrict_log_files(directory);
+    // it is tightened afterwards. Not fatal if it fails: the directory's own
+    // `0700` already denies traversal, which is what actually keeps the records
+    // private, and refusing to start over a redundant permission bit would trade
+    // a working application for nothing. The warning is carried out to
+    // `init_logging_with_file`, which has a subscriber to report it through.
+    let warning = restrict_log_files(directory).err().map(|error| {
+        format!(
+            "could not restrict the log files in {}: {error}",
+            directory.display()
+        )
+    });
+    let appender = OwnerOnly::wrap(appender, directory.clone());
     let (writer, guard) = tracing_appender::non_blocking(appender);
 
     let filter = EnvFilter::try_new(&config.filter)
@@ -244,7 +264,64 @@ where
         .with_span_events(FmtSpan::CLOSE)
         .with_writer(writer)
         .with_filter(filter);
-    Ok((Box::new(layer), guard))
+    Ok((Box::new(layer), guard, warning))
+}
+
+/// Wraps the appender so that each file it *rolls over to* is tightened too.
+///
+/// Tightening once at startup only covers the file open at the time. A GUI left
+/// running past midnight rolls over to a file the appender creates itself, under
+/// whatever umask the session has — so the documented `0600` would hold for the
+/// first day of a session and quietly stop holding after it.
+///
+/// The rollover happens inside the inner `write`, so the new file exists by the
+/// time this runs. The date comparison is what keeps it to one `read_dir` a day
+/// rather than one per record; the clock read is the same one
+/// `RollingFileAppender::write` already makes.
+#[cfg(unix)]
+struct OwnerOnly<W> {
+    inner: W,
+    directory: PathBuf,
+    restricted_on: Option<time::Date>,
+}
+
+#[cfg(unix)]
+impl<W: std::io::Write> OwnerOnly<W> {
+    fn wrap(inner: W, directory: PathBuf) -> Self {
+        Self {
+            inner,
+            directory,
+            restricted_on: Some(time::OffsetDateTime::now_utc().date()),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl<W: std::io::Write> std::io::Write for OwnerOnly<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        let today = time::OffsetDateTime::now_utc().date();
+        if self.restricted_on != Some(today) {
+            restrict_log_files(&self.directory).log_err();
+            self.restricted_on = Some(today);
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// On Windows there is no mode to set, so the wrapper is the appender itself.
+#[cfg(not(unix))]
+struct OwnerOnly;
+
+#[cfg(not(unix))]
+impl OwnerOnly {
+    fn wrap<W>(inner: W, _directory: PathBuf) -> W {
+        inner
+    }
 }
 
 /// Create the log directory, owner-only.
@@ -271,27 +348,29 @@ fn create_log_dir(directory: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(directory)
 }
 
-/// Tighten the log files to owner-only, best effort.
+/// Tighten every log file in `directory` to owner-only.
 ///
-/// Best effort because it is defence in depth: a failure here still leaves the
-/// files behind a `0700` directory, and refusing to start over it would trade a
-/// working application for a redundant permission bit.
+/// Reports rather than swallows a failure, so that a directory the process
+/// cannot scan is diagnosable. Whether to *act* on that is the caller's call:
+/// both call sites treat it as a warning, since the files are still behind a
+/// `0700` directory and refusing to run over a redundant permission bit would
+/// trade a working application for nothing.
 #[cfg(unix)]
-fn restrict_log_files(directory: &Path) {
+fn restrict_log_files(directory: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return;
-    };
-    for entry in entries.flatten() {
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
         if entry.file_name().to_str().is_some_and(is_log_file_name) {
-            std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o600))
-                .log_err();
+            std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o600))?;
         }
     }
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn restrict_log_files(_directory: &Path) {}
+fn restrict_log_files(_directory: &Path) -> std::io::Result<()> {
+    Ok(())
+}
 
 #[cfg(test)]
 // The fixtures create real directories and files to exercise the appender, so
@@ -386,7 +465,8 @@ mod tests {
         // only one subscriber can be installed per process and the tests share
         // one. This still exercises directory creation and the appender.
         let layer = open_file_layer::<tracing_subscriber::Registry>(&config);
-        let (_layer, guard) = layer.expect("the file layer should open");
+        let (_layer, guard, warning) = layer.expect("the file layer should open");
+        assert_eq!(warning, None, "a fresh directory has nothing to warn about");
 
         assert!(target.is_dir(), "the log directory should be created");
         drop(guard);
@@ -405,7 +485,7 @@ mod tests {
             ..FileLogConfig::default()
         };
 
-        let (_layer, guard) =
+        let (_layer, guard, _) =
             open_file_layer::<tracing_subscriber::Registry>(&config).expect("the file layer");
         drop(guard);
 
@@ -439,7 +519,7 @@ mod tests {
             ..FileLogConfig::default()
         };
 
-        let (_layer, guard) =
+        let (_layer, guard, _) =
             open_file_layer::<tracing_subscriber::Registry>(&config).expect("the file layer");
         drop(guard);
 
@@ -453,6 +533,47 @@ mod tests {
             .unwrap()
             .path();
         assert_eq!(mode(&file), 0o600, "the file must be owner-only");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_created_by_a_rollover_is_tightened_too() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        // The appender creates each day's file itself, under whatever umask the
+        // session has. Tightening only at startup would hold for the first day
+        // of a long-running GUI and quietly stop holding after midnight.
+        let directory = tempfile::tempdir().unwrap();
+        let rolled = directory
+            .path()
+            .join(format!("{LOG_FILE_PREFIX}.2026-09-08"));
+        std::fs::write(&rolled, "{}\n").unwrap();
+        std::fs::set_permissions(&rolled, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut writer = OwnerOnly {
+            inner: std::io::sink(),
+            directory: directory.path().to_path_buf(),
+            // As if this session's last tightening had been on an earlier day,
+            // which is what a rollover leaves behind.
+            restricted_on: time::Date::from_ordinal_date(2000, 1).ok(),
+        };
+        writer.write_all(b"a record after midnight").unwrap();
+
+        let mode = std::fs::metadata(&rolled).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a rolled-over file must be tightened too");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_that_cannot_be_scanned_is_reported_not_swallowed() {
+        // Silently returning would leave a failed tightening undiagnosable,
+        // which is the one thing the caller needs to be able to say.
+        let directory = tempfile::tempdir().unwrap();
+        let occupied = directory.path().join("logs");
+        std::fs::write(&occupied, "not a directory").unwrap();
+
+        assert!(restrict_log_files(&occupied).is_err());
     }
 
     #[cfg(unix)]
