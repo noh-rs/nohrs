@@ -11,6 +11,7 @@ npm install
 npm run dev          # http://localhost:3000
 npm run build        # prerender, sitemap, feeds, search index → dist/client
 npm run typecheck
+npm test             # the Workers' redirect logic
 ```
 
 `npm run dev` skips the `prebuild` scripts, so it runs with the committed GitHub snapshot
@@ -18,9 +19,9 @@ and without the self-hosted fonts. Both are build artifacts, not source; see bel
 
 ## How a page gets built
 
-Every page is rendered once, at build time, and served as a static file. Nothing about the
-site changes per request except which language a bare `/` lands on, so the deployment is a
-directory of HTML plus one small Worker.
+Every page is rendered once, at build time, and served as a static file. The only things
+decided per request are the canonical host and which language a bare `/` lands on, so the
+deployment is a directory of HTML plus one small Worker.
 
 ```
 npm run build
@@ -53,9 +54,16 @@ content/
 ├── en|ja/docs/*.mdx
 └── plugins/*.toml   the plugin registry: one file per plugin, added by pull request
 workers/
-├── site.ts          serves the assets; negotiates a language at `/`
-└── noh-rs-redirect.ts
+├── site.ts          canonical host, language at `/`, then the assets
+├── noh-rs-redirect.ts
+└── workers.test.ts  both Workers' redirects, run by `npm test`
 ```
+
+The Workers are the only request-time logic on the site, and both decide
+redirects — the kind of bug that is invisible in a screenshot and expensive once
+a crawler has cached it. They take a `Request` and return a `Response` with
+nothing else in the way, so `npm test` checks them with `node:test` and no
+deployment.
 
 ## Adding content
 
@@ -75,23 +83,40 @@ translating, not the normal state. Launch parity is required
 
 ## Deploying
 
+Deploys run from CI, so no Cloudflare credential ever has to sit on a laptop.
+
+**One-time setup.** In the repository's Settings → Secrets and variables → Actions, add:
+
+| Secret | Where it comes from | Without it |
+|--------|--------------------|------------|
+| `CLOUDFLARE_API_TOKEN` | A Cloudflare API token from the **Edit Cloudflare Workers** template, with the `nohrs.app` and `noh.rs` zones included in its zone resources | Deploy fails |
+| `CLOUDFLARE_ACCOUNT_ID` | The account ID on any Cloudflare dashboard page | Deploy fails |
+| `GISCUS_REPO_ID`, `GISCUS_CATEGORY_ID` | giscus.app, for this repository's Discussions | No comment section |
+| `CF_ANALYTICS_TOKEN` | Cloudflare Web Analytics | No beacon |
+
+The token needs the zones because the Workers claim `nohrs.app` and `noh.rs` as custom
+domains; an account-only token deploys the script and then fails attaching the routes.
+
+**Running it.** Actions → *Web* → Run workflow. A manual run deploys the ref it was
+dispatched on, so the site can go up from a branch before that branch is merged. After
+merging, a push to `main` deploys on its own, and a Monday schedule redeploys `main` so the
+star count, commit list and release list follow the repository.
+
+**By hand**, if you would rather (`wrangler login` first):
+
 ```sh
-npx wrangler deploy                                   # nohrs.app
+npx wrangler deploy                                          # nohrs.app
 npx wrangler deploy --config workers/wrangler.noh-rs.jsonc   # noh.rs
 ```
 
-CI does this on a push to `main`, and again every Monday so the star count, commit list
-and release list on the published site follow the repository.
-
-Secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and optionally `GISCUS_REPO_ID`,
-`GISCUS_CATEGORY_ID`, `CF_ANALYTICS_TOKEN`. Comments and analytics are simply absent
-without them, which is what a fork should get.
+The optional secrets are optional on purpose: comments and analytics are simply absent
+without them, which is what a fork building this site should get.
 
 ## Where this deviates from docs/web.md
 
 | Spec | Built | Why |
 |------|-------|-----|
-| Cloudflare Pages | Cloudflare **Workers** with an assets binding | One deploy artifact instead of two: the assets binding lets a single Worker answer `/` with a negotiated language while every other path is served straight from static storage without waking it. ADR 0007's reasoning — Cloudflare, one ecosystem, wide free tier — is unchanged |
+| Cloudflare Pages | Cloudflare **Workers** with an assets binding | One deploy artifact instead of two, and the redirect rules — canonical host, language at `/` — live in the repository as reviewable, tested code rather than in a dashboard the repo knows nothing about. ADR 0007's reasoning — Cloudflare, one ecosystem, wide free tier — is unchanged |
 | Satori on a Worker | Satori at **build time** | The inputs are known when the site is built. Rasterising at the edge would mean shipping and caching a renderer to produce a file that never changes |
 | RSS/Atom from a route | RSS/Atom written by a **build script** | The site is fully prerendered; a feed route would be the only reason to keep a server |
 | Fonts vendored | Fonts **downloaded at build time**, git-ignored | Self-hosting is the requirement, vendoring is not. Noto Sans JP is ~120 subset files per weight, which would be ~400 binaries of churn in the repository |

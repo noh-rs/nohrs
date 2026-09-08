@@ -1,4 +1,4 @@
-import { isLang, negotiateLang } from '../app/lib/negotiate'
+import { isLang, negotiateLang } from '../app/lib/negotiate.ts'
 
 /**
  * `noh.rs` is a short domain, not a second site: everything it receives is

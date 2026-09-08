@@ -40,7 +40,7 @@
 |------|------|
 | Framework | TanStack Start + Vite+ |
 | ホスティング | **Cloudflare Workers + assets binding** (実装 2026-09-08。ADR 0007 の Pages から変更。理由は下記) |
-| レンダリング | **全ページをビルド時に prerender** して静的配信。SSR は残すが、リクエストごとに変わるのは `/` の言語振り分けだけなので Worker 1 本で足りる |
+| レンダリング | **全ページをビルド時に prerender** して静的配信。SSR は残すが、リクエストごとに決まるのは正規ホストと `/` の言語振り分けだけなので Worker 1 本で足りる |
 | デプロイ | `main` ブランチ → 本番。加えて**週次で再ビルド**する (star 数・コミット・release はビルド時に読むため) |
 | スタイリング | **Tailwind v4 + CSS 変数デザイントークン** (ライト/ダーク・warm neutral・tan アクセントを変数で一元管理) |
 | コンポーネント | **shadcn / Radix headless プリミティブを取り込み、自前トークンで再スキン** (a11y を担保しつつ汎用 LP 感を回避) |
@@ -53,9 +53,9 @@
 | RSS / Atom | 両方提供 (`/<lang>/blog/rss.xml`, `/<lang>/blog/atom.xml`)、言語別。**ルートではなくビルドスクリプトで出力する** (全ページ prerender のため、フィードのためだけにサーバを残す理由がない)。**P1 から有効** |
 
 ホスティングを Pages から Workers + assets binding に変えたのは、**成果物を 1 つにするため**。
-assets binding なら、`/` だけを Worker が受けて言語を振り分け、それ以外のパスは Worker を起こさずに
-静的ストレージから直接返せる。ADR 0007 の判断根拠 (Cloudflare にエコシステムを一本化する・無料枠が広い)
-は変わらない。
+Pages プロジェクトと別 Worker の 2 つをデプロイして両者のルーティングを合わせる必要がなくなり、
+言語振り分けと正規ホストの規則がリポジトリ内のコードとして残る。ADR 0007 の判断根拠
+(Cloudflare にエコシステムを一本化する・無料枠が広い) は変わらない。
 
 R2 は他用途でも使用:
 - `coverage.nohrs.app` (PR ごとの HTML カバレッジレポートを保管。詳細は [`docs/testing.md`](./testing.md))
@@ -149,7 +149,8 @@ web/
 ├── scripts/                   # fetch-fonts / fetch-github / build-og / build-feeds
 ├── public/
 └── workers/
-    ├── site.ts                # 静的配信 + `/` の言語振り分け
+    ├── site.ts                # 静的配信 + 正規ホスト + `/` の言語振り分け
+    ├── workers.test.ts        # 両 Worker のリダイレクトの単体テスト (`npm test`)
     ├── noh-rs-redirect.ts     # noh.rs リダイレクト Worker
     └── wrangler.noh-rs.jsonc
 ```
@@ -324,10 +325,19 @@ fork でビルドしたときに本家の Discussions へ書き込んだり、�
 
 ### Worker (`nohrs.app`)
 
-`workers/site.ts`。全ページが prerender 済みなので、Worker が起きるのは `/` だけ
-(`run_worker_first: ["/"]`)。そこで Cookie → `Accept-Language` の順に言語を決めて 302 で
-`/en` か `/ja` に送り、Cookie に記憶する。`Vary: Accept-Language, Cookie` を付けて、
-別の言語設定の訪問者が同じリダイレクトをキャッシュから受け取らないようにする。
+`workers/site.ts`。全ページが prerender 済みなので、この Worker が自分で答えるのは 2 つだけで、
+それ以外は assets binding にそのまま渡す。
+
+1. **正規ホスト**。`www.nohrs.app` も同じ Worker に付けているため、何もしないと apex と同一の
+   サイトをもう 1 部配信することになる。`*.nohrs.app` は apex へ **301**
+2. **`/` の言語振り分け**。Cookie → `Accept-Language` の順に決めて **302** で `/en` か `/ja` に送り、
+   Cookie に記憶する。`Vary: Accept-Language, Cookie` を付け、別の言語設定の訪問者が同じリダイレクトを
+   キャッシュから受け取らないようにする
+
+`run_worker_first` は `["/"]` ではなく **`true`**。このオプションはパスで判定するため、`/` だけに
+絞ると `www.nohrs.app/en/docs` を Worker が見られず、ホストの正規化ができない。**リクエストごとに
+Worker が 1 回起きる代わりに、正規ホストの規則がダッシュボードの Redirect Rule ではなくリポジトリ内に
+残り、レビューもテストもできる**。この規模のトラフィックでは無料枠に対して誤差。
 
 ### Worker (`noh.rs`)
 

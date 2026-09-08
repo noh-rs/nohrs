@@ -46,6 +46,8 @@ jobs:
 
       - run: npm run typecheck
 
+      - run: npm test
+
       # GITHUB_TOKEN only lifts the API rate limit. Without it the build falls
       # back to the committed snapshot rather than failing.
       - name: Build
@@ -80,10 +82,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      # A scheduled run starts on the default branch; production is `main`.
+      # A scheduled run starts on the default branch, and production is `main`.
+      # A manual run deploys whatever ref it was dispatched on, so the site can
+      # be put up from a branch before that branch is merged.
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event_name == 'schedule' && 'main' || github.ref }}
 
       - uses: actions/setup-node@v4
         with:

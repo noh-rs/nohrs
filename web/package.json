@@ -8,6 +8,7 @@
     "dev": "vite dev --port 3000",
     "serve": "vite preview --port 3000",
     "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test workers/*.test.ts",
     "deploy": "wrangler deploy",
     "deploy:redirect": "wrangler deploy --config workers/wrangler.noh-rs.jsonc"
   },

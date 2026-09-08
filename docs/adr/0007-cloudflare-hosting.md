@@ -71,10 +71,11 @@ assets binding に変更**した。Cloudflare にエコシステムを一本化�
 Cloudflare の中でどの入れ口を使うか。
 
 理由は**成果物を 1 つにするため**。web の全ページはビルド時に prerender され、
-リクエストごとに変わるのは `/` の言語振り分けだけ ([`docs/web.md`](../web.md) §4)。
-assets binding なら、`run_worker_first: ["/"]` で `/` だけを Worker が受け、それ以外の
-パスは Worker を起こさずに静的ストレージから直接返せる。Pages + 別 Worker の 2 つを
-デプロイして両者のルーティングを合わせる必要がなくなる。
+リクエストごとに決まるのは正規ホストと `/` の言語振り分けだけ ([`docs/web.md`](../web.md) §4)。
+assets binding なら、その 2 つを担う Worker 1 本と静的アセットを同じ `wrangler deploy` で
+出せる。Pages プロジェクトと別 Worker の 2 つをデプロイして両者のルーティングを合わせる
+必要がなくなり、**リダイレクトの規則がダッシュボードの設定ではなくリポジトリ内のコードとして
+残る**。
 
 ### 影響
 
