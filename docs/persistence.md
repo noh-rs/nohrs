@@ -11,7 +11,7 @@
 
 | データ種別 | ストア | ファイル | 理由 |
 |-----------|--------|---------|------|
-| **ファイルメタデータ・履歴** | **SQLite (rusqlite)** | `db.sqlite` | SQL 表現力 (差分 query / 結合 query / 順序付き query) が必要 |
+| **ファイルメタデータ・履歴・ゴミ箱台帳** | **SQLite (rusqlite)** | `db.sqlite` | SQL 表現力 (差分 query / 結合 query / 順序付き query) が必要 |
 | **ホスト KV** (window 位置・タブ/セッション復元・動的設定) | **redb** | `state.redb` | 純粋な key→blob の高頻度・小サイズ書き込み。SQL 不要、メタデータ書き込みと隔離 |
 | **プラグイン専用 KV** (P4) | **redb** | `plugin-kv.redb` | 高速 R/W、plugin_id でテーブル隔離、host data と分離 |
 | **設定ファイル** | TOML (`config.toml`) | — | 詳細は [`docs/config.md`](./config.md) |
@@ -68,6 +68,20 @@ CREATE INDEX idx_files_parent ON files(parent_path);
 CREATE INDEX idx_files_inode  ON files(inode);
 
 -- (ホスト KV は redb `state.redb` に置く。§3 参照。SQLite には持たない)
+
+-- ゴミ箱台帳 (どこから捨てたか。docs/cli.md §7.1)
+-- OS 側が元パスを記録しないプラットフォーム (macOS) でのみ書き込む。
+-- original_path は一意ではない: 同じパスを何度も捨てられる。
+CREATE TABLE trash (
+    id            INTEGER PRIMARY KEY,
+    original_path TEXT NOT NULL,
+    file_name     TEXT NOT NULL,    -- ゴミ箱側で改名された場合の照合用
+    size          INTEGER NOT NULL, -- ディレクトリは 0
+    modified_ns   INTEGER,          -- 移動時点の mtime
+    trashed_at    INTEGER NOT NULL,
+    is_dir        INTEGER NOT NULL
+);
+CREATE INDEX idx_trash_time ON trash(trashed_at DESC);
 
 -- 履歴 (recent files, search history, command usage)
 CREATE TABLE history (
