@@ -19,7 +19,7 @@
   --ink-2: #453c33;
   --muted: #6f6459;
   --tan: #dea584; /* brand — decorative only, 1.9:1 on paper */
-  --tan-ink: #9c5a24; /* brand — the one that passes AA on paper */
+  --tan-ink: #94541f; /* brand — the one that passes AA on every light ground */
   --tan-wash: #f6e9de;
 
   --ease: cubic-bezier(0.16, 1, 0.3, 1);

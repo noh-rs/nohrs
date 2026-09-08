@@ -53,7 +53,7 @@ CSS 変数はそのまま Tailwind v4 の `@theme` に移せます。
 --paper #FCFAF8   --surface #F4EFE9   --line #E3DBD0
 --ink   #191510   --ink-2   #453C33   --muted #6F6459
 --tan   #DEA584   (装飾のみ)
---tan-ink #9C5A24 (テキスト / 操作要素。ライト背景で WCAG AA を満たす)
+--tan-ink #94541F (テキスト / 操作要素。ライト背景で WCAG AA を満たす)
 ```
 
 `--tan` と `--tan-ink` を分けているのは、`#DEA584` が白背景でコントラスト比 1.9:1 しかなく、

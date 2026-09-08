@@ -89,10 +89,16 @@ function Hero({ lang }: { lang: Lang }) {
         <FluidOrb />
 
         <div className="relative z-10">
+          {/* `Launcher ×` is held together on one line. The × is an
+              inline-block, which is a break opportunity on its own — a
+              non-breaking space does not close it — and a × alone at the head
+              of the second line reads as a bullet, not as an operator. */}
           <h1 className="m-0 text-[clamp(2.6rem,8.2vw,6rem)] leading-[1.02] font-semibold tracking-[-0.045em]">
-            Launcher{' '}
-            <span className="inline-block px-[0.1em] align-[0.035em] font-mono text-[0.74em] font-normal tracking-normal text-tan-ink">
-              ×
+            <span className="whitespace-nowrap">
+              Launcher{' '}
+              <span className="inline-block px-[0.1em] align-[0.035em] font-mono text-[0.74em] font-normal tracking-normal text-tan-ink">
+                ×
+              </span>
             </span>{' '}
             Explorer
           </h1>
