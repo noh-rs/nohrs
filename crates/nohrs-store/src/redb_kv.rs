@@ -86,6 +86,11 @@ impl KvStore for RedbKvStore {
 
     fn list_namespace(&self, namespace: &str) -> Result<Vec<(KvKey, Vec<u8>)>> {
         let started = Instant::now();
+        // The same rule `KvKey::new` applies. Without it `list_namespace` would
+        // accept `"window.main"`, scan `window.main.`, and return keys whose own
+        // `namespace()` is `"window"` — one argument meaning two things on
+        // either side of the API.
+        KvKey::check_namespace(namespace)?;
         // The trailing dot is what confines the scan to the namespace itself:
         // scanning from `window` alone would also walk into a `window_backup`
         // namespace, since `window_backup.x` sorts after `window`.
@@ -188,6 +193,24 @@ mod tests {
         assert_eq!(session.len(), 2);
         assert_eq!(session[0].0.as_str(), "session.active");
         assert_eq!(session[1].0.as_str(), "session.tabs");
+    }
+
+    #[test]
+    fn listing_and_construction_agree_on_what_a_namespace_is() {
+        // A namespace that `KvKey::new` refuses must not be listable either.
+        // `list_namespace("window.main")` used to scan `window.main.` and hand
+        // back keys whose own `namespace()` is `"window"` — the same argument
+        // meaning two different things on either side of the API.
+        let store = store();
+        store.put(&kv_key!("window.main.position"), b"x").unwrap();
+
+        assert!(KvKey::new("window.main", "position").is_err());
+        assert!(store.list_namespace("window.main").is_err());
+
+        // The key is still reachable under the namespace it actually has.
+        let listed = store.list_namespace("window").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0.as_str(), "window.main.position");
     }
 
     #[test]

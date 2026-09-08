@@ -41,6 +41,14 @@ pub enum StoreError {
         /// What was wrong with it.
         reason: &'static str,
     },
+    /// A string was not a well-formed KV namespace.
+    #[error("invalid kv namespace {namespace:?}: {reason}")]
+    InvalidNamespace {
+        /// The string that was rejected.
+        namespace: String,
+        /// What was wrong with it.
+        reason: &'static str,
+    },
 }
 
 // redb surfaces a family of error types from its different stages. Funnel each
@@ -297,13 +305,26 @@ impl KvKey {
     /// passed in — `new("a.b", "c")` would answer `"a"` — so the key would not
     /// be listed under the namespace its own caller believed it wrote it to.
     pub fn new(namespace: &str, name: &str) -> Result<Self> {
-        if namespace.contains('.') {
-            return Err(StoreError::InvalidKey {
-                key: format!("{namespace}.{name}"),
-                reason: "the namespace must be a single segment, without a '.'",
-            });
-        }
+        Self::check_namespace(namespace)?;
         Self::parse(format!("{namespace}.{name}"))
+    }
+
+    /// Check that `namespace` names a namespace: one non-empty segment of
+    /// lowercase ASCII, digits or `_`.
+    ///
+    /// Shared by [`KvKey::new`] and every [`KvStore::list_namespace`]
+    /// implementation, so that the two cannot drift. They did: `new` rejected
+    /// `"window.main"` while `list_namespace` accepted it and scanned
+    /// `window.main.`, returning keys whose own [`KvKey::namespace`] is
+    /// `"window"`. One argument, two meanings, on either side of the same API.
+    pub fn check_namespace(namespace: &str) -> Result<()> {
+        if is_valid_segment(namespace) {
+            return Ok(());
+        }
+        Err(StoreError::InvalidNamespace {
+            namespace: namespace.to_string(),
+            reason: "a namespace is one segment of lowercase ASCII, digits and _",
+        })
     }
 
     /// A key from an existing string, checked.
@@ -347,6 +368,17 @@ impl TryFrom<&str> for KvKey {
     }
 }
 
+/// The bytes a segment may contain. Shared by [`is_valid_key`] and
+/// [`is_valid_segment`] so the charset is written once.
+const fn is_segment_byte(byte: u8) -> bool {
+    byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
+}
+
+/// Whether `segment` is one non-empty run of [`is_segment_byte`] — no dots.
+fn is_valid_segment(segment: &str) -> bool {
+    !segment.is_empty() && segment.bytes().all(is_segment_byte)
+}
+
 /// Whether `key` is `<segment>.<segment>[.<segment>…]`, each segment non-empty
 /// and made of lowercase ASCII, digits or `_`.
 ///
@@ -366,7 +398,7 @@ const fn is_valid_key(key: &str) -> bool {
             }
             segments += 1;
             segment_len = 0;
-        } else if byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' {
+        } else if is_segment_byte(byte) {
             segment_len += 1;
         } else {
             return false;
@@ -390,6 +422,10 @@ pub trait KvStore: Send + Sync {
     /// straddle one: `list_prefix("sess")` used to match `session.*` by
     /// accident, and `list_prefix("window")` would also return `window_backup.*`
     /// if such a namespace were ever added.
+    ///
+    /// Errors when `namespace` is not one, per [`KvKey::check_namespace`] — the
+    /// same rule [`KvKey::new`] applies, so that a namespace which cannot be
+    /// written to cannot be listed either.
     fn list_namespace(&self, namespace: &str) -> Result<Vec<(KvKey, Vec<u8>)>>;
     /// Apply `ops` atomically in a single transaction.
     fn batch(&self, ops: Vec<KvOp>) -> Result<()>;
@@ -548,7 +584,8 @@ mod tests {
         assert!(KvKey::parse("window.main.position").is_ok());
         let error = KvKey::new("window.main", "position")
             .expect_err("a dotted namespace is not a namespace");
-        assert!(error.to_string().contains("single segment"), "{error}");
+        assert!(error.to_string().contains("one segment"), "{error}");
+        assert!(error.to_string().contains("window.main"), "{error}");
     }
 
     #[test]
