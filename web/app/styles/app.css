@@ -349,7 +349,7 @@
    ────────────────────────────────────────────────────────────────────────── */
 .orbit {
   /* The window, less the header and a little air. */
-  --stage: clamp(560px, calc(100vh - 128px), 880px);
+  --stage: clamp(430px, calc(100vh - 128px), 880px);
   --half-h: calc(var(--stage) / 2);
   /* Both radii put the panels' centres *outside* the stage, so roughly a third
      of each one is on the page and the rest is past the edge. `--rx` follows
@@ -366,7 +366,11 @@
      them would strand the names at the edges of the window. The vertical cap
      also clears the panel that slides in from the top on hover. */
   --tag-inset: calc(var(--card-w) * 0.305 + 80px);
-  --tag-rx: min(calc(var(--rx) - var(--tag-inset)), calc(var(--half-h) * 1.02));
+  --tag-rx: min(
+    calc(var(--rx) - var(--tag-inset)),
+    calc(var(--half-h) * 1.02),
+    calc(50vw - 70px)
+  );
   --tag-ry: min(calc(var(--ry) - var(--tag-inset)), calc(var(--half-h) * 0.58));
   --peek: 0px;
 
@@ -504,7 +508,9 @@
   top: 50%;
   left: 50%;
   z-index: 1;
-  width: min(calc(var(--half-h) * 1.42), 82vw);
+  /* The last term is what a narrow window binds on: the copy has to leave a
+     band for the names between itself and the panels. */
+  width: min(calc(var(--half-h) * 1.42), 82vw, calc(100vw - 220px));
   text-align: center;
   transform: translate(-50%, -50%);
 }
@@ -671,101 +677,41 @@
   transform: scale(1);
 }
 
-/* Below the ring's width there is no ring: the screens become a strip under
-   the tagline, and tapping one opens the same panel. */
-@media (max-width: 1023px) {
+/* A phone gets the same ring — but not the names. Five panels and the copy
+   they are arranged around leave no band between the two for a name to sit in;
+   the panel is still the control, and the name it carries for a screen reader
+   is the one that appears in the caption when it opens. */
+@media (max-width: 639px) {
   .orbit {
-    display: flex;
-    flex-direction: column;
-    height: auto;
-    padding-inline: 24px;
-    overflow: visible;
-  }
-
-  .orbit-ring {
-    position: static;
-    display: flex;
-    order: 2;
-    gap: 14px;
-    margin: 40px -24px 0;
-    padding: 0 24px 10px;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .orbit-ring::-webkit-scrollbar {
-    display: none;
-  }
-
-  .orbit-item {
-    position: static;
-    flex: none;
-    width: auto;
-    height: auto;
-  }
-
-  .orbit-item:hover,
-  .orbit-item:focus-within {
-    --peek: 0px;
-  }
-
-  .orbit-card {
-    position: static;
-    display: block;
-    width: 232px;
-    margin: 0;
-    text-align: left;
-    transform: none;
-  }
-
-  /* Whole panels here, so the frame has to stay inside the shot. */
-  .orbit-card img {
-    transform-origin: var(--focus-whole, 50% 50%);
+    /* A tall stage rather than a wide one. The panels then arrive from the top
+       and bottom edges with the copy in the band between them, and only their
+       slivers pass down the sides where the copy is. Sized from the width, the
+       ring closes around the copy instead and there is nowhere to put it. */
+    --stage: clamp(620px, calc(100vh - 130px), 820px);
+    --card-w: 66vw;
+    --rx: 56vw;
+    --ry: calc(var(--half-h) + 22px);
   }
 
   .orbit-tag {
     display: none;
   }
 
-  .orbit-name {
-    /* The shot is transformed, which paints it above ordinary content in the
-       same card; the name needs a layer of its own to sit on top of it. */
-    position: relative;
-    z-index: 1;
-    display: block;
-    background: var(--paper);
-    width: auto;
-    height: auto;
-    margin: 0;
-    padding: 9px 12px 10px;
-    overflow: visible;
-    border-top: 1px solid var(--line-soft);
-    clip-path: none;
-    color: var(--muted);
-    font: 500 0.6875rem/1 var(--mono);
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-  }
-
   .orbit-core {
-    position: static;
-    order: 1;
-    width: auto;
-    text-align: left;
-    transform: none;
+    width: 72vw;
   }
 
   .orbit-core h1 {
-    font-size: clamp(2.4rem, 8.4vw, 3.5rem);
+    font-size: clamp(1.9rem, 8.2vw, 2.6rem);
   }
 
   .orbit-core p {
-    margin-top: 26px;
-    font-size: clamp(1rem, 1.5vw, 1.1875rem);
+    margin-top: 18px;
+    font-size: 0.9375rem;
   }
 
   .orbit-core .orbit-cta {
-    margin-top: 34px;
+    margin-top: 24px;
   }
 }
 

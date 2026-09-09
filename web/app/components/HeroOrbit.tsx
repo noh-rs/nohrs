@@ -33,7 +33,7 @@ const SHOTS = [
  * the ring is cut by the edge it faces, so its top is not on the page — and the
  * app's content sits at the top of the window, which the frame has to be able
  * to reach. Kept well under the fraction of a panel that is actually off
- * screen. Below the ring's width no panel is cut, and none of this applies.
+ * screen — which holds at every width, since the ring is the layout everywhere.
  */
 const SPILL = 0.3
 
@@ -47,9 +47,9 @@ function angleAt(index: number): number {
   return angleOf(index, SHOTS.length)
 }
 
-function focusOf({ centre, zoom }: (typeof SHOTS)[number], spill: number): string {
+function focusOf({ centre, zoom }: (typeof SHOTS)[number]): string {
   const x = originFor(centre[0], zoom)
-  const y = originFor(centre[1], zoom, spill)
+  const y = originFor(centre[1], zoom, SPILL)
   return `${(x * 100).toFixed(2)}% ${(y * 100).toFixed(2)}%`
 }
 
@@ -85,7 +85,7 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
     node.style.setProperty('--from-k', (card.offsetWidth / node.offsetWidth).toFixed(4))
     node.style.setProperty('--from-a', `${angleAt(index)}deg`)
     node.style.setProperty('--from-zoom', String(SHOTS[index].zoom))
-    node.style.setProperty('--from-focus', focusOf(SHOTS[index], SPILL))
+    node.style.setProperty('--from-focus', focusOf(SHOTS[index]))
   }, [])
 
   // The panel is measured against a card, so it has to be laid out once before
@@ -211,15 +211,7 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
                   width={SHOT_WIDTH}
                   height={SHOT_HEIGHT}
                   decoding="async"
-                  style={
-                    {
-                      '--zoom': zoom,
-                      '--focus': focusOf(shot, SPILL),
-                      // The strip on a phone shows whole panels, so nothing is
-                      // there to hide the frame's overhang.
-                      '--focus-whole': focusOf(shot, 0),
-                    } as CSSProperties
-                  }
+                  style={{ '--zoom': zoom, '--focus': focusOf(shot) } as CSSProperties}
                 />
                 <span className="orbit-name">{copy.label}</span>
               </button>

@@ -84,7 +84,7 @@ function Hero({ lang }: { lang: Lang }) {
   const strings = t(lang)
 
   return (
-    <section className="border-t-0 pb-[clamp(48px,6vw,84px)] max-lg:pt-[clamp(40px,8vw,72px)]">
+    <section className="border-t-0 pb-[clamp(48px,6vw,84px)]">
       <HeroOrbit lang={lang}>
         {/* `Launcher ×` is held together on one line. The × is an
             inline-block, which is a break opportunity on its own — a
@@ -100,11 +100,11 @@ function Hero({ lang }: { lang: Lang }) {
           Explorer
         </h1>
 
-        <p className="text-ink-2 max-lg:max-w-[44ch]">
+        <p className="text-ink-2">
           {strings.hero.sub}
         </p>
 
-        <div className="orbit-cta flex flex-wrap gap-3 lg:justify-center">
+        <div className="orbit-cta flex flex-wrap justify-center gap-3">
           {hasDownloads ? (
             <Link to="/$lang/download" params={{ lang }} className="btn btn-primary">
               {strings.nav.download}
