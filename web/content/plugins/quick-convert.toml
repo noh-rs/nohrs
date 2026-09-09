@@ -1,0 +1,10 @@
+name = "Quick convert"
+category = "media"
+repo = "noh-rs/nohrs-plugin-quick-convert"
+author = "noh-rs"
+permissions = ["fs:read", "fs:write"]
+status = "planned"
+
+[summary]
+en = "Converts the selected images and audio files in place, from the launcher, without opening another application."
+ja = "選択中の画像・音声ファイルを、別のアプリを開かずにランチャーからその場で変換します。"

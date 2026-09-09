@@ -1,0 +1,623 @@
+/**
+ * Every string the chrome and the built pages need, in both languages.
+ *
+ * `ja` is typed as `typeof en`, so a key added to one language and forgotten in
+ * the other is a type error rather than an English word on a Japanese page —
+ * docs/web.md §4 requires full parity at launch, and nothing else enforces it.
+ *
+ * Long-form copy (blog posts, docs pages) lives in `content/<lang>/`, not here.
+ */
+
+const en = {
+  nav: {
+    features: 'Features',
+    docs: 'Docs',
+    blog: 'Blog',
+    plugins: 'Plugins',
+    releases: 'Releases',
+    roadmap: 'Roadmap',
+    about: 'About',
+    download: 'Download',
+    skipToContent: 'Skip to content',
+    language: 'Language',
+    theme: 'Theme',
+    light: 'Light theme',
+    dark: 'Dark theme',
+    star: 'Star on GitHub',
+    joinDiscord: 'Join Discord',
+    menu: 'Menu',
+  },
+
+  hero: {
+    sub: 'Nohrs is a keyboard-driven file explorer for macOS with a built-in launcher. Written in Rust. Open source, and still pre-alpha.',
+    tryTitle: 'There is no release to download yet. To try it today, build it from source on macOS.',
+    tryTitleReleased: 'Builds are published on GitHub. You can also build from source on macOS.',
+  },
+
+  note: {
+    eyebrow: "Maker's note",
+    title: 'Looking for a file is not work.',
+    body: [
+      'On a stock Mac, reaching a file means opening a window, walking down a hierarchy, then switching to a search field when that fails. Each step is small. Together they are most of the time you spend on files.',
+      'Nohrs puts a launcher and an explorer in one application to remove those steps. Summon it with a global hotkey, move to where you are going with the keyboard, and preview or act on the file in the same window. We want to do only that — quickly and reliably.',
+      'Rust and gpui were chosen so that “quickly and reliably” never has to be traded away. It is still pre-alpha, and there is more that it cannot do than can. The whole process is in the open.',
+    ],
+  },
+
+  why: {
+    eyebrow: 'Why Nohrs',
+    title: 'Four things it refuses to compromise on.',
+    pillars: [
+      {
+        title: 'A launcher, not an afterthought',
+        body: 'A built-in launcher you summon from a global hotkey — designed with the explorer, not added to it later.',
+      },
+      {
+        title: 'Everything a modern file manager owes you',
+        body: 'Split view, tabs, drag-and-drop and bulk operations — the baseline, done properly.',
+      },
+      {
+        title: 'Sandboxed WASM components',
+        body: 'Extend Nohrs in Rust, TypeScript or Python. Every plugin runs sandboxed under an explicit-consent permission model.',
+      },
+      {
+        title: 'No dependency on the OS index',
+        body: 'A self-contained SQLite + Tantivy hybrid index that understands code bases — it does not wait on the system search daemon.',
+      },
+    ],
+  },
+
+  preview: {
+    eyebrow: 'Where it is today',
+    title: 'The explorer is real. The rest is honest about itself.',
+    lede: 'This is a screenshot of the application as it builds today — not a mockup. Features that are not written yet are listed below as what they are.',
+    caption: 'Implemented — explorer, list & grid views, preview pane',
+    upcoming: [
+      {
+        phase: 'P3',
+        title: 'Global-hotkey launcher',
+        body: 'Not written yet. No screenshot exists, so we are not showing one.',
+      },
+      {
+        phase: 'P3',
+        title: 'SQLite + Tantivy search',
+        body: 'Design is settled in ADR 0001. Implementation follows the launcher.',
+      },
+      {
+        phase: 'P4',
+        title: 'WASM plugin host',
+        body: 'WIT interfaces are drafted. Three language templates ship with the host.',
+      },
+    ],
+  },
+
+  roadmap: {
+    eyebrow: 'Roadmap',
+    title: 'Six phases, shipped in order.',
+    lede: 'P1 iterates on 0.0.x. The first usable build is cut as 0.1.0 when P2 completes.',
+    pageTitle: 'Roadmap',
+    pageLede:
+      'Nohrs runs six serial phases from 0.0.x to 0.5.0, and stabilises into 1.0.0 after that. Within a phase, core, web and quality work run in parallel. This page mirrors ROADMAP.md in the repository.',
+    versioningTitle: 'How versions are cut',
+    versioning: [
+      'Before 0.1.0 (P1, pre-MVP), only the patch digit moves: 0.0.z. Nothing is promised about stability, and breaking changes land whenever they need to.',
+      '0.1.0 is cut the moment P2 completes — drag-and-drop, file operations, split view, tabs and persistence, the first explorer you can actually use.',
+      'Each later phase completes into its own minor bump, and every breaking change to the config schema, the on-disk format or the plugin WIT API is saved for that moment.',
+      '1.0.0 promises a stable public API, config and data format. It waits on the multi-OS decision and complete documentation.',
+    ],
+    states: { shipped: 'Shipped', inProgress: 'In progress', planned: 'Planned' },
+    phases: [
+      {
+        id: 'P1',
+        version: '0.0.x',
+        theme: 'Foundation — quality, workspace split, dev/CI infrastructure, web',
+        state: 'inProgress' as const,
+      },
+      {
+        id: 'P2',
+        version: '0.1.0',
+        theme: 'Explorer essentials — drag-and-drop, file operations, split view, tabs, persistence',
+        state: 'planned' as const,
+      },
+      {
+        id: 'P3',
+        version: '0.2.0',
+        theme: 'Launcher & search — global-hotkey launcher, SQLite FTS5 search',
+        state: 'planned' as const,
+      },
+      {
+        id: 'P4',
+        version: '0.3.0',
+        theme: 'Plugin host — WASM component model, templates for three languages',
+        state: 'planned' as const,
+      },
+      {
+        id: 'P5',
+        version: '0.4.0',
+        theme: 'Ecosystem — plugin store, community plugins',
+        state: 'planned' as const,
+      },
+      {
+        id: 'P6',
+        version: '0.5.0',
+        theme: 'Stabilization — multi-OS strategy, performance gates, documentation',
+        state: 'planned' as const,
+      },
+    ],
+  },
+
+  openSource: {
+    eyebrow: 'Open source',
+    title: 'No users yet. So here are the numbers instead.',
+    lede: 'Nohrs is pre-alpha, so there are no testimonials to print. What exists is a public repository, and everything in it is visible.',
+    stars: 'Stars',
+    forks: 'Forks',
+    issues: 'Open issues',
+    license: 'License',
+    recent: 'Recent commits',
+    fetched: 'Read from the GitHub API when this page was built, on',
+  },
+
+  community: {
+    eyebrow: 'Community',
+    title: 'Come build it.',
+    github: 'Source, issues and pull requests — noh-rs/nohrs',
+    discord: 'Design discussion and questions',
+    x: 'Release notes and development updates — @nohdotrs',
+  },
+
+  about: {
+    title: 'About Nohrs',
+    lede: 'A file manager for people who would rather not think about the file manager.',
+    valuesTitle: 'What the project holds to',
+    values: [
+      {
+        title: 'Say what is built, and what is not',
+        body: 'Roadmap phases carry a status, unbuilt features are listed as text rather than mocked up, and screenshots are of the application as it actually builds.',
+      },
+      {
+        title: 'The keyboard is the primary interface',
+        body: 'Anything you can do with the pointer should have a key that does it faster. The pointer stays supported; it is not what the design is measured against.',
+      },
+      {
+        title: 'Extensions cannot be asked to be trustworthy',
+        body: 'Plugins are WASM components in a sandbox, and every capability they hold is one you granted explicitly. Trust is a property of the host, not of the plugin author.',
+      },
+      {
+        title: 'Everything happens in public',
+        body: 'Design decisions land as ADRs in the repository before the code does. The arguments that were rejected stay written down next to the one that won.',
+      },
+    ],
+    stackTitle: 'What it is made of',
+    stack: [
+      { label: 'Language', body: 'Rust, across a Cargo workspace of layered crates' },
+      { label: 'UI', body: 'gpui — the GPU-accelerated framework Zed is built on' },
+      { label: 'Search', body: 'SQLite + Tantivy, self-contained, no Spotlight dependency' },
+      { label: 'Plugins', body: 'WASM Component Model, via wit-bindgen' },
+      { label: 'Platform', body: 'macOS for now; the multi-OS decision is P6 work' },
+      { label: 'License', body: 'MIT' },
+    ],
+  },
+
+  download: {
+    title: 'Download',
+    ledePreRelease:
+      'There is no published release yet. Nohrs is pre-alpha: the explorer runs, and everything else on the roadmap is either being written or has not been started. To try it today, build it from source.',
+    ledeReleased: 'macOS builds are published with each release.',
+    buildTitle: 'Build from source',
+    buildIntro: 'You need a Rust toolchain and Xcode command line tools. The build takes a few minutes from cold.',
+    requirementsTitle: 'Requirements',
+    requirements: [
+      { label: 'OS', body: 'macOS 13 or later, Apple silicon or Intel' },
+      { label: 'Rust', body: 'The toolchain pinned in rust-toolchain.toml, installed by rustup' },
+      { label: 'Xcode', body: 'Command line tools (xcode-select --install)' },
+    ],
+    watchTitle: 'Get told when there is something to download',
+    watchBody:
+      'Watching releases on GitHub is the reliable channel — the site reads the same list. Release notes also go out on X.',
+    watchCta: 'Watch releases on GitHub',
+  },
+
+  releases: {
+    title: 'Releases',
+    lede: 'Every published build, newest first.',
+    empty:
+      'No release has been published yet. Nohrs is iterating on 0.0.x under P1, and the first tagged build will be 0.1.0 when P2 completes.',
+    emptyCta: 'Follow the roadmap',
+    viewOnGitHub: 'Read the release notes on GitHub',
+    downloads: 'Downloads',
+    prerelease: 'Pre-release',
+  },
+
+  blog: {
+    title: 'Blog',
+    lede: 'Release announcements and notes on how Nohrs is built.',
+    empty: 'No posts yet.',
+    readingSuffix: 'min read',
+    backToIndex: 'All posts',
+    publishedOn: 'Published',
+    tags: 'Tags',
+    commentsTitle: 'Comments',
+    commentsBody: 'Comments are GitHub Discussions. Signing in with GitHub posts to the thread for this article.',
+    translationMissingTitle: 'This article has no Japanese translation yet',
+    translationMissingBody: 'The English text is shown below. A translation pull request is very welcome.',
+  },
+
+  docs: {
+    title: 'Documentation',
+    lede: 'Installing Nohrs, using it, and writing plugins for it.',
+    searchLabel: 'Search the documentation',
+    searchPlaceholder: 'Search docs',
+    searchShort: 'Search',
+    searchHint: 'Press / to search',
+    searchEmpty: 'Nothing matched.',
+    onThisPage: 'On this page',
+    categories: {
+      'getting-started': 'Getting started',
+      usage: 'Usage',
+      plugins: 'Plugin authoring',
+      reference: 'Reference',
+    } as Record<string, string>,
+    editOnGitHub: 'Edit this page on GitHub',
+    previous: 'Previous',
+    next: 'Next',
+    translationMissingTitle: 'This page has no Japanese translation yet',
+    translationMissingBody: 'The English text is shown below. A translation pull request is very welcome.',
+  },
+
+  plugins: {
+    title: 'Plugins',
+    lede: 'Nohrs plugins are WASM components. They run in a sandbox and hold only the capabilities you grant them.',
+    previewNotice:
+      'The plugin host is P4 work and has not been built yet, so nothing here can be installed. These entries describe what is planned and how the registry will be structured.',
+    categories: {
+      productivity: 'Productivity',
+      'developer-tools': 'Developer tools',
+      media: 'Media',
+      cloud: 'Cloud',
+      theme: 'Themes',
+    } as Record<string, string>,
+    allCategories: 'All',
+    author: 'Author',
+    permissions: 'Permissions',
+    install: 'Install',
+    installUnavailable: 'Install needs the plugin host (P4)',
+    source: 'Source',
+    submitTitle: 'Adding a plugin',
+    submitBody:
+      'The registry is a directory of TOML files in this repository. Adding a plugin is a pull request that adds one file; the build then reads the rest from its GitHub repository.',
+    empty: 'No plugins are listed yet.',
+  },
+
+  footer: {
+    tagline: 'A launcher and file explorer for macOS, built in Rust.',
+    product: 'Product',
+    resources: 'Resources',
+    project: 'Project',
+    social: 'Social',
+    preview: 'Preview',
+    discussions: 'Discussions',
+    makersNote: "Maker's note",
+    contributing: 'Contributing',
+    license: 'License',
+    rights: '© 2026 Nohrs',
+    builtWith: 'Built in Rust. Site source lives in the same repository.',
+  },
+
+  notFound: {
+    title: 'That page does not exist',
+    body: 'The link may be from an older version of the site, or it may be a typo.',
+    cta: 'Go to the home page',
+  },
+}
+
+export type Dict = typeof en
+
+const ja: Dict = {
+  nav: {
+    features: '機能',
+    docs: 'ドキュメント',
+    blog: 'ブログ',
+    plugins: 'プラグイン',
+    releases: 'リリース',
+    roadmap: 'ロードマップ',
+    about: 'プロジェクトについて',
+    download: 'ダウンロード',
+    skipToContent: '本文へスキップ',
+    language: '言語',
+    theme: 'テーマ',
+    light: 'ライトテーマ',
+    dark: 'ダークテーマ',
+    star: 'GitHub でスターする',
+    joinDiscord: 'Discord に参加',
+    menu: 'メニュー',
+  },
+
+  hero: {
+    sub: 'Nohrs は、ランチャーを内蔵した macOS 向けのファイルエクスプローラーです。Rust で書いています。オープンソースで、まだ pre-alpha です。',
+    tryTitle:
+      'ダウンロードできるリリースは、まだありません。いま試すには、macOS 上でソースからビルドしてください。',
+    tryTitleReleased:
+      'ビルド済みのバイナリは GitHub で配布しています。macOS 上でソースからビルドすることもできます。',
+  },
+
+  note: {
+    eyebrow: 'メーカーズノート',
+    title: 'ファイルを探している時間は、仕事ではありません。',
+    body: [
+      '標準の macOS では、目的のファイルにたどり着くまでに、ウィンドウを開き、階層をたどり、行き詰まったら検索窓に切り替える、という手数がかかります。一つひとつは小さな操作ですが、合計するとファイルに費やす時間のほとんどがそれです。',
+      'Nohrs は、ランチャーとエクスプローラーを 1 つのアプリにまとめることで、この手数をなくそうとしています。グローバルホットキーで呼び出し、キーボードだけで目的地まで移動し、同じウィンドウでプレビューして操作する。それだけを、速く、確実にやりたいと考えています。',
+      'Rust と gpui を選んだのは、その「速く、確実に」を妥協せずに済むからです。まだ pre-alpha で、できないことの方が多い状態ですが、開発の過程はすべて公開しています。',
+    ],
+  },
+
+  why: {
+    eyebrow: 'Nohrs の四本柱',
+    title: '妥協しない四つのこと。',
+    pillars: [
+      {
+        title: '後付けではない、ランチャー',
+        body: 'グローバルホットキーで呼び出せる内蔵ランチャー。後から足したものではなく、エクスプローラーと一緒に設計しています。',
+      },
+      {
+        title: '現代のファイルマネージャに求められること',
+        body: '分割ビュー、タブ、ドラッグ＆ドロップ、一括操作。当たり前のことを、きちんと。',
+      },
+      {
+        title: 'サンドボックス化された WASM コンポーネント',
+        body: 'Rust・TypeScript・Python で拡張できます。すべてのプラグインは、明示的な許可に基づくサンドボックスの中で動きます。',
+      },
+      {
+        title: 'OS の検索インデックスに依存しない',
+        body: 'SQLite と Tantivy によるハイブリッドインデックスを自前で持ちます。コードベースを理解し、OS の検索デーモンを待ちません。',
+      },
+    ],
+  },
+
+  preview: {
+    eyebrow: 'いまできること',
+    title: 'エクスプローラーは実物です。それ以外は、正直に書きます。',
+    lede: '以下は、いまビルドできる実際のアプリのスクリーンショットです。モックではありません。まだ書かれていない機能は、そのまま「未実装」として並べています。',
+    caption: '実装済み — エクスプローラー、リスト／グリッド表示、プレビューペイン',
+    upcoming: [
+      {
+        phase: 'P3',
+        title: 'グローバルホットキーのランチャー',
+        body: 'まだ書かれていません。スクリーンショットも存在しないので、掲載していません。',
+      },
+      {
+        phase: 'P3',
+        title: 'SQLite + Tantivy の検索',
+        body: '設計は ADR 0001 で確定しています。実装はランチャーの次です。',
+      },
+      {
+        phase: 'P4',
+        title: 'WASM プラグインホスト',
+        body: 'WIT のインターフェースは草案ができています。3 言語のテンプレートをホストと同時に出します。',
+      },
+    ],
+  },
+
+  roadmap: {
+    eyebrow: 'ロードマップ',
+    title: '六つのフェーズを、順番に。',
+    lede: 'P1 は 0.0.x を反復します。最初に使える版は、P2 の完了時に 0.1.0 として切り出します。',
+    pageTitle: 'ロードマップ',
+    pageLede:
+      'Nohrs は 0.0.x から 0.5.0 までを 6 つの直列フェーズで進め、その後 1.0.0 に向けて安定化します。各フェーズの中では、コア・web・品質の 3 つを並行して進めます。このページはリポジトリの ROADMAP.md と対応しています。',
+    versioningTitle: 'バージョンの刻み方',
+    versioning: [
+      '0.1.0 より前 (P1 = pre-MVP) は 0.0.z のみを動かします。安定性の約束はなく、破壊的変更も必要になった時点で入れます。',
+      '0.1.0 は P2 の完了と同時に切ります。ドラッグ＆ドロップ、ファイル操作、分割ビュー、タブ、永続化が揃った、最初に実用になるエクスプローラーです。',
+      '以降はフェーズの完了ごとにマイナーを上げ、config スキーマ・ディスク上の形式・プラグイン WIT API の破壊的変更は、すべてそのタイミングに集約します。',
+      '1.0.0 は、公開 API・config・データ形式の安定を約束するものです。マルチ OS 戦略の決定とドキュメントの完成を待って切ります。',
+    ],
+    states: { shipped: '完了', inProgress: '進行中', planned: '計画' },
+    phases: [
+      {
+        id: 'P1',
+        version: '0.0.x',
+        theme: '基盤 — 品質、ワークスペース分割、開発／CI 基盤、web',
+        state: 'inProgress' as const,
+      },
+      {
+        id: 'P2',
+        version: '0.1.0',
+        theme: 'エクスプローラーの基礎 — ドラッグ＆ドロップ、ファイル操作、分割ビュー、タブ、永続化',
+        state: 'planned' as const,
+      },
+      {
+        id: 'P3',
+        version: '0.2.0',
+        theme: 'ランチャーと検索 — グローバルホットキーのランチャー、SQLite FTS5 検索',
+        state: 'planned' as const,
+      },
+      {
+        id: 'P4',
+        version: '0.3.0',
+        theme: 'プラグインホスト — WASM コンポーネントモデル、3 言語のテンプレート',
+        state: 'planned' as const,
+      },
+      {
+        id: 'P5',
+        version: '0.4.0',
+        theme: 'エコシステム — プラグインストア、コミュニティプラグイン',
+        state: 'planned' as const,
+      },
+      {
+        id: 'P6',
+        version: '0.5.0',
+        theme: '安定化 — マルチ OS 戦略、パフォーマンス基準、ドキュメント',
+        state: 'planned' as const,
+      },
+    ],
+  },
+
+  openSource: {
+    eyebrow: 'オープンソース',
+    title: 'まだユーザーはいません。かわりに、数字を置いておきます。',
+    lede: 'Nohrs は pre-alpha なので、載せられる推薦の言葉はありません。あるのは公開リポジトリで、その中身はすべて見えるようになっています。',
+    stars: 'スター',
+    forks: 'フォーク',
+    issues: 'オープンな課題',
+    license: 'ライセンス',
+    recent: '最近のコミット',
+    fetched: 'このページのビルド時に GitHub API から取得した値です — 取得日',
+  },
+
+  community: {
+    eyebrow: 'コミュニティ',
+    title: '一緒に作りませんか。',
+    github: 'ソース・課題・プルリクエスト — noh-rs/nohrs',
+    discord: '設計の議論と質問',
+    x: 'リリース情報と開発の様子 — @nohdotrs',
+  },
+
+  about: {
+    title: 'Nohrs について',
+    lede: 'ファイルマネージャのことを、なるべく考えずに済ませたい人のためのファイルマネージャです。',
+    valuesTitle: 'このプロジェクトが守ること',
+    values: [
+      {
+        title: 'できていることと、できていないことを書く',
+        body: 'ロードマップの各フェーズには状態を添え、未実装の機能はモックを作らずテキストで並べ、スクリーンショットは実際にビルドできるアプリのものだけを載せます。',
+      },
+      {
+        title: 'キーボードを主にする',
+        body: 'ポインタでできることには、それより速い打鍵があるべきだと考えています。ポインタ操作は引き続き使えますが、設計の基準はキーボードに置きます。',
+      },
+      {
+        title: '拡張に「信用してくれ」と言わせない',
+        body: 'プラグインはサンドボックス内の WASM コンポーネントで、権限は必ず明示的に許可したものだけを持ちます。信頼はホスト側の性質であって、作者の人柄ではありません。',
+      },
+      {
+        title: 'すべて公開の場で進める',
+        body: '設計上の判断は、コードより先に ADR としてリポジトリに入ります。採用しなかった案も、採用した案の隣に残します。',
+      },
+    ],
+    stackTitle: '何でできているか',
+    stack: [
+      { label: '言語', body: 'Rust。責務ごとに分けた Cargo ワークスペース' },
+      { label: 'UI', body: 'gpui — Zed が使っている GPU アクセラレーテッドな UI フレームワーク' },
+      { label: '検索', body: 'SQLite + Tantivy。自前で完結し、Spotlight に依存しません' },
+      { label: 'プラグイン', body: 'WASM コンポーネントモデル (wit-bindgen)' },
+      { label: '対応 OS', body: '当面は macOS。マルチ OS の判断は P6 で行います' },
+      { label: 'ライセンス', body: 'MIT' },
+    ],
+  },
+
+  download: {
+    title: 'ダウンロード',
+    ledePreRelease:
+      '公開しているリリースは、まだありません。Nohrs は pre-alpha で、動くのはエクスプローラー、ロードマップ上のそれ以外は実装中か未着手です。いま試すには、ソースからビルドしてください。',
+    ledeReleased: 'macOS 向けのビルドを、リリースごとに配布しています。',
+    buildTitle: 'ソースからビルドする',
+    buildIntro:
+      'Rust ツールチェーンと Xcode のコマンドラインツールが必要です。初回のビルドには数分かかります。',
+    requirementsTitle: '必要なもの',
+    requirements: [
+      { label: 'OS', body: 'macOS 13 以降。Apple シリコン / Intel のどちらでも動きます' },
+      { label: 'Rust', body: 'rustup で入れる、rust-toolchain.toml に固定したツールチェーン' },
+      { label: 'Xcode', body: 'コマンドラインツール (xcode-select --install)' },
+    ],
+    watchTitle: 'ダウンロードできるようになったら知る',
+    watchBody:
+      'GitHub のリリース通知が確実です。このサイトも同じ一覧を読んでいます。リリース情報は X にも流します。',
+    watchCta: 'GitHub でリリースを watch する',
+  },
+
+  releases: {
+    title: 'リリース',
+    lede: '公開したビルドの一覧です。新しいものから並べています。',
+    empty:
+      'まだリリースは公開していません。P1 のもとで 0.0.x を反復している段階で、最初にタグを打つのは P2 完了時の 0.1.0 です。',
+    emptyCta: 'ロードマップを見る',
+    viewOnGitHub: 'GitHub でリリースノートを読む',
+    downloads: 'ダウンロード',
+    prerelease: 'プレリリース',
+  },
+
+  blog: {
+    title: 'ブログ',
+    lede: 'リリースの告知と、Nohrs をどう作っているかの記録です。',
+    empty: 'まだ記事がありません。',
+    readingSuffix: '分で読めます',
+    backToIndex: '記事一覧',
+    publishedOn: '公開日',
+    tags: 'タグ',
+    commentsTitle: 'コメント',
+    commentsBody:
+      'コメント欄は GitHub Discussions です。GitHub でサインインすると、この記事のスレッドに投稿できます。',
+    translationMissingTitle: 'この記事の日本語訳は、まだありません',
+    translationMissingBody: '以下は英語の本文です。翻訳のプルリクエストを歓迎します。',
+  },
+
+  docs: {
+    title: 'ドキュメント',
+    lede: 'Nohrs の導入・使い方・プラグインの書き方をまとめています。',
+    searchLabel: 'ドキュメントを検索',
+    searchPlaceholder: 'ドキュメントを検索',
+    searchShort: '検索',
+    searchHint: '/ で検索',
+    searchEmpty: '一致するものがありません。',
+    onThisPage: 'このページの見出し',
+    categories: {
+      'getting-started': 'はじめに',
+      usage: '使い方',
+      plugins: 'プラグインを書く',
+      reference: 'リファレンス',
+    },
+    editOnGitHub: 'GitHub でこのページを編集する',
+    previous: '前のページ',
+    next: '次のページ',
+    translationMissingTitle: 'このページの日本語訳は、まだありません',
+    translationMissingBody: '以下は英語の本文です。翻訳のプルリクエストを歓迎します。',
+  },
+
+  plugins: {
+    title: 'プラグイン',
+    lede: 'Nohrs のプラグインは WASM コンポーネントです。サンドボックスの中で動き、許可した権限だけを持ちます。',
+    previewNotice:
+      'プラグインホストは P4 の作業で、まだ実装していません。ここにあるものはインストールできません。何を予定していて、レジストリをどう構成するかを示すためのページです。',
+    categories: {
+      productivity: '生産性',
+      'developer-tools': '開発者向け',
+      media: 'メディア',
+      cloud: 'クラウド',
+      theme: 'テーマ',
+    },
+    allCategories: 'すべて',
+    author: '作者',
+    permissions: '権限',
+    install: 'インストール',
+    installUnavailable: 'インストールにはプラグインホスト (P4) が必要です',
+    source: 'ソース',
+    submitTitle: 'プラグインを追加する',
+    submitBody:
+      'レジストリは、このリポジトリ内の TOML ファイル群です。追加は 1 ファイルを足すプルリクエストで、残りの情報はビルド時に GitHub リポジトリから読み取ります。',
+    empty: 'まだ登録されているプラグインはありません。',
+  },
+
+  footer: {
+    tagline: 'Rust で作る、macOS 向けのランチャー兼ファイルエクスプローラー。',
+    product: 'プロダクト',
+    resources: 'リソース',
+    project: 'プロジェクト',
+    social: 'ソーシャル',
+    preview: 'プレビュー',
+    discussions: 'ディスカッション',
+    makersNote: 'メーカーズノート',
+    contributing: 'コントリビュート',
+    license: 'ライセンス',
+    rights: '© 2026 Nohrs',
+    builtWith: 'Rust で作っています。このサイトのソースも同じリポジトリにあります。',
+  },
+
+  notFound: {
+    title: 'そのページはありません',
+    body: '古いバージョンのサイトのリンクか、URL の打ち間違いかもしれません。',
+    cta: 'トップページへ',
+  },
+}
+
+export const strings = { en, ja }

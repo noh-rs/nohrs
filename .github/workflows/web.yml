@@ -1,0 +1,160 @@
+name: Web
+
+# The Rust CI ignores `web/**`; this is its mirror image, so a TypeScript
+# change never waits on a Cargo build and vice versa (ADR 0006).
+on:
+  push:
+    branches: [develop, main]
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  # The star count, the commit list and the release list are read at build
+  # time, so the published site only follows the repository if it is rebuilt.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+# The event is part of the group: a scheduled run's ref is the default branch,
+# so without it an ordinary push to `develop` would cancel the Monday refresh
+# and never deploy in its place.
+concurrency:
+  group: web-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # Only a pull-request run is worth superseding. Cancelling a push, schedule
+  # or dispatch run would kill the deploy job it contains — including between
+  # the two wrangler steps — which the job's own `cancel-in-progress: false`
+  # cannot prevent, because the cancellation happens at the run level.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: web
+
+env:
+  # Production is `main`. A scheduled run starts on the default branch, so it
+  # has to say so explicitly; both jobs resolve this the same way, which is
+  # what makes `needs: build` a check on the revision that actually ships.
+  DEPLOY_REF: ${{ github.event_name == 'schedule' && 'main' || github.ref }}
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    # The exact revision this job validated. `deploy` checks that out rather
+    # than the branch name, so a push landing between the two jobs cannot
+    # publish a commit nothing has checked.
+    outputs:
+      sha: ${{ steps.revision.outputs.sha }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ env.DEPLOY_REF }}
+          # `npm ci` runs below, and a dependency lifecycle script must not be
+          # able to read the checkout's persisted token.
+          persist-credentials: false
+
+      - id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      # GITHUB_TOKEN only lifts the API rate limit. Without it the build falls
+      # back to the committed snapshot rather than failing.
+      - name: Build
+        run: npm run build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_GISCUS_REPO_ID: ${{ secrets.GISCUS_REPO_ID }}
+          VITE_GISCUS_CATEGORY_ID: ${{ secrets.GISCUS_CATEGORY_ID }}
+          VITE_CF_ANALYTICS_TOKEN: ${{ secrets.CF_ANALYTICS_TOKEN }}
+
+      - name: Check the prerendered output
+        run: |
+          test -f dist/client/en/index.html
+          test -f dist/client/ja/index.html
+          test -f dist/client/sitemap.xml
+          test -f dist/client/en/blog/rss.xml
+          test -d dist/client/_pagefind
+
+      # Deploy publishes exactly this, rather than rebuilding: what shipped is
+      # then the output these checks passed on, not a second build of it.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: web-dist
+          path: web/dist/client
+          retention-days: 7
+          include-hidden-files: true
+
+  deploy:
+    name: deploy
+    needs: build
+    # Production deploys only from `main`. A manual run on any other branch
+    # would otherwise execute that branch's workflow and build scripts with the
+    # production Cloudflare token, which is a push-access-to-deploy escalation.
+    if: >-
+      github.event_name == 'schedule'
+      || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+          && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    environment: production
+    # Keyed to the environment rather than the ref, so a scheduled run and a
+    # push to `main` cannot deploy over each other. Not cancelled in flight:
+    # a half-applied deploy is worse than a queued one.
+    concurrency:
+      group: web-deploy-production
+      cancel-in-progress: false
+    steps:
+      # The commit `build` validated, not the branch it was on: `wrangler.jsonc`
+      # and the Workers have to come from the same revision as the assets.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # wrangler only; the site itself is downloaded, not rebuilt.
+      - run: npm ci
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: web-dist
+          path: web/dist/client
+
+      - name: Check the downloaded output
+        run: |
+          test -f dist/client/en/index.html
+          test -f dist/client/ja/index.html
+          test -d dist/client/_pagefind
+
+      - name: Deploy nohrs.app
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy the noh.rs redirect
+        run: npx wrangler deploy --config workers/wrangler.noh-rs.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
