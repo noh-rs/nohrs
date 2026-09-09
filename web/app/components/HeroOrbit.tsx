@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -9,7 +10,7 @@ import {
 import { createPortal } from 'react-dom'
 import { FluidOrb } from '~/components/FluidOrb'
 import { t, type Lang } from '~/lib/i18n'
-import { angleOf, centreOfCrop, cropFor, originFor } from '~/lib/orbit'
+import { angleOf, originFor } from '~/lib/orbit'
 
 /**
  * `centre` is the point of each screen the panel frames, and `zoom` how close
@@ -40,7 +41,6 @@ const SPILL = 0.3
 
 const SHOT_WIDTH = 900
 const SHOT_HEIGHT = 549
-const SHOT_ASPECT = SHOT_WIDTH / SHOT_HEIGHT
 
 /** The dialog's description. One panel is open at a time, so one id will do. */
 const CAPTION_ID = 'orbit-shot-caption'
@@ -52,25 +52,29 @@ function angleAt(index: number): number {
   return angleOf(index, SHOTS.length)
 }
 
-/**
- * How much of one axis a frame keeps, given the two aspects. A frame that holds
- * the shot to within a fraction of a pixel is not cropping it: rounding it up
- * to the whole keeps the arithmetic away from where a half pixel of overflow
- * would be answered with an edge's worth of offset.
- */
-function fits(ratio: number): number {
-  return ratio > 0.999 ? 1 : ratio
-}
-
-function pair(x: number, y: number): string {
+function focusOf({ centre, zoom }: (typeof SHOTS)[number]): string {
+  const x = originFor(centre[0], zoom)
+  const y = originFor(centre[1], zoom, SPILL)
   return `${(x * 100).toFixed(2)}% ${(y * 100).toFixed(2)}%`
 }
 
-function focusOf({ centre, zoom }: (typeof SHOTS)[number]): string {
-  return pair(originFor(centre[0], zoom), originFor(centre[1], zoom, SPILL))
-}
+/**
+ * The flight, as one animation per part rather than a set of transitions.
+ *
+ * A transition's start value is whatever the engine had resolved when the end
+ * value changed, and engines disagree about when that is. Driven that way this
+ * panel broke twice: once in Chromium, where the step that put it on the card
+ * consumed the animation and nothing moved, and again in WebKit, where the
+ * panel painted at full size, shrank in place and grew back — the flight from
+ * the card never ran at all. Keyframes state both ends outright, so there is
+ * nothing left to resolve at the wrong moment, and no invisible measuring frame
+ * to sequence around.
+ */
+const LIFT = 620
+const EASE = 'cubic-bezier(0.42, 0.04, 0.18, 1)'
+const SITE_EASE = 'cubic-bezier(0.16, 1, 0.3, 1)'
 
-type Phase = 'measuring' | 'open' | 'closing'
+type Phase = 'open' | 'closing'
 
 /**
  * The hero: five screens of the app on a ring, the tagline and the CTAs in the
@@ -87,115 +91,123 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
   const cards = useRef<Array<HTMLButtonElement | null>>([])
   const panel = useRef<HTMLElement>(null)
   const frame = useRef<HTMLDivElement>(null)
+  const scrim = useRef<HTMLDivElement>(null)
   const closer = useRef<HTMLButtonElement>(null)
   const [view, setView] = useState<{ index: number; phase: Phase } | null>(null)
   const [warm, setWarm] = useState(false)
 
   /**
-   * Maps the opened panel onto the card it grew from, in viewport coordinates,
-   * and frames the shot for the panel's own frame — which is not always the
-   * shot's shape, so the two cannot share `focusOf`.
+   * Runs the flight between the card at `index` and the opened panel. Returns
+   * when the panel has arrived, so the caller can unmount on the way back.
+   *
+   * `direction` only decides which end the keyframes are read from: the two
+   * halves of the gesture are the same journey, and neither one is measured
+   * from a style the engine may not have resolved yet.
    */
-  const place = useCallback((index: number) => {
+  const fly = useCallback((index: number, direction: 'in' | 'out'): Promise<void> => {
     const node = panel.current
     const shot = frame.current
+    const veil = scrim.current
     const card = cards.current[index]
-    if (!node || !shot || !card) return
+    if (!node || !shot || !veil || !card) return Promise.resolve()
+
     // The card is rotated about its own centre, so the box around it is centred
     // on the same point — which is what the panel has to be moved onto.
     const box = card.getBoundingClientRect()
-    node.style.setProperty('--from-x', `${box.left + box.width / 2 - window.innerWidth / 2}px`)
-    node.style.setProperty('--from-y', `${box.top + box.height / 2 - window.innerHeight / 2}px`)
-    // Whichever axis binds, so the panel starts inside the card on both. They
-    // are the same number wherever the frame is the shot's shape, and far apart
-    // where it stands up: matching the width there would start the flight at
-    // three quarters of the finished size and there would be no growth to see.
-    const shrink = Math.min(
-      card.offsetWidth / shot.offsetWidth,
-      card.offsetHeight / shot.offsetHeight,
-    )
-    node.style.setProperty('--from-k', shrink.toFixed(4))
-    node.style.setProperty('--from-a', `${angleAt(index)}deg`)
+    const x = box.left + box.width / 2 - window.innerWidth / 2
+    const y = box.top + box.height / 2 - window.innerHeight / 2
+    const k = card.offsetWidth / node.offsetWidth
+    const { zoom } = SHOTS[index]
 
-    const { centre, zoom } = SHOTS[index]
-    const frames = shot.offsetWidth / shot.offsetHeight
-    const across = fits(frames / SHOT_ASPECT)
-    const down = fits(SHOT_ASPECT / frames)
-    node.style.setProperty('--crop', pair(cropFor(centre[0], across), cropFor(centre[1], down)))
-    node.style.setProperty('--from-zoom', String(zoom))
-    // The zoom unwinds from the point the frame is held on, which after a crop
-    // is where that point sits in the frame rather than where it is on the shot.
-    node.style.setProperty(
-      '--from-focus',
-      pair(
-        originFor(centreOfCrop(centre[0], across), zoom),
-        originFor(centreOfCrop(centre[1], down), zoom, SPILL),
-      ),
+    const onCard = `translate(${x}px, ${y}px) rotate(${angleAt(index)}deg) scale(${k})`
+    // Divided by the same factor the panel is scaled by, so the corners read at
+    // the card's radius while it is still the size of a card.
+    const cardRadius = `${(10 / k).toFixed(2)}px`
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const ms = reduced ? 0 : LIFT
+
+    const play = (
+      target: Element | null,
+      frames: Keyframe[],
+      options: KeyframeAnimationOptions = {},
+    ) => {
+      if (!target) return null
+      // The flight that just landed is still attached, holding its end value.
+      // Left there, the way back would be a second animation on the same
+      // property and which one wins is the engine's business, not ours.
+      for (const previous of target.getAnimations()) previous.cancel()
+      const run = target.animate(direction === 'in' ? frames : [...frames].reverse(), {
+        duration: ms,
+        easing: EASE,
+        // `forwards` is what holds the panel on the card at the end of the way
+        // out, for the frame between arriving and unmounting.
+        fill: 'both',
+        ...options,
+        ...(reduced ? { duration: 0, delay: 0 } : {}),
+      })
+      return run.finished
+    }
+
+    const image = shot.querySelector('img')
+    // Static through the flight: the point the shot is framed on is the point
+    // the zoom unwinds from, and it is the same at both ends.
+    if (image) image.style.transformOrigin = focusOf(SHOTS[index])
+
+    const arrived = play(node, [{ transform: onCard }, { transform: 'none' }])
+    play(shot, [{ borderRadius: cardRadius }, { borderRadius: '12px' }])
+    play(image, [{ transform: `scale(${zoom})` }, { transform: 'none' }])
+    play(veil, [{ opacity: 0 }, { opacity: 1 }], { duration: reduced ? 0 : 380, easing: SITE_EASE })
+    // The copy waits for the panel to arrive, and on the way out leaves at once:
+    // holding a caption over a panel already shrinking back reads as a stutter.
+    for (const fading of [node.querySelector('.orbit-caption'), closer.current]) {
+      play(fading, [{ opacity: 0 }, { opacity: 1 }], {
+        duration: reduced ? 0 : direction === 'in' ? 300 : 150,
+        delay: reduced || direction === 'out' ? 0 : 380,
+        easing: SITE_EASE,
+      })
+    }
+
+    return (arrived ?? Promise.resolve()).then(
+      () => undefined,
+      // A cancelled animation rejects. That happens when the reader closes the
+      // panel mid-flight, and the close that cancelled it owns what comes next.
+      () => undefined,
     )
   }, [])
 
-  // The panel is measured against a card, so it has to be laid out once before
-  // the transform that maps one onto the other can exist. It is invisible for
-  // that frame; `open` is what makes it visible and starts the transition.
-  useEffect(() => {
-    if (view?.phase !== 'measuring') return
-    place(view.index)
-    // Read a layout value back, so the browser resolves the style with the panel
-    // still on the card. Without it both states land in one recalculation and
-    // the panel is simply already open.
-    void panel.current?.offsetWidth
-    setView({ index: view.index, phase: 'open' })
-  }, [view, place])
+  // Layout, not passive: the flight has to be running before the browser paints
+  // the panel, or its first frame is the panel at full size in the middle of the
+  // page — which is the flash this used to have.
+  useLayoutEffect(() => {
+    if (view?.phase !== 'open') return
+    void fly(view.index, 'in')
+  }, [view?.index, view?.phase, fly])
 
   const dismiss = useCallback(() => {
     if (!view || view.phase === 'closing') return
-    // Re-measured rather than reused: the window may have been resized, and the
-    // panel has to land back on where the card is now.
-    place(view.index)
     setView({ index: view.index, phase: 'closing' })
-  }, [view, place])
+  }, [view])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (view?.phase !== 'closing') return
     const index = view.index
-    const node = panel.current
-    const finish = (event?: TransitionEvent) => {
-      // Only the panel's own transition ends the close. The caption inside it
-      // fades in 150ms and that event bubbles here, so taking the first one to
-      // arrive cut the panel's 620ms flight short a quarter of the way back.
-      if (event && event.target !== node) return
+    let live = true
+    // Re-measured on the way out rather than reused: the window may have been
+    // resized, and the panel has to land back on where the card is now.
+    void fly(index, 'out').then(() => {
+      if (!live) return
       setView(null)
       cards.current[index]?.focus()
-    }
-    node?.addEventListener('transitionend', finish)
-    // `prefers-reduced-motion` collapses the duration to nothing, and a
-    // transition that never runs never ends; the timer closes it either way.
-    const timer = window.setTimeout(finish, 700)
+    })
     return () => {
-      node?.removeEventListener('transitionend', finish)
-      window.clearTimeout(timer)
+      live = false
     }
-  }, [view])
+  }, [view?.index, view?.phase, fly])
 
   useEffect(() => {
     if (view?.phase !== 'open') return
     closer.current?.focus()
   }, [view?.phase])
-
-  // The frame's shape is a responsive value and the crop is measured against
-  // it, so a phone turned on its side with the panel open moves the frame out
-  // from under the slice: it would keep showing the band the old shape put
-  // there, which for the two screens framed near an edge is not the band the
-  // caption is about. Same for the address bar coming and going, which `svh`
-  // holds still but a rotation does not.
-  const opened = view?.index
-  useEffect(() => {
-    const node = frame.current
-    if (opened === undefined || !node) return
-    const observer = new ResizeObserver(() => place(opened))
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [opened, place])
 
   const isOpen = view !== null
   useEffect(() => {
@@ -256,7 +268,7 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
           // it puts them *in* the corners, where a panel is a sliver.
           const reach = (Math.abs(sin) ** 3 + Math.abs(cos) ** 3) ** (-1 / 3)
           const copy = strings.shots[id]
-          const open = () => setView({ index, phase: 'measuring' })
+          const open = () => setView({ index, phase: 'open' })
           return (
             <li
               key={id}
@@ -334,7 +346,7 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
             aria-label={shown.label}
             aria-describedby={CAPTION_ID}
           >
-            <div className="orbit-scrim" onClick={dismiss} />
+            <div className="orbit-scrim" onClick={dismiss} ref={scrim} />
             <figure className="orbit-panel" ref={panel}>
               <div className="orbit-shot" ref={frame}>
                 <img
