@@ -21,13 +21,18 @@ export function angleOf(index: number, count: number): number {
  *
  * Scaling holds the origin still rather than centring on it, so the two only
  * coincide in the middle of the image. Solving for the origin that puts
- * `centre` in the middle of what remains visible gives the expression below;
- * the clamp keeps the frame inside the image, since past it the panel would
- * show a strip of nothing.
+ * `centre` in the middle of what remains visible gives the expression below.
+ *
+ * `spill` is how far the frame may hang past the *start* of the image, as a
+ * fraction of the frame's own size, and only the vertical axis asks for any.
+ * Every panel is turned to face outward and cut by the edge it faces, so its
+ * top is never on the page and a strip of nothing there is never seen. Without
+ * that allowance a panel can only frame the lower half of a window whose
+ * content — the toolbar, the listing, the pane beside it — is all at the top.
  */
-export function originFor(centre: number, zoom: number): number {
+export function originFor(centre: number, zoom: number, spill = 0): number {
   if (!(zoom > 1)) return 0.5
   const half = 0.5 / zoom
-  const inside = Math.min(Math.max(centre, half), 1 - half)
+  const inside = Math.min(Math.max(centre, half - spill / zoom), 1 - half)
   return (inside - half) / (1 - 1 / zoom)
 }

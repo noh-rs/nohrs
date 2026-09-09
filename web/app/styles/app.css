@@ -351,17 +351,23 @@
   /* The window, less the header and a little air. */
   --stage: clamp(560px, calc(100vh - 128px), 880px);
   --half-h: calc(var(--stage) / 2);
-  --ry: calc(var(--half-h) - 44px);
-  /* Wide enough to reach the left and right edges of a laptop window, and
-     capped so an ultrawide one does not strand the panels in its corners. */
-  --rx: clamp(calc(var(--ry) * 1.5), calc(50vw - 140px), calc(var(--ry) * 2.15));
-  /* Names ride the same ellipse as the panels, set in from it by half a panel
-     and a gap. Given a ring of their own they collide with the buttons on a
-     short window, where there is no band left between the two. */
-  --tag-inset: calc(var(--card-w) * 0.305 + 34px);
+  /* Both radii put the panels' centres *outside* the stage, so roughly a third
+     of each one is on the page and the rest is past the edge. `--rx` follows
+     the window's own half-width, so the horizontal pair stays cut at any
+     width; the floor is for a window too narrow for that to reach. */
+  --ry: calc(var(--half-h) + 20px);
+  --rx: max(calc(var(--ry) * 1.2), calc(50vw - 20px));
   /* Off the stage, not the window: a short window gets smaller panels rather
-     than the same panels with nowhere to sit. */
-  --card-w: clamp(200px, calc(var(--half-h) * 0.78), 300px);
+     than the same panels with nowhere to sit. Capped where the shots stop
+     being able to fill them — the source is a 900px recording. */
+  --card-w: clamp(280px, calc(var(--half-h) * 1.15), 430px);
+  /* Names sit inside their own panel along the same ray, and no further out
+     than a ring of their own would be: with the panels this far out, following
+     them would strand the names at the edges of the window. The vertical cap
+     also clears the panel that slides in from the top on hover. */
+  --tag-inset: calc(var(--card-w) * 0.305 + 80px);
+  --tag-rx: min(calc(var(--rx) - var(--tag-inset)), calc(var(--half-h) * 1.02));
+  --tag-ry: min(calc(var(--ry) - var(--tag-inset)), calc(var(--half-h) * 0.58));
   --peek: 0px;
 
   position: relative;
@@ -451,14 +457,12 @@
   margin: -40px 0 0 -150px;
   overflow: visible;
   pointer-events: none;
-  /* `--peek` again, so the name keeps its distance from the panel while the
-     panel slides in under the pointer — otherwise the panel covers it. */
-  transform: translate(
-      calc(var(--sin) * (var(--rx) - var(--tag-inset) - var(--peek))),
-      calc(var(--cos) * (var(--ry) - var(--tag-inset) - var(--peek)) * -1)
-    )
+  /* The names ride a ring of their own, small enough to stay near the type
+     the panels are arranged around — but squared off by the same factor as
+     the panels, which is what carries the pair at the bottom clear of the
+     buttons instead of across their corners. */
+  transform: translate(calc(var(--sin) * var(--tag-rx)), calc(var(--cos) * var(--tag-ry) * -1))
     rotate(var(--a));
-  transition: transform 420ms var(--ease);
 }
 
 .orbit-tag text {
@@ -500,7 +504,7 @@
   top: 50%;
   left: 50%;
   z-index: 1;
-  width: min(calc(var(--half-h) * 1.45), 82vw);
+  width: min(calc(var(--half-h) * 1.42), 82vw);
   text-align: center;
   transform: translate(-50%, -50%);
 }
@@ -508,7 +512,7 @@
 /* The tagline is set off the stage as well, so the block inside the ring keeps
    its proportion to it instead of growing until it reaches the names. */
 .orbit-core h1 {
-  font-size: clamp(2.05rem, calc(var(--half-h) * 0.17), 3.85rem);
+  font-size: clamp(2.05rem, calc(var(--half-h) * 0.19), 4.1rem);
 }
 
 .orbit-core p {

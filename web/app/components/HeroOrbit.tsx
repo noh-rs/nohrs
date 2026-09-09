@@ -21,12 +21,20 @@ import { angleOf, originFor } from '~/lib/orbit'
  * alike for that reason: it is the band that stays on screen.
  */
 const SHOTS = [
-  { id: 'source', centre: [0.72, 0.33], zoom: 1.9 },
-  { id: 'explorer', centre: [0.3, 0.21], zoom: 2.4 },
-  { id: 'preview', centre: [0.78, 0.21], zoom: 2.4 },
-  { id: 'matches', centre: [0.42, 0.35], zoom: 2 },
-  { id: 'search', centre: [0.42, 0.24], zoom: 2.2 },
+  { id: 'source', centre: [0.72, 0.45], zoom: 1.9 },
+  { id: 'explorer', centre: [0.3, 0.11], zoom: 1.95 },
+  { id: 'matches', centre: [0.42, 0.28], zoom: 1.9 },
+  { id: 'preview', centre: [0.75, 0.2], zoom: 1.95 },
+  { id: 'search', centre: [0.42, 0.13], zoom: 1.95 },
 ] as const
+
+/**
+ * How much of a panel's frame may hang past the top of its shot. Every panel is
+ * cut by the edge it faces, so its top is not on the page — and the app's
+ * content sits at the top of the window, which the frame has to be able to
+ * reach. Kept well under the fraction of a panel that is actually off screen.
+ */
+const SPILL = 0.3
 
 const SHOT_WIDTH = 900
 const SHOT_HEIGHT = 549
@@ -39,7 +47,9 @@ function angleAt(index: number): number {
 }
 
 function focusOf({ centre, zoom }: (typeof SHOTS)[number]): string {
-  return `${(originFor(centre[0], zoom) * 100).toFixed(2)}% ${(originFor(centre[1], zoom) * 100).toFixed(2)}%`
+  const x = originFor(centre[0], zoom)
+  const y = originFor(centre[1], zoom, SPILL)
+  return `${(x * 100).toFixed(2)}% ${(y * 100).toFixed(2)}%`
 }
 
 type Phase = 'measuring' | 'open' | 'closing'
@@ -163,6 +173,14 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
           const { id, zoom } = shot
           const angle = angleAt(index)
           const radians = (angle * Math.PI) / 180
+          const sin = Math.sin(radians)
+          const cos = Math.cos(radians)
+          // The ring is squared off a little — a superellipse, not an ellipse —
+          // so the diagonals reach out towards the corners of the stage
+          // instead of floating whole in the middle of the page while the
+          // panels on the axes are cropped. Taken all the way to a rectangle
+          // it puts them *in* the corners, where a panel is a sliver.
+          const reach = (Math.abs(sin) ** 3 + Math.abs(cos) ** 3) ** (-1 / 3)
           const copy = strings.shots[id]
           const open = () => setView({ index, phase: 'measuring' })
           return (
@@ -171,8 +189,8 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
               className="orbit-item"
               style={
                 {
-                  '--sin': Math.sin(radians).toFixed(4),
-                  '--cos': Math.cos(radians).toFixed(4),
+                  '--sin': (sin * reach).toFixed(4),
+                  '--cos': (cos * reach).toFixed(4),
                   '--a': `${angle}deg`,
                 } as CSSProperties
               }

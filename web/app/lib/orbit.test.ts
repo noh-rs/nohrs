@@ -3,8 +3,8 @@ import { test } from 'node:test'
 import { angleOf, originFor } from './orbit.ts'
 
 /** What the panel actually shows: the band of the shot left inside it. */
-function framed(centre: number, zoom: number): [number, number] {
-  const origin = originFor(centre, zoom)
+function framed(centre: number, zoom: number, spill = 0): [number, number] {
+  const origin = originFor(centre, zoom, spill)
   const start = origin * (1 - 1 / zoom)
   return [start, start + 1 / zoom]
 }
@@ -43,6 +43,13 @@ test('a centre near an edge is pulled in far enough to keep the frame filled', (
       assert.ok(start >= -1e-9 && end <= 1 + 1e-9, `${centre} at ${zoom} → ${start}..${end}`)
     }
   }
+})
+
+test('spill lets the frame hang off the start, and no further than asked', () => {
+  const [start, end] = framed(0.1, 2, 0.3)
+  assert.ok(Math.abs((start + end) / 2 - 0.1) < 1e-9, 'a centre within the allowance is kept')
+  assert.ok(framed(-1, 2, 0.3)[0] >= -0.3 / 2 - 1e-9, 'and one outside it is pulled back to the edge')
+  assert.ok(framed(0.9, 2, 0.3)[1] <= 1 + 1e-9, 'the far end is unaffected by it')
 })
 
 test('a shot that is not zoomed is framed whole', () => {
