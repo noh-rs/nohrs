@@ -408,10 +408,25 @@
   height: 0;
 }
 
-.orbit-item:hover,
-.orbit-item:focus-within {
+/* The peek answers a pointer that is able to leave again, and a focus the
+   keyboard moved. A tap leaves `:hover` behind on a touch screen, and closing
+   the panel puts focus back on the card it came from — so between them, every
+   tap used to strand one panel 56px inside the ring, across the copy, until
+   something else was tapped. */
+.orbit-item:has(.orbit-card:focus-visible) {
   --peek: 56px;
+}
+
+.orbit-item:has(.orbit-card:focus-visible),
+.orbit-item:focus-within {
   z-index: 2;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .orbit-item:hover {
+    --peek: 56px;
+    z-index: 2;
+  }
 }
 
 .orbit-card {
@@ -440,21 +455,27 @@
     box-shadow var(--dur) var(--ease);
 }
 
-.orbit-item:hover .orbit-card,
-.orbit-item:focus-within .orbit-card {
+.orbit-item:has(.orbit-card:focus-visible) .orbit-card {
   border-color: var(--tan);
   box-shadow: 0 28px 56px -32px rgb(25 21 16 / 0.6);
 }
 
+@media (hover: hover) and (pointer: fine) {
+  .orbit-item:hover .orbit-card {
+    border-color: var(--tan);
+    box-shadow: 0 28px 56px -32px rgb(25 21 16 / 0.6);
+  }
+}
+
 .orbit-card img {
+  display: block;
+  width: 100%;
+  height: auto;
   filter: brightness(var(--shot-dim));
 }
 
 .orbit-card img,
 .orbit-shot img {
-  display: block;
-  width: 100%;
-  height: auto;
   /* The panel shows a detail, not the whole window. The origin is the point the
      detail is framed on, so it is also the point the opened shot unzooms from. */
   transform: scale(var(--zoom, 1));
@@ -495,9 +516,14 @@
   transition: fill var(--dur) var(--ease);
 }
 
-.orbit-item:hover .orbit-tag text,
-.orbit-item:focus-within .orbit-tag text {
+.orbit-item:has(.orbit-card:focus-visible) .orbit-tag text {
   fill: var(--tan-ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .orbit-item:hover .orbit-tag text {
+    fill: var(--tan-ink);
+  }
 }
 
 /* The accessible name of the panel button. It carries the label on the ring,
@@ -549,6 +575,8 @@
      duration, which is over before the eye has found the panel. The turn is
      the point of the gesture, so this curve keeps some of it in the middle. */
   --lift: 620ms cubic-bezier(0.42, 0.04, 0.18, 1);
+  /* Named because the frame's own height is derived from it below. */
+  --panel-w: min(1180px, 92vw, 130vh);
 
   position: fixed;
   inset: 0;
@@ -568,7 +596,7 @@
 
 .orbit-panel {
   position: relative;
-  width: min(1180px, 92vw, 130vh);
+  width: var(--panel-w);
   margin: 0;
   transform: translate(var(--from-x, 0px), var(--from-y, 0px)) rotate(var(--from-a, 0deg))
     scale(var(--from-k, 1));
@@ -576,6 +604,10 @@
 }
 
 .orbit-shot {
+  /* The shot's own proportions (900 × 549), until a portrait window asks for a
+     frame that stands up. The frame carries the shape rather than the image,
+     because the two are not always the same. */
+  aspect-ratio: 900 / 549;
   overflow: hidden;
   border: 1px solid var(--line);
   /* Divided by the same factor the panel is scaled by, so the corners read at
@@ -588,6 +620,16 @@
 .orbit-shot img {
   --zoom: var(--from-zoom, 1);
   --focus: var(--from-focus, 50% 50%);
+
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* Where the frame is not the shot's shape, the shot fills it and the slice is
+     placed rather than the image squashed. `--crop` is measured with the rest
+     at the moment of the click; a frame that is the shot's shape takes all of
+     it and the value does not matter. */
+  object-fit: cover;
+  object-position: var(--crop, 50% 50%);
   transition: transform var(--lift);
 }
 
@@ -735,6 +777,26 @@
 
   .orbit-core .orbit-cta {
     margin-top: 24px;
+  }
+
+  /* At this width the whole window laid out across the panel is the white
+     rectangle with grey lines in it that the zoom exists to avoid — 900px of
+     screenshot in 370px of panel — and a frame of its shape covers a third of a
+     tall screen, so opening one was not worth the tap. The frame stands up
+     instead and takes what the caption and the close button leave; the shot
+     fills it, cropped to the band around the point the panel frames. That band
+     is the part there was a reason to open, and it is the same point the ring
+     is already framed on, so the two agree.
+
+     The floor is the shot's own shape: a window only a little taller than it is
+     wide (a phone on its side) keeps all of it rather than cropping for no
+     gain. The ceiling is the shot's own height, which is also what keeps the
+     slice from narrowing — the two together land the shot at about one image
+     pixel per CSS pixel, which is what makes it legible at all. A recording
+     wider than 900px is what would let this show more of the window. */
+  .orbit-shot {
+    aspect-ratio: auto;
+    height: max(calc(var(--panel-w) * 549 / 900), min(calc(100svh - 220px), 549px));
   }
 }
 
