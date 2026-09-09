@@ -1,0 +1,17 @@
+services:
+  nohrs:
+    build:
+      context: ../..
+      dockerfile: docker/ci/Dockerfile
+    environment:
+      - DISPLAY=:99
+    ports:
+      - "5999:5999"
+    volumes:
+      - ../..:/nohrs
+      - ${HOME}/.cargo/registry:/root/.cargo/registry
+      - nohrs-data:/root/.nohrs
+    entrypoint: ["/bin/bash", "-lc", "Xtigervnc :99 -geometry 1280x800 -depth 24 -SecurityTypes None -rfbport 5999 >/tmp/vnc.log 2>&1 & sleep 1 && fvwm >/tmp/fvwm.log 2>&1 & sleep 1 && cargo build -p nohrs && exec cargo run -p nohrs"]
+
+volumes:
+  nohrs-data:

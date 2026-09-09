@@ -1,0 +1,30 @@
+version: 2
+updates:
+  # Rust crates for the core workspace. `web/` (TypeScript) is handled by a
+  # separate ecosystem below so its updates do not add noise to Rust reviews
+  # (see docs/adr/0006-monorepo-web.md).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+      - rust
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+      - github-actions
+
+  # When web/ (TypeScript, excluded from the Cargo workspace) lands, add an
+  # npm ecosystem here scoped to directory "/web" so its updates stay separate
+  # from Rust reviews (ADR 0006). Left out for now because no manifest exists.

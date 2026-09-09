@@ -1,0 +1,10 @@
+name = "Clipboard history"
+category = "productivity"
+repo = "noh-rs/nohrs-plugin-clipboard-history"
+author = "noh-rs"
+permissions = ["clipboard:read", "storage:local"]
+status = "planned"
+
+[summary]
+en = "Keeps recent clipboard entries searchable from the launcher, stored locally and never sent anywhere."
+ja = "最近のクリップボードの内容をランチャーから検索できるようにします。保存はローカルのみで、どこにも送信しません。"

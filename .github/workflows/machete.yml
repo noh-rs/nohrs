@@ -1,0 +1,31 @@
+# Unused-dependency check (docs/testing.md §3). Run weekly rather than per-PR:
+# cargo-machete is advisory and occasionally false-positives on deps used only
+# behind a feature or in a macro, so it should not gate every merge. Also runs on
+# demand via the Actions "Run workflow" button.
+name: machete
+
+on:
+  schedule:
+    # Mondays at 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  machete:
+    name: cargo-machete
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        with:
+          tool: cargo-machete
+
+      - name: Check for unused dependencies
+        run: cargo machete

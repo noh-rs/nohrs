@@ -1,0 +1,491 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Design tokens — ADR 0008. Light is the primary theme; dark follows the OS
+   unless the header toggle has stamped an explicit `data-theme` on <html>.
+
+   Three states, in this order, and every token must be defined in the first
+   one: bare :root (light), the OS preference guarded so an explicit light
+   choice still wins, and the explicit dark choice last so the toggle beats
+   the media query in both directions.
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  --paper: #fcfaf8;
+  --surface: #f4efe9;
+  --sunken: #efe8e0;
+  --line: #e3dbd0;
+  --line-soft: #ede6dd;
+  --ink: #191510;
+  --ink-2: #453c33;
+  --muted: #6f6459;
+  --tan: #dea584; /* brand — decorative only, 1.9:1 on paper */
+  --tan-ink: #94541f; /* brand — the one that passes AA on every light ground */
+  --tan-wash: #f6e9de;
+
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur: 220ms;
+  --frame: 1120px;
+  --orb-strength: 0.46;
+
+  --sans: "Inter", "Noto Sans JP", ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #100e0c;
+    --surface: #191512;
+    --sunken: #14110f;
+    --line: #2c2621;
+    --line-soft: #221d19;
+    --ink: #f3eee7;
+    --ink-2: #cfc6bb;
+    --muted: #9a9088;
+    --tan: #dea584;
+    --tan-ink: #e7b693;
+    --tan-wash: #241a13;
+    /* Dark needs a *stronger* tan ramp than light: sitting the orb near the
+       ground colour reads as a brown stain rather than a lit object. */
+    --orb-strength: 0.55;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: #100e0c;
+  --surface: #191512;
+  --sunken: #14110f;
+  --line: #2c2621;
+  --line-soft: #221d19;
+  --ink: #f3eee7;
+  --ink-2: #cfc6bb;
+  --muted: #9a9088;
+  --tan: #dea584;
+  --tan-ink: #e7b693;
+  --tan-wash: #241a13;
+  --orb-strength: 0.55;
+  color-scheme: dark;
+}
+
+/* `inline` keeps the utilities pointing at the custom properties rather than
+   copying their values, so `bg-paper` re-resolves when the theme changes. */
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-tan: var(--tan);
+  --color-tan-ink: var(--tan-ink);
+  --color-tan-wash: var(--tan-wash);
+
+  --font-sans: var(--sans);
+  --font-mono: var(--mono);
+
+  --ease-brand: var(--ease);
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  /* The wheel is left entirely to the browser — scroll-snap pulls at its
+     anchors even in `proximity`, and `scroll-behavior: smooth` on the root
+     re-times keyboard and scrollbar scrolling too. Anchor jumps get their
+     easing from the click handler in `useAnchorScroll` instead.
+
+     `overscroll-behavior: none` is the one thing the page does assert: the
+     document stops dead at its ends instead of rubber-banding past them, and
+     an overscroll gesture cannot chain out to the browser (pull-to-refresh,
+     back-swipe). It changes what happens *past* the ends, not the wheel. */
+  html {
+    scroll-padding-top: 76px;
+    overscroll-behavior: none;
+  }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "cv05" 1, "cv11" 1;
+  }
+
+  :lang(ja) {
+    font-family: "Noto Sans JP", var(--sans);
+  }
+
+  a {
+    color: inherit;
+  }
+
+  ::selection {
+    background: var(--tan);
+    color: #191510;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--tan-ink);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+}
+
+@layer components {
+  /* The page's one horizontal measure. Everything lines up on it. */
+  .frame {
+    width: 100%;
+    max-width: var(--frame);
+    margin-inline: auto;
+    padding-inline: 24px;
+  }
+
+  /* Structural device: a mono label whose rule runs to the right margin. It
+     is what separates sections instead of cards, borders or background fills. */
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 28px;
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .eyebrow::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    white-space: nowrap;
+    padding: 11px 18px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font-size: 0.9375rem;
+    font-weight: 500;
+    text-decoration: none;
+    transition:
+      background var(--dur) var(--ease),
+      border-color var(--dur) var(--ease),
+      color var(--dur) var(--ease);
+  }
+
+  .btn-primary {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  .btn-primary:hover {
+    background: var(--tan-ink);
+  }
+
+  .btn-ghost {
+    color: var(--ink);
+    border-color: var(--line);
+  }
+
+  .btn-ghost:hover {
+    border-color: var(--tan);
+    background: var(--tan-wash);
+  }
+
+  .btn .count {
+    padding-left: 9px;
+    margin-left: 1px;
+    border-left: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    font-family: var(--mono);
+    font-size: 0.8125rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Segmented toggle: the pill slides between options rather than each option
+     lighting up, so the control reads as one thing with a position. */
+  .seg {
+    position: relative;
+    display: inline-flex;
+    padding: 2px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+  }
+
+  .seg .thumb {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 2px;
+    border-radius: 999px;
+    background: var(--paper);
+    box-shadow: 0 1px 2px rgb(30 20 10 / 0.1);
+    transition:
+      transform var(--dur) var(--ease),
+      width var(--dur) var(--ease);
+  }
+
+  .seg button {
+    position: relative;
+    z-index: 1;
+    padding: 7px 11px;
+    border: 0;
+    border-radius: 999px;
+    background: none;
+    cursor: pointer;
+    color: var(--muted);
+    font: 500 0.75rem/1 var(--mono);
+    letter-spacing: 0.04em;
+    transition: color var(--dur) var(--ease);
+  }
+
+  .seg button[aria-pressed="true"] {
+    color: var(--ink);
+  }
+
+  /* Hairline rows. The page's list vocabulary — roadmap phases, community
+     links, releases and commits all use it, so nothing needs a card. */
+  .rows {
+    border-top: 1px solid var(--line);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 20px 6px;
+    border-bottom: 1px solid var(--line);
+    color: inherit;
+    text-decoration: none;
+    transition:
+      background var(--dur) var(--ease),
+      padding-left var(--dur) var(--ease);
+  }
+
+  .row:hover {
+    background: var(--surface);
+    padding-left: 14px;
+  }
+
+  .row .rl {
+    flex: none;
+    width: 92px;
+    color: var(--ink);
+    font: 500 0.875rem/1 var(--mono);
+    letter-spacing: 0.06em;
+  }
+
+  .row .rd {
+    flex: 1;
+    color: var(--muted);
+    font-size: 0.9375rem;
+  }
+
+  .row .ra {
+    color: var(--muted);
+    transition:
+      transform var(--dur) var(--ease),
+      color var(--dur) var(--ease);
+  }
+
+  .row:hover .ra {
+    transform: translate(3px, -3px);
+    color: var(--tan-ink);
+  }
+
+  .cmd {
+    margin: 0;
+    padding: 15px 18px;
+    overflow-x: auto;
+    background: var(--surface);
+    border: 1px solid var(--line-soft);
+    border-radius: 5px;
+    font: 400 0.8125rem/1.9 var(--mono);
+    color: var(--ink-2);
+  }
+
+  .cmd .prompt {
+    padding-right: 10px;
+    color: var(--muted);
+    user-select: none;
+  }
+}
+
+/* Reveal is opt-in: the markup renders visible, and the observer only hides
+   what is still below the fold. A JS failure then costs an animation, not the
+   page. */
+.js-reveal .reveal:not(.in) {
+  opacity: 0.001;
+  transform: translateY(6px);
+}
+
+.reveal {
+  transition:
+    opacity 420ms var(--ease),
+    transform 420ms var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .js-reveal .reveal:not(.in) {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Long-form typography (MDX: blog posts and docs) ─────────────────────
+   Prose is set on the same measure and hairlines as the rest of the site, so
+   an article does not read as a different product from the landing page. */
+.prose {
+  color: var(--ink-2);
+  max-width: 72ch;
+}
+
+.prose > * + * {
+  margin-top: 1.15em;
+}
+
+.prose h2,
+.prose h3,
+.prose h4 {
+  color: var(--ink);
+  margin-top: 2.2em;
+  margin-bottom: 0.6em;
+  scroll-margin-top: 88px;
+}
+
+.prose h2 {
+  font-size: 1.375rem;
+  padding-top: 0.9em;
+  border-top: 1px solid var(--line-soft);
+}
+
+.prose h3 {
+  font-size: 1.0625rem;
+}
+
+.prose a {
+  color: var(--tan-ink);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+
+.prose .heading-anchor {
+  color: inherit;
+  text-decoration: none;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.35em;
+}
+
+.prose li + li {
+  margin-top: 0.35em;
+}
+
+.prose ul {
+  list-style: disc;
+}
+
+.prose ol {
+  list-style: decimal;
+}
+
+.prose blockquote {
+  padding-left: 1.1em;
+  border-left: 2px solid var(--tan);
+  color: var(--muted);
+}
+
+.prose code {
+  font-family: var(--mono);
+  font-size: 0.875em;
+}
+
+.prose :not(pre) > code {
+  padding: 0.15em 0.4em;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+}
+
+.prose pre {
+  padding: 16px 18px;
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  font-size: 0.8125rem;
+  line-height: 1.75;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+.prose th,
+.prose td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+}
+
+.prose th {
+  color: var(--ink);
+  font: 500 0.75rem/1.6 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.prose img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Shiki emits both themes on every token; this picks one without shipping a
+   highlighter to the browser. */
+.shiki span {
+  color: var(--shiki-light);
+}
+
+:root[data-theme="dark"] .shiki span {
+  color: var(--shiki-dark);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .shiki span {
+    color: var(--shiki-dark);
+  }
+}

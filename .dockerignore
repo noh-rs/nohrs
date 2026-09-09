@@ -1,0 +1,10 @@
+target/
+.git/
+.github/
+.claude/
+.factory/
+docs/
+flake.lock
+flake.nix
+.envrc
+.direnv/

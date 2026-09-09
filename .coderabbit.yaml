@@ -1,0 +1,63 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit configuration for nohrs.
+#
+# Philosophy: this file does NOT restate the project's coding rules. Instead it
+# points CodeRabbit at the authoritative documents (.rules, docs/, ADRs) via the
+# knowledge base and lets the reviewer read them and judge for itself. Keeping the
+# rules in one place avoids the config drifting out of sync with the docs.
+
+language: "en-US"
+
+tone_instructions: >
+  Be concise and direct. Follow the repo's .rules and design docs (ADRs, ROADMAP).
+  Flag performance, security, and spec mismatches against the docs first. Small
+  syntax nits are welcome. Don't re-flag fmt/clippy/cargo-deny already gated by CI.
+
+reviews:
+  profile: assertive
+  # Pre-alpha: surface issues but don't hard-block merges via GitHub's
+  # request-changes mechanism.
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    # nohrs develops off `develop`; review PRs targeting it (and release branches).
+    base_branches:
+      - "develop"
+      - "release/.*"
+
+  # Skip generated, vendored, and non-source artifacts.
+  path_filters:
+    - "!target/**"
+    - "!**/*.lock"
+    - "!**/node_modules/**"
+    - "!web/**/dist/**"
+    - "!web/**/.output/**"
+
+  # Minimal pointer only — the substance lives in the knowledge base below.
+  path_instructions:
+    - path: "crates/**/*.rs"
+      instructions: >
+        Review against the repo's .rules and the relevant docs/ and docs/adr files
+        rather than generic Rust style. Prioritize performance, security
+        (untrusted input, filesystem/symlink handling, plugin permissions), and
+        any mismatch with the design docs (ADRs, ROADMAP, spec docs).
+
+knowledge_base:
+  # Let CodeRabbit read the project's own guidelines and specs so it can apply
+  # nohrs-specific conventions and catch divergence from the design.
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - ".rules"
+      - "CLAUDE.md"
+      - "CONTRIBUTING.md"
+      - "docs/**/*.md"
+      - "deny.toml"
+      - "clippy.toml"
+  learnings:
+    scope: "local"

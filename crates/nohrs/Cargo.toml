@@ -1,0 +1,32 @@
+[package]
+name = "nohrs"
+description = "Launcher × Explorer — a fast, extensible, plugin-ready file workspace built in Rust."
+keywords = ["launcher", "file-explorer", "file-manager", "gpui", "productivity"]
+categories = ["filesystem", "gui"]
+readme = "../../README.md"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+
+[[bin]]
+name = "nohrs"
+path = "src/main.rs"
+
+[dependencies]
+nohrs-core     = { path = "../nohrs-core" }
+nohrs-models   = { path = "../nohrs-models" }
+nohrs-services = { path = "../nohrs-services", features = ["gui"] }
+nohrs-ui       = { path = "../nohrs-ui" }
+nohrs-pages    = { path = "../nohrs-pages" }
+nohrs-store    = { path = "../nohrs-store" }
+gpui = "0.2"
+gpui-component = "0.5"
+tracing.workspace = true
+clap.workspace    = true
+
+[lints]
+workspace = true

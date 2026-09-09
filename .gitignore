@@ -12,7 +12,8 @@
 
 # Logs & env
 *.log
-.env*
+.env
+.env.*
 
 # macOS
 .DS_Store
@@ -20,6 +21,17 @@
 # Coverage / tooling
 coverage/
 
+# AI Agent
+.agent
+
 # personal
-/.github
 /.specify
+
+# Nix
+result
+result-*
+.direnv/
+
+# Python bytecode
+__pycache__/
+*.pyc

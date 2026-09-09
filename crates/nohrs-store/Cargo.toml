@@ -1,0 +1,29 @@
+[package]
+name = "nohrs-store"
+description = "Persistence layer: SQLite (metadata/history) and redb (host KV) behind interface-segregated traits."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+
+[lib]
+name = "nohrs_store"
+path = "src/nohrs_store.rs"
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace   = true
+# `bundled` vendors SQLite (no OS dependency, stable docker/nix). `blob` enables
+# incremental BLOB I/O (reserved for P3 content hashing). `trace` exposes the
+# `profile` hook used by the diagnostics query logger. No tokio is pulled in.
+rusqlite = { version = "0.40", features = ["bundled", "blob", "trace"] }
+redb     = "4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

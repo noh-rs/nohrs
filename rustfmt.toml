@@ -1,0 +1,11 @@
+# Formatting rules — mirrors docs/testing.md §3.
+#
+# `imports_granularity` and `group_imports` are nightly-only rustfmt options: the
+# stable toolchain (rust-toolchain.toml) parses but does not apply them, so
+# `cargo fmt --check` on stable enforces only `edition` / `reorder_imports`. They
+# are kept here so a nightly `cargo fmt` reorganizes imports consistently and so
+# the intended policy is documented in one place.
+edition = "2024"
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+reorder_imports = true

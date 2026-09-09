@@ -1,0 +1,13 @@
+services:
+  nohrs:
+    build:
+      context: ../..
+      dockerfile: docker/dev/Dockerfile
+    environment:
+      - DISPLAY
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${XAUTHORITY:-/dev/null}:/root/.Xauthority:ro
+      - ../..:/nohrs
+      - ${HOME}/.cargo/registry:/root/.cargo/registry
+    entrypoint: ["/bin/bash", "-lc", "cargo build -p nohrs && exec cargo run -p nohrs"]

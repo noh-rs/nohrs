@@ -1,0 +1,61 @@
+---
+source: crates/nohrs-core/src/config/settings.rs
+expression: parsed
+---
+(
+    Config {
+        schema_version: 1,
+        theme: Theme {
+            mode: System,
+            accent: "teal",
+        },
+        ui: Ui {
+            default_sort: Name,
+            show_hidden: true,
+            icon_pack: "default",
+        },
+        explorer: Explorer {
+            split_direction: Vertical,
+            synced_panes: false,
+            restore_tabs: true,
+        },
+        keybindings: Keybindings {
+            bindings: {},
+        },
+        plugins: Plugins {
+            core: [],
+            community: [],
+        },
+        indexing: Indexing {
+            mode: Auto,
+            exclude: IndexingExclude {
+                paths: [],
+                globs: [],
+            },
+        },
+        search: Search {
+            backend: Auto,
+        },
+        launcher: Launcher {
+            hotkey: "Cmd+Shift+Space",
+            position_remember: true,
+        },
+        diagnostics: Diagnostics {
+            store: DiagnosticsStore {
+                log_all_queries: false,
+                slow_query_ms: 0,
+                log_redb_ops: false,
+            },
+        },
+    },
+    [
+        Diagnostic {
+            level: Warning,
+            message: "invalid theme.mode \"neon\"; using System",
+        },
+        Diagnostic {
+            level: Warning,
+            message: "unknown config key ui.unknown_key; ignoring",
+        },
+    ],
+)

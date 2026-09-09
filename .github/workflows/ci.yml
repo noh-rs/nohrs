@@ -1,0 +1,410 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+    paths-ignore:
+      - "web/**"
+      - "docs/**"
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "web/**"
+      - "docs/**"
+      - "**.md"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege by default; the coverage job opts into `code-quality: write`.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: rustfmt
+
+      - name: Format
+        run: cargo fmt --all --check
+
+  # Spell check (required). Project proper nouns are allow-listed in typos.toml.
+  # Note: this workflow skips doc-only changes via `paths-ignore`, so typos gates
+  # code/comment spelling; prose in `docs/**` / `**.md` is not checked here.
+  typos:
+    name: typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install typos
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        with:
+          tool: typos
+
+      - name: Spell check
+        run: typos
+
+  # Keeps `docs/config.schema.json` in lock-step with the `Config` structs. The
+  # schema is generated from the Rust types (schemars) via a `nohrs-core` example
+  # so it builds on Linux without the gpui-backed binary. Regenerating into the
+  # committed path and diffing makes a stale schema a hard failure with a visible
+  # diff; `nohrs config schema` emits the same bytes. Regenerate locally with
+  # `cargo run -p nohrs-core --example schema > docs/config.schema.json`.
+  schema:
+    name: config schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Regenerate JSON Schema
+        run: cargo run -p nohrs-core --example schema --locked > docs/config.schema.json
+
+      - name: Fail if the committed schema is stale
+        run: git diff --exit-code -- docs/config.schema.json
+
+  # gpui renders with Metal/Blade and the GUI stack is only exercised on macOS.
+  # Linux therefore lints/tests/builds the headless `default-members` subset
+  # (nohrs-core / nohrs-models / nohrs-services without its `gui` feature), while
+  # macOS covers the full workspace with `--all-features` (pulling in gpui). This
+  # mirrors the `default-members` split documented in the workspace Cargo.toml.
+  clippy:
+    name: clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            args: "--all-targets"
+          - os: macos-latest
+            args: "--workspace --all-targets --all-features"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # `unwrap_used` / `expect_used` are enforced as warn-level workspace lints
+      # (see [workspace.lints.clippy] in Cargo.toml), promoted to errors here by
+      # `-D warnings`. Tests are exempt via clippy.toml.
+      - name: Clippy
+        run: cargo clippy ${{ matrix.args }} --locked -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            args: ""
+          - os: macos-latest
+            args: "--workspace --all-features"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Test
+        run: cargo test ${{ matrix.args }} --locked
+
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # lib only (headless default-members)
+          - os: ubuntu-latest
+            args: ""
+          # full workspace including the gpui-backed `nohrs` binary
+          - os: macos-latest
+            args: "--workspace"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Build
+        run: cargo build ${{ matrix.args }} --locked
+
+  # `bans` / `licenses` / `sources` are the required gate. `advisories` runs as a
+  # separate informational step (continue-on-error) so transitive advisories from
+  # the gpui async stack are surfaced without blocking merge (see deny.toml).
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        with:
+          tool: cargo-deny
+
+      - name: cargo-deny (bans / licenses / sources)
+        run: cargo deny check bans licenses sources
+
+      - name: cargo-deny (advisories, informational)
+        continue-on-error: true
+        run: cargo deny check advisories
+
+  # Coverage is an enforced gate with two layers, so a high aggregate cannot hide
+  # an untested file: `coverage-core` requires ≥80% lines of `nohrs-core` (both
+  # the crate aggregate and each file), and `coverage-overall` requires ≥50%
+  # across the whole workspace PLUS ≥70% on each individually testable file (pure
+  # rendering / binary entrypoint / external search backends are excluded by
+  # regex — see the per-file step). Any threshold failing fails CI.
+  # `coverage-core` runs on Linux (headless, `-p nohrs-core` — the foundational
+  # crate the 80% target refers to); `coverage-overall` runs on macOS with
+  # `--workspace --all-features` so gpui (Metal backend, no system libs needed) is
+  # instrumented too. The `#[gpui::test]` suite runs headlessly via
+  # `TestAppContext` on both. Each job feeds GitHub's native code coverage (PR
+  # diff inline; requires Code Quality enabled in repo settings) and uploads its
+  # browsable HTML report as a downloadable CI artifact.
+  #
+  # These are two explicit jobs rather than one matrix: matrix legs share a
+  # single set of `outputs`, and GitHub keeps only the last leg's values
+  # (last-writer-wins, not merged), so a matrix could not reliably surface both
+  # tier rates to `coverage-report`. Separate jobs each expose a stable `rate`.
+  # The threshold is enforced in a final step (after the rate-extraction and
+  # uploads) so the PR comment and HTML artifacts still post when the gate trips.
+  coverage-core:
+    name: coverage (core)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      code-quality: write
+    outputs:
+      rate: ${{ steps.rate.outputs.rate }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          # Check out the PR head (not the synthetic merge commit) so coverage
+          # line mapping matches GitHub's native diff annotations.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        with:
+          tool: cargo-llvm-cov
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # `-p nohrs-core` scopes the "core" tier to the foundational crate the 80%
+      # target refers to (models/services are covered by the overall tier). Runs
+      # the tests under instrumentation; the HTML report and threshold check below
+      # reuse this profile data, so they do not re-run the tests.
+      - name: Generate Cobertura XML
+        run: cargo llvm-cov -p nohrs-core --locked --cobertura --output-path cobertura-core.xml
+      - name: Generate HTML report
+        run: cargo llvm-cov report --html --output-dir target/llvm-cov
+      - name: Extract line rate
+        id: rate
+        shell: bash
+        run: |
+          rate=$(grep -o -m1 'line-rate="[0-9.]*"' cobertura-core.xml | grep -o -m1 '[0-9.]*')
+          pct=$(awk "BEGIN { printf \"%.2f\", ${rate:-0} * 100 }")
+          echo "rate=${pct}" >> "$GITHUB_OUTPUT"
+      # GitHub native code coverage (PR diff inline). Skipped for PRs from forks,
+      # which cannot write coverage data.
+      - name: Upload coverage to GitHub
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3 # v1
+        with:
+          file: cobertura-core.xml
+          language: Rust
+          label: code-coverage/core
+      # Browsable line-by-line report. Download the artifact and open index.html.
+      - name: Upload HTML report artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-html-core
+          path: target/llvm-cov/html
+      # Enforced gate, run last so the rate output and artifacts above still post
+      # when coverage is under target. Re-renders the profile data collected
+      # above. `--fail-under-lines` guards the crate aggregate; `--fail-under-file-lines`
+      # guards each file so a single near-0% file cannot hide behind the average.
+      - name: Enforce core coverage thresholds
+        run: cargo llvm-cov report --fail-under-lines 80 --fail-under-file-lines 80
+
+  coverage-overall:
+    name: coverage (overall)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      code-quality: write
+    outputs:
+      rate: ${{ steps.rate.outputs.rate }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        with:
+          tool: cargo-llvm-cov
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # `--all-features` pulls in gpui (Metal backend on macOS); the GUI crates
+      # are instrumented and `#[gpui::test]` runs headlessly via `TestAppContext`.
+      - name: Generate Cobertura XML
+        run: cargo llvm-cov --workspace --all-features --locked --cobertura --output-path cobertura-overall.xml
+      # Bare `report` re-renders the data already collected above; its scope
+      # (`--workspace --all-features`, incl. the GUI crates) is fixed at
+      # collection time, so the HTML covers every workspace crate. `report` does
+      # not accept `--workspace` / `--all-features` (it does not rebuild).
+      - name: Generate HTML report
+        run: cargo llvm-cov report --html --output-dir target/llvm-cov
+      - name: Extract line rate
+        id: rate
+        shell: bash
+        run: |
+          rate=$(grep -o -m1 'line-rate="[0-9.]*"' cobertura-overall.xml | grep -o -m1 '[0-9.]*')
+          pct=$(awk "BEGIN { printf \"%.2f\", ${rate:-0} * 100 }")
+          echo "rate=${pct}" >> "$GITHUB_OUTPUT"
+      - name: Upload coverage to GitHub
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3 # v1
+        with:
+          file: cobertura-overall.xml
+          language: Rust
+          label: code-coverage/overall
+      - name: Upload HTML report artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-html-overall
+          path: target/llvm-cov/html
+      # Enforced gate, run last so the rate output and artifacts above still post
+      # when coverage is under target. Re-renders the profile data collected above.
+      # Aggregate floor over the whole workspace (every file counts).
+      - name: Enforce overall coverage threshold
+        run: cargo llvm-cov report --fail-under-lines 50
+      # Per-file floor on the testable subset, so a near-0% testable file cannot
+      # hide behind the aggregate. The ignored set is code that is not testable
+      # in-process: the gpui binary entrypoint (`nohrs/src/{app,cli,main}.rs`)
+      # and the CLI's (`nohrs-cli/src/main.rs` — process wiring only: locking the
+      # real stdio, opening the real trash, reading the real environment. Its
+      # argument parsing and command engines live in the library, which is not
+      # excluded),
+      # pure rendering/view and window-chrome code, the search backends (external
+      # processes / tantivy index), and the page/list glue exercised only through
+      # the running app. The reusable components (`file_list`, `footer`, `pane`)
+      # are now covered by `#[gpui::test]`s that build/draw them in a test window,
+      # so only `unified_toolbar` stays excluded (its popup-menu body only runs
+      # when the menu is opened, which a headless draw never triggers).
+      - name: Enforce per-file coverage floor (testable subset)
+        run: >
+          cargo llvm-cov report --fail-under-file-lines 70
+          --ignore-filename-regex 'nohrs/src/(app|cli|main)\.rs|nohrs-cli/src/main\.rs|/explorer/view|/explorer\.rs|/explorer/list_setup\.rs|nohrs-pages/src/(root|git|s3|settings|extensions|nohrs_pages)\.rs|/search/|nohrs-services/src/search\.rs|nohrs-ui/src/(assets|window)\.rs|/components/layout/unified_toolbar\.rs'
+
+  # Posts (or updates) a single PR comment reporting both tiers against their
+  # targets. A dedicated job (rather than the coverage jobs themselves) avoids a
+  # race on the shared comment. Reads each tier's line rate from its job output,
+  # so it needs no artifact download. Skipped for fork PRs (read-only token).
+  coverage-report:
+    name: coverage report
+    runs-on: ubuntu-latest
+    needs: [coverage-core, coverage-overall]
+    # `always()` so the summary posts even when a coverage job fails its gate
+    # (the `rate` outputs are set before the threshold step trips).
+    if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment coverage summary on PR
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CORE_RATE: ${{ needs.coverage-core.outputs.rate }}
+          OVERALL_RATE: ${{ needs.coverage-overall.outputs.rate }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            // `core`, `github`, `context` are injected by github-script; avoid
+            // shadowing them (a `const core` redeclaration is a SyntaxError).
+            const mark = (pct, target) =>
+              pct === 'n/a' ? '⚠️' : (parseFloat(pct) >= target ? '✅' : '❌');
+            const corePct = process.env.CORE_RATE || 'n/a';
+            const overallPct = process.env.OVERALL_RATE || 'n/a';
+            const marker = '<!-- coverage-report -->';
+            const body = `${marker}\n`
+              + `📊 **Coverage**\n\n`
+              + `| Tier | Line coverage | Target | |\n`
+              + `| --- | --- | --- | --- |\n`
+              + `| Core (\`nohrs-core\`) | ${corePct}% | 80% | ${mark(corePct, 80)} |\n`
+              + `| Overall incl. GUI (\`--all-features\`) | ${overallPct}% | 50% | ${mark(overallPct, 50)} |\n\n`
+              + `[⬇️ HTML reports](${process.env.RUN_URL}) — download the `
+              + `\`coverage-html-core\` / \`coverage-html-overall\` artifacts and open \`index.html\`.\n\n`
+              + `> Enforced gate: a tier below its target fails CI.`;
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: context.issue.number, body,
+              });
+            }

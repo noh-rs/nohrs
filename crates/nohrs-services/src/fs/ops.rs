@@ -1,0 +1,696 @@
+//! Filesystem mutation operations: copy, move, rename, create, trash, and
+//! permanent delete, with cross-volume awareness and conflict-name resolution.
+//!
+//! These functions are synchronous filesystem IO. Callers that must stay
+//! responsive during large operations should run them on a background executor
+//! (mirroring how `search` offloads work via `cx.background_spawn`). The UI
+//! layer is expected to route all mutations through this module rather than
+//! calling `std::fs` directly (see `docs/explorer-essentials.md` §8).
+
+use crate::fs::trash;
+use nohrs_core::errors::{Error, Result};
+use nohrs_store::TrashLedger;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+
+/// How a [`move_path`] operation was carried out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveKind {
+    /// The move stayed on a single filesystem and used `rename(2)`.
+    Rename,
+    /// The move was carried out as a recursive copy followed by deleting the
+    /// source: source and destination are on different filesystems, or — for
+    /// [`move_path_no_replace`] — no no-replace rename was available.
+    CrossVolume,
+}
+
+/// How a name collision at the destination should be resolved when copying or
+/// moving. The resolution itself is applied by the caller; this module only
+/// provides the building blocks ([`would_conflict`], [`unique_name`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictResolution {
+    /// Keep both items by writing to a non-colliding name (see [`unique_name`]).
+    Rename,
+    /// Replace the existing destination.
+    Overwrite,
+    /// Leave the destination untouched and skip this item.
+    Skip,
+}
+
+/// Returns whether `dst` is already occupied, the condition that triggers
+/// conflict resolution before a copy or move.
+///
+/// Unlike [`Path::exists`], this probes the entry itself rather than following
+/// symlinks, so a dangling symlink at `dst` still counts as occupied. An
+/// ambiguous error (e.g. a permission failure while stat-ing) is treated
+/// conservatively as occupied so the caller surfaces the conflict path rather
+/// than silently overwriting.
+pub fn would_conflict(dst: &Path) -> bool {
+    path_occupied(dst)
+}
+
+// Whether a filesystem entry exists at `path`, detecting the entry itself
+// (including a broken symlink) rather than following links. Ambiguous errors
+// are reported as occupied; only a definitive "not found" is reported as free.
+fn path_occupied(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+// Validates that `name` is a single, normal path component — not empty, not `.`
+// or `..`, and free of path separators — so child-name inputs cannot escape the
+// target directory when joined.
+fn ensure_plain_name(name: &str) -> Result<()> {
+    let mut components = Path::new(name).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(component)), None) if component == std::ffi::OsStr::new(name) => {
+            Ok(())
+        }
+        _ => Err(Error::Other(format!("invalid file name: {name:?}"))),
+    }
+}
+
+/// Returns `true` when `src` and `dst_dir` reside on different filesystems, in
+/// which case a move cannot use `rename(2)` and must copy then delete.
+///
+/// On non-Unix platforms device ids are not consulted, so this conservatively
+/// returns `false`; [`move_path`] still detects the cross-device error from
+/// `rename` and falls back to copy + delete regardless.
+pub fn is_cross_volume(src: &Path, dst_dir: &Path) -> Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // `rename(2)` acts on the source directory entry itself, so use the
+        // entry's own device (don't follow a symlink). The destination is the
+        // directory the entry lands in, so its resolved device is what matters.
+        let src_dev = fs::symlink_metadata(src)?.dev();
+        let dst_dev = fs::metadata(dst_dir)?.dev();
+        Ok(src_dev != dst_dev)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (src, dst_dir);
+        Ok(false)
+    }
+}
+
+/// Produces a file name within `dir` that does not collide with an existing
+/// entry, deriving it from `name` by inserting ` (N)` before the extension
+/// (`report.pdf` becomes `report (2).pdf`), trying `N = 2, 3, ...` until a free
+/// name is found. Returns `name` unchanged when there is no collision.
+pub fn unique_name(dir: &Path, name: &str) -> String {
+    if !path_occupied(&dir.join(name)) {
+        return name.to_string();
+    }
+    let path = Path::new(name);
+    let extension = path.extension().and_then(|ext| ext.to_str());
+    // `file_stem` is `None` only for empty names; fall back to the full name so
+    // we never panic and always make progress.
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    let mut counter: u32 = 2;
+    loop {
+        let candidate = match extension {
+            Some(extension) => format!("{stem} ({counter}).{extension}"),
+            None => format!("{stem} ({counter})"),
+        };
+        if !path_occupied(&dir.join(&candidate)) {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
+/// Recursively copies `src` (a file or directory) to `dst`, where `dst` is the
+/// full destination path rather than its parent directory. Missing parent
+/// directories are created; an existing destination file is overwritten.
+#[tracing::instrument(target = "nohrs::op", name = "fs.copy", level = "debug", skip_all, fields(src = %src.display(), dst = %dst.display()))]
+pub fn copy_path(src: &Path, dst: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(src)?;
+    if metadata.is_dir() {
+        copy_dir_all(src, dst, Links::Follow)
+    } else {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(src, dst)?;
+        Ok(())
+    }
+}
+
+/// What a recursive copy does with a symbolic link it meets. Neither option
+/// recurses into one, so neither can loop.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Links {
+    /// Copy what the link points at, which is what [`copy_path`] has always
+    /// done and what a user dragging a folder in the explorer expects.
+    Follow,
+    /// Recreate the link itself. A move must hand back what it was given, so
+    /// this is what [`move_path_no_replace`] copies with.
+    Preserve,
+}
+
+// Recursively copies the contents of directory `src` into `dst`, creating
+// `dst` and any intermediate directories.
+fn copy_dir_all(src: &Path, dst: &Path, links: Links) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if file_type.is_symlink() && links == Links::Preserve {
+            symlink_no_replace(&fs::read_link(&from)?, &to)?;
+        } else if file_type.is_dir() {
+            copy_dir_all(&from, &to, links)?;
+        } else {
+            fs::copy(&from, &to)?;
+        }
+    }
+    // `create_dir_all` derives the mode from the umask, so a private `0700`
+    // directory would otherwise arrive world-readable and expose what it holds.
+    // Applied last: a directory the source made unwritable must not become
+    // unwritable here until everything is inside it.
+    fs::set_permissions(dst, fs::metadata(src)?.permissions())?;
+    Ok(())
+}
+
+/// Moves `src` to `dst`. Uses `rename(2)` when both reside on the same
+/// filesystem; otherwise (a cross-volume move) copies `src` recursively to
+/// `dst` and then removes the source, reporting which path was taken.
+#[tracing::instrument(target = "nohrs::op", name = "fs.move", level = "debug", skip_all, fields(src = %src.display(), dst = %dst.display()))]
+pub fn move_path(src: &Path, dst: &Path) -> Result<MoveKind> {
+    match fs::rename(src, dst) {
+        Ok(()) => Ok(MoveKind::Rename),
+        Err(error) if is_cross_device(&error) => {
+            copy_path(src, dst)?;
+            delete_permanent(src)?;
+            Ok(MoveKind::CrossVolume)
+        }
+        Err(error) => Err(Error::Io(error)),
+    }
+}
+
+/// Moves `src` to `dst` like [`move_path`], but fails instead of replacing
+/// anything that is already at `dst`.
+///
+/// Checking with [`would_conflict`] and then calling [`move_path`] is not the
+/// same thing: `rename(2)` replaces, so a file created in between is silently
+/// destroyed. Restoring from the trash writes to a path the user last saw empty
+/// minutes or days ago, which is exactly when something else may have taken it.
+///
+/// On Linux and macOS the rename itself carries the no-replace flag, so the
+/// whole move is atomic against a concurrent create. Elsewhere — and on
+/// filesystems that reject the flag — it falls back to [`copy_path_no_replace`]
+/// plus deleting the source, which claims the destination atomically too; a
+/// check followed by a replacing `rename` would not, which is the very hole this
+/// function exists to close.
+pub fn move_path_no_replace(src: &Path, dst: &Path) -> Result<MoveKind> {
+    match rename_no_replace(src, dst) {
+        Some(Ok(())) => return Ok(MoveKind::Rename),
+        Some(Err(error)) if !is_cross_device(&error) => return Err(Error::Io(error)),
+        // Cross-device, or no no-replace rename to be had: copy and delete.
+        Some(Err(_)) | None => {}
+    }
+    copy_path_no_replace(src, dst)?;
+    delete_permanent(src)?;
+    Ok(MoveKind::CrossVolume)
+}
+
+/// `rename(2)` with the platform's no-replace flag, or `None` where the
+/// platform or the filesystem does not offer one and the caller must fall back.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn rename_no_replace(src: &Path, dst: &Path) -> Option<std::io::Result<()>> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    match renameat_with(CWD, src, CWD, dst, RenameFlags::NOREPLACE) {
+        Ok(()) => Some(Ok(())),
+        // The flag reaches the filesystem driver, and not every driver
+        // implements it: overlayfs and some network mounts report `EINVAL`,
+        // a pre-4.9 kernel `ENOSYS`, a non-APFS macOS volume `ENOTSUP`.
+        Err(rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::NOTSUP) => {
+            None
+        }
+        Err(error) => Some(Err(std::io::Error::from(error))),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn rename_no_replace(_src: &Path, _dst: &Path) -> Option<std::io::Result<()>> {
+    None
+}
+
+// The copying half of `move_path_no_replace`. Every branch claims the
+// destination with a call that fails if the name is taken — `symlink`,
+// `create_dir`, `create_new` — so nothing is written over a file that appeared
+// since the caller looked. Unlike `copy_path`, a symlink is recreated as a
+// symlink and permissions are carried across: this stands in for a move, so
+// what arrives has to be what left.
+fn copy_path_no_replace(src: &Path, dst: &Path) -> Result<()> {
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let metadata = fs::symlink_metadata(src)?;
+    if metadata.is_symlink() {
+        return symlink_no_replace(&fs::read_link(src)?, dst);
+    }
+    if metadata.is_dir() {
+        // `create_dir` rather than the `create_dir_all` inside `copy_dir_all`,
+        // so an existing destination is refused; the recursion then fills it in
+        // and applies the source's mode to it and to every directory below.
+        fs::create_dir(dst)?;
+        return copy_dir_all(src, dst, Links::Preserve);
+    }
+    let mut source = fs::File::open(src)?;
+    let mut destination = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst)?;
+    std::io::copy(&mut source, &mut destination)?;
+    // After the contents, so a read-only mode cannot stop the copy that has to
+    // happen first.
+    fs::set_permissions(dst, metadata.permissions())?;
+    Ok(())
+}
+
+// Recreates a symlink to `target` at `link`, failing if `link` is taken.
+#[cfg(unix)]
+fn symlink_no_replace(target: &Path, link: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(target, link)?;
+    Ok(())
+}
+
+// Only Linux and macOS reach the copying fallback with a symlink in hand — they
+// are the platforms with a no-replace rename to fail over from, and the only
+// ones whose trash is served by `LedgerStore`. Refusing beats the alternative of
+// silently replacing a link with a copy of whatever it pointed at.
+#[cfg(not(unix))]
+fn symlink_no_replace(_target: &Path, link: &Path) -> Result<()> {
+    Err(Error::Other(format!(
+        "cannot recreate a symbolic link on this platform: {}",
+        link.display()
+    )))
+}
+
+// Whether an IO error from `rename` indicates the source and destination are on
+// different devices, the signal to fall back to copy + delete.
+#[cfg(unix)]
+fn is_cross_device(error: &std::io::Error) -> bool {
+    // EXDEV ("Invalid cross-device link") is 18 on Linux and macOS.
+    error.raw_os_error() == Some(18)
+}
+
+#[cfg(windows)]
+fn is_cross_device(error: &std::io::Error) -> bool {
+    // ERROR_NOT_SAME_DEVICE.
+    error.raw_os_error() == Some(17)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn is_cross_device(_error: &std::io::Error) -> bool {
+    false
+}
+
+/// Renames `src` to `new_name` within its current directory, returning the new
+/// full path. `new_name` must be a bare file name, not a path with separators.
+#[tracing::instrument(target = "nohrs::op", name = "fs.rename", level = "debug", skip_all, fields(src = %src.display(), new_name))]
+pub fn rename_in_place(src: &Path, new_name: &str) -> Result<PathBuf> {
+    ensure_plain_name(new_name)?;
+    let parent = src.parent().ok_or_else(|| {
+        Error::Other(format!(
+            "cannot rename path without a parent: {}",
+            src.display()
+        ))
+    })?;
+    let dst = parent.join(new_name);
+    fs::rename(src, &dst)?;
+    Ok(dst)
+}
+
+/// Creates a new directory named `name` inside `parent`, returning its full
+/// path. Fails if a file or directory of that name already exists.
+#[tracing::instrument(target = "nohrs::op", name = "fs.create_dir", level = "debug", skip_all, fields(parent = %parent.display(), name))]
+pub fn create_dir(parent: &Path, name: &str) -> Result<PathBuf> {
+    ensure_plain_name(name)?;
+    let dst = parent.join(name);
+    fs::create_dir(&dst)?;
+    Ok(dst)
+}
+
+/// Moves `path` to the operating system's trash/recycle bin.
+///
+/// `ledger` receives a record of where the item came from, so it can be restored
+/// later. Pass `None` where nothing will read it: on Linux and Windows the OS
+/// trash keeps the same facts and [`crate::fs::trash::OsStore`] restores from
+/// those, so a second copy would grow without bound with no reader.
+/// [`crate::fs::trash::OS_INDEX_AVAILABLE`] is how a caller decides.
+#[tracing::instrument(target = "nohrs::op", name = "fs.trash", level = "debug", skip_all, fields(path = %path.display()))]
+pub fn trash_path(path: &Path, ledger: Option<&dyn TrashLedger>) -> Result<()> {
+    // Captured before the move, while the item is still at its original
+    // location — that is the whole point of the record. Failing here fails the
+    // whole operation: nothing has moved yet, and deleting an item we already
+    // know we cannot record would make it unrestorable on this platform.
+    let captured = match ledger {
+        Some(_) => Some(trash::capture(path)?),
+        None => None,
+    };
+    ::trash::delete(path)
+        .map_err(|error| Error::Other(format!("failed to move to trash: {error}")))?;
+    // Past this point the item is in the trash, so a ledger write that fails
+    // cannot be reported as a failed delete — but it must not vanish either.
+    if let (Some(ledger), Some(captured)) = (ledger, captured)
+        && let Err(error) = record_trashed(ledger, &captured)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            %error,
+            "could not record the trashed item; it will not appear in `noh trash list`"
+        );
+    }
+    Ok(())
+}
+
+fn record_trashed(ledger: &dyn TrashLedger, captured: &nohrs_store::TrashEntry) -> Result<()> {
+    ledger
+        .append(captured)
+        .map(|_| ())
+        .map_err(|error| Error::Other(format!("could not write the trash ledger: {error}")))
+}
+
+/// Permanently deletes `path`, whether it is a file, symlink, or directory
+/// tree. This cannot be undone.
+#[tracing::instrument(target = "nohrs::op", name = "fs.delete", level = "debug", skip_all, fields(path = %path.display()))]
+pub fn delete_permanent(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path)?;
+    } else {
+        fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::disallowed_methods)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn unique_name_returns_input_when_no_collision() {
+        let dir = tempdir().unwrap();
+        assert_eq!(unique_name(dir.path(), "report.pdf"), "report.pdf");
+    }
+
+    #[test]
+    fn unique_name_inserts_counter_before_extension() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("report.pdf"), "a").unwrap();
+        assert_eq!(unique_name(dir.path(), "report.pdf"), "report (2).pdf");
+
+        fs::write(dir.path().join("report (2).pdf"), "b").unwrap();
+        assert_eq!(unique_name(dir.path(), "report.pdf"), "report (3).pdf");
+    }
+
+    #[test]
+    fn unique_name_handles_extensionless_names() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("folder")).unwrap();
+        assert_eq!(unique_name(dir.path(), "folder"), "folder (2)");
+    }
+
+    #[test]
+    fn would_conflict_reflects_existence() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("x");
+        assert!(!would_conflict(&target));
+        fs::write(&target, "x").unwrap();
+        assert!(would_conflict(&target));
+    }
+
+    #[test]
+    fn copy_path_copies_a_file() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        fs::write(&src, "hello").unwrap();
+        copy_path(&src, &dst).unwrap();
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "hello");
+        assert!(src.exists(), "source is preserved on copy");
+    }
+
+    #[test]
+    fn copy_path_copies_a_directory_tree() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("top.txt"), "top").unwrap();
+        fs::create_dir(src.join("nested")).unwrap();
+        fs::write(src.join("nested").join("deep.txt"), "deep").unwrap();
+
+        let dst = dir.path().join("dst");
+        copy_path(&src, &dst).unwrap();
+
+        assert_eq!(fs::read_to_string(dst.join("top.txt")).unwrap(), "top");
+        assert_eq!(
+            fs::read_to_string(dst.join("nested").join("deep.txt")).unwrap(),
+            "deep"
+        );
+    }
+
+    #[test]
+    fn move_path_within_volume_renames_and_removes_source() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("sub").join("a.txt");
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(&src, "payload").unwrap();
+
+        let kind = move_path(&src, &dst).unwrap();
+        assert_eq!(kind, MoveKind::Rename);
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "payload");
+    }
+
+    #[test]
+    fn move_path_no_replace_moves_when_the_destination_is_free() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        fs::write(&src, "payload").unwrap();
+
+        // Which of the two it takes depends on whether this filesystem accepts
+        // the no-replace flag, so only the outcome is asserted.
+        move_path_no_replace(&src, &dst).unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "payload");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_fallback_move_keeps_a_symlink_a_symlink_and_a_mode_a_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        fs::write(&target, "pointed at").unwrap();
+
+        // A copy that followed the link would restore the target's bytes and
+        // leave the link behind as a plain file.
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let moved_link = dir.path().join("moved-link.txt");
+        copy_path_no_replace(&link, &moved_link).unwrap();
+        assert!(fs::symlink_metadata(&moved_link).unwrap().is_symlink());
+        assert_eq!(fs::read_link(&moved_link).unwrap(), target);
+
+        // And the same for one nested inside a moved directory.
+        let tree = dir.path().join("tree");
+        fs::create_dir(&tree).unwrap();
+        std::os::unix::fs::symlink(&target, tree.join("inner-link.txt")).unwrap();
+        let moved_tree = dir.path().join("moved-tree");
+        copy_path_no_replace(&tree, &moved_tree).unwrap();
+        let inner = moved_tree.join("inner-link.txt");
+        assert!(fs::symlink_metadata(&inner).unwrap().is_symlink());
+        assert_eq!(fs::read_link(&inner).unwrap(), target);
+
+        let script = dir.path().join("script.sh");
+        fs::write(&script, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let moved_script = dir.path().join("moved-script.sh");
+        copy_path_no_replace(&script, &moved_script).unwrap();
+        assert_eq!(
+            fs::metadata(&moved_script).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "an executable must not come back from the trash unexecutable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_fallback_move_keeps_a_private_directory_private_at_every_depth() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // `create_dir_all` takes its mode from the umask, so without carrying
+        // the source's across, a restored `0700` directory would come back
+        // readable by anyone with an account on the machine.
+        let dir = tempdir().unwrap();
+        let outer = dir.path().join("secrets");
+        let inner = outer.join("deeper");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("key.txt"), "private").unwrap();
+        fs::set_permissions(&inner, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&outer, fs::Permissions::from_mode(0o750)).unwrap();
+
+        let moved = dir.path().join("moved-secrets");
+        copy_path_no_replace(&outer, &moved).unwrap();
+
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&moved), 0o750);
+        assert_eq!(mode(&moved.join("deeper")), 0o700);
+        assert_eq!(
+            fs::read_to_string(moved.join("deeper").join("key.txt")).unwrap(),
+            "private",
+            "the contents still have to arrive, mode applied last"
+        );
+    }
+
+    #[test]
+    fn move_path_no_replace_refuses_an_occupied_destination() {
+        // The difference from `move_path` that restoring depends on: whatever
+        // is already there survives, and the source is still where it was.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        fs::write(&src, "restored").unwrap();
+        fs::write(&dst, "newer").unwrap();
+
+        let error = move_path_no_replace(&src, &dst).unwrap_err();
+
+        assert!(
+            matches!(&error, Error::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "newer");
+        assert_eq!(fs::read_to_string(&src).unwrap(), "restored");
+    }
+
+    #[test]
+    fn move_path_no_replace_refuses_an_occupied_directory_destination() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("inside.txt"), "mine").unwrap();
+        fs::create_dir(&dst).unwrap();
+        fs::write(dst.join("theirs.txt"), "theirs").unwrap();
+
+        assert!(move_path_no_replace(&src, &dst).is_err());
+
+        assert!(dst.join("theirs.txt").is_file());
+        assert!(!dst.join("inside.txt").exists());
+        assert!(src.join("inside.txt").is_file());
+    }
+
+    #[test]
+    fn the_fallback_move_claims_the_destination_before_writing_to_it() {
+        // Exercised directly: a test has one filesystem, so `rename` never
+        // returns `EXDEV` and the copy path is otherwise unreachable here. It
+        // is what runs wherever no no-replace rename exists, so it has to be as
+        // refusing as the rename is.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("top.txt"), "top").unwrap();
+        let dst = dir.path().join("nested").join("dst");
+
+        // A missing parent is created, the way `copy_path` does it.
+        copy_path_no_replace(&src, &dst).unwrap();
+        assert_eq!(fs::read_to_string(dst.join("top.txt")).unwrap(), "top");
+
+        assert!(copy_path_no_replace(&src, &dst).is_err());
+
+        let file = dir.path().join("file.txt");
+        fs::write(&file, "mine").unwrap();
+        let taken = dir.path().join("taken.txt");
+        fs::write(&taken, "theirs").unwrap();
+        assert!(copy_path_no_replace(&file, &taken).is_err());
+        assert_eq!(fs::read_to_string(&taken).unwrap(), "theirs");
+    }
+
+    #[test]
+    fn rename_in_place_changes_name_keeps_dir() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("old.txt");
+        fs::write(&src, "x").unwrap();
+
+        let dst = rename_in_place(&src, "new.txt").unwrap();
+        assert_eq!(dst, dir.path().join("new.txt"));
+        assert!(!src.exists());
+        assert!(dst.exists());
+    }
+
+    #[test]
+    fn create_dir_makes_a_new_directory() {
+        let dir = tempdir().unwrap();
+        let created = create_dir(dir.path(), "fresh").unwrap();
+        assert_eq!(created, dir.path().join("fresh"));
+        assert!(created.is_dir());
+    }
+
+    #[test]
+    fn delete_permanent_removes_file_and_tree() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("f.txt");
+        fs::write(&file, "x").unwrap();
+        delete_permanent(&file).unwrap();
+        assert!(!file.exists());
+
+        let tree = dir.path().join("tree");
+        fs::create_dir(&tree).unwrap();
+        fs::write(tree.join("inner.txt"), "y").unwrap();
+        delete_permanent(&tree).unwrap();
+        assert!(!tree.exists());
+    }
+
+    #[test]
+    fn would_conflict_detects_a_dangling_symlink() {
+        let dir = tempdir().unwrap();
+        let link = dir.path().join("broken");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.path().join("missing-target"), &link).unwrap();
+        #[cfg(not(unix))]
+        std::fs::write(&link, "x").unwrap();
+        // `Path::exists()` would report `false` for a dangling symlink; the
+        // entry is nonetheless occupied.
+        assert!(would_conflict(&link));
+    }
+
+    #[test]
+    fn rename_and_create_reject_path_traversal_names() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("f.txt");
+        fs::write(&src, "x").unwrap();
+        for bad in ["../escape", "a/b", ".", "..", ""] {
+            assert!(
+                rename_in_place(&src, bad).is_err(),
+                "rename allowed {bad:?}"
+            );
+            assert!(
+                create_dir(dir.path(), bad).is_err(),
+                "create allowed {bad:?}"
+            );
+        }
+        // A plain name is still accepted.
+        assert!(create_dir(dir.path(), "ok-dir").is_ok());
+    }
+
+    #[test]
+    fn is_cross_volume_false_within_same_dir() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        fs::write(&src, "x").unwrap();
+        assert!(!is_cross_volume(&src, dir.path()).unwrap());
+    }
+}

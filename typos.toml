@@ -1,0 +1,26 @@
+# typos (https://github.com/crate-ci/typos) configuration — see docs/testing.md
+# §3. Project proper nouns and identifiers are allow-listed so the spell check
+# does not flag them. The CI `typos` job is a required gate.
+
+[files]
+# Generated or vendored content where typos must not gate.
+extend-exclude = [
+  "Cargo.lock",
+  # insta snapshots reproduce parsed input verbatim.
+  "*.snap",
+  # Generated JSON Schema.
+  "docs/config.schema.json",
+]
+
+[default]
+# Identifiers (code tokens) that are not misspellings. Matched against whole
+# identifiers as a regex.
+extend-ignore-identifiers-re = [
+  "noh.*rs",
+]
+
+[default.extend-words]
+# Proper nouns the dictionary would otherwise "correct".
+nohrs = "nohrs"
+gpui = "gpui"
+wasmtime = "wasmtime"

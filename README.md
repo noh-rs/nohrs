@@ -1,119 +1,102 @@
 <div align="center">
-  <img src="assets/doc/icon.png" alt="Nohrs Icon" width="128" height="128">
-  
+  <img src="assets/doc/icon.png" alt="Nohrs icon" width="128" height="128">
+
   # Nohrs
-  
-  **A fast, flexible, and extensible file explorer for macOS**
-  
-  Built with Rust 🦀 and gpui for blazing-fast performance
-  
-  [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-  [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
+
+  **Launcher × Explorer** — a fast, extensible, plugin-ready file workspace for macOS, built in Rust.
+
+  [![CI](https://github.com/noh-rs/nohrs/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/noh-rs/nohrs/actions/workflows/ci.yml)
+  [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+  [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](rust-toolchain.toml)
   [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos)
-  
-  <img src="assets/doc/screen-shot.jpeg" alt="Nohrs Screenshot" width="800">
-  
-  ---
-  
-  A modern alternative to macOS Finder, combining everyday usability with power-user functionality through a seamless, high-performance interface.
-  Spotlight-style navigation, cloud-connected workflows, and AI agents are planned to keep file work fast and intelligent.
-  
+  [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/dZM7fUtE94)
+
+  [Quick Start](#quick-start) · [Why Nohrs?](#why-nohrs) · [Roadmap](docs/ROADMAP.md) · [日本語 README](docs/README.ja.md)
+
+  <img src="assets/doc/screen-shot.jpeg" alt="Nohrs screenshot" width="800">
 </div>
 
-## Development
+Nohrs combines a Raycast-style launcher and a modern, keyboard-driven file explorer in a single app — a Finder alternative that stays fast, scriptable, and extensible through sandboxed plugins.
 
-- Toolchain: Rust (stable), pinned via `rust-toolchain.toml`.
-- Build (core library only): `cargo build`
-- Build GUI binary (placeholder UI): `cargo build --features gui`
-  - Run GUI binary: `cargo run --features gui --bin nohrs`
+## Demo
 
-Notes
+<div align="center">
+  <img src="assets/doc/demo.gif" alt="Nohrs in action — browse files, preview them, and search file contents with full-text search" width="760">
+</div>
 
-- The GUI is currently a placeholder entry-point that will be wired to gpui once a pinned version is selected.
+## Why Nohrs?
 
-### macOS prerequisites for gpui
+- **Launcher first-class** — a built-in launcher you can summon from a global hotkey, not bolted on after the fact.
+- **Explorer first-class** — split view, tabs, drag-and-drop, and bulk operations expected of a modern file manager.
+- **WASM Component Model plugins** — extend Nohrs in Rust, TypeScript, or Python, running sandboxed under an explicit-consent permission model.
+- **Search without Spotlight** — a self-contained SQLite + Tantivy hybrid index, with no dependency on the OS search daemon and first-class code-base awareness.
 
-gpui uses Metal on macOS and requires Xcode and the Metal toolchain.
+See the [Roadmap](docs/ROADMAP.md#ビジョン) for how these pillars map to releases.
 
-1. Install Xcode from the App Store (launch it once to finish setup)
-2. Install command line tools:
-   - `xcode-select --install`
-3. Ensure CLI uses the installed Xcode:
-   - `sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer`
-4. If build complains about missing Metal toolchain, fetch it:
-   - `xcodebuild -downloadComponent MetalToolchain`
+## Quick Start
 
-After completing the above, try building the GUI again.
+### Install (macOS)
 
-## Planned Features
+Nohrs is **pre-alpha** and not yet published. Once the first release ships:
 
-### Navigation & UI
+```sh
+# Planned — not available yet
+cargo install nohrs
+```
 
-- [ ] Tabs and split view for parallel directories
-- [ ] Inline preview for images, PDFs, text, and Markdown
-- [ ] Command palette for quick action search (VS Code-style)
-- [ ] Spotlight-style UI for fast, keyboard-driven navigation
-- [ ] File icons and custom emoji labels
+Prebuilt macOS binaries will appear on the [Releases](https://github.com/noh-rs/nohrs/releases) page. For now, build from source.
 
-### File Operations
-- [ ] In-place editing for `.txt` and `.md`
-- [ ] Bulk rename with regex and metadata rules
-- [ ] Advanced drag-and-drop (S3 upload, Git staging)
-- [ ] Clipboard history for multiple copied items
+### Build from source
 
-### Search & Indexing
-- [ ] Fast full-text search with Tantivy + ripgrep (fuzzy supported)
-- [ ] Smart folders filtered by tags, type, or date
-- [ ] Search inside previews (PDF, Markdown, code)
-- [ ] File ranking by open frequency, recency, and relevance etc.
+```sh
+# Toolkit-free crates only (core / models / services) — this is what Linux CI builds
+cargo build
 
-### Terminal Integration
-- [ ] Built-in PTY linked to current directory
-- [ ] Drag-to-escape paste for file paths
-- [ ] Task runner for one-click command execution
+# Full workspace, including the GUI crates and binary
+# (requires gpui's platform toolchain; macOS recommended — see below)
+cargo build --workspace
+cargo run -p nohrs
+```
 
-### Git Integration
-- [ ] Sidebar for status and branches
-- [ ] Diff preview and blame view
-- [ ] Merge-conflict resolution UI
+#### macOS prerequisites for gpui
 
-### Cloud Features
-- [ ] Cloud storage integrations (S3-compatible services and more)
-- [ ] Cross-device sync and offline-first workflows
-- [ ] Secure sharing with access controls
+gpui renders with Metal on macOS, so Xcode and the Metal toolchain are required:
 
-### Cloud Features
-- Cloud storage integrations (S3-compatible services and more)
-- Cross-device sync and offline-first workflows
-- Secure sharing with access controls
+1. Install Xcode from the App Store (launch it once to finish setup).
+2. Install the command line tools: `xcode-select --install`
+3. Point the CLI at the installed Xcode: `sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer`
+4. If the build reports a missing Metal toolchain: `xcodebuild -downloadComponent MetalToolchain`
 
-### S3-Compatible Storage
-- [ ] MinIO, Wasabi, and Cloudflare R2 support
-- [ ] Transfer queue and parallel uploads
-- [ ] Metadata editing and presigned URLs
-- [ ] Offline cache and sync recovery
+> For Linux native, Nix, and Docker setups, see the [recommended setup matrix](docs/dev-environment.md#1-推奨セットアップ早見表).
 
-### Automation & Extensions
-- [ ] Plugin system for custom UI or features
-- [ ] Folder-watch actions (auto-tag, auto-transfer)
-- [ ] CLI / HTTP API for external control
-- [ ] Remote browsing via SSH
+## Status
 
-### AI Agent Features
-- [ ] AI agent assistance for file organization and workflows
-- [ ] Natural-language actions (find, move, summarize, tag)
-- [ ] Smart automation suggestions based on context
+**Pre-alpha (v0.x).** The app is under active development and APIs, UI, and data formats will change without notice. The current GUI is an early entry point being wired up to gpui. Expect rough edges, and please file issues.
 
-## Contributing
+## Roadmap
 
-Contributions are welcome! Please feel free to submit a pull request.
+Nohrs ships in six serial phases. P1 iterates on `0.0.x`; the first usable MVP is cut as
+`0.1.0` when P2 completes, reaching `0.5.0` by P6 and `1.0.0` at stabilization. Highlights:
 
-### Code Style
+| Phase | Milestone | Theme |
+|-------|-----------|-------|
+| **P1** | `0.0.x` | Foundation — quality, workspace split, dev/CI infra, web MVP |
+| **P2** | `0.1.0` | Explorer Essentials — DnD, file ops, split view, tabs, persistence |
+| **P3** | `0.2.0` | Launcher & Search — global-hotkey launcher, SQLite FTS5 search |
+| **P4** | `0.3.0` | Plugin Host — WASM Component Model, 3-language templates |
+| **P5** | `0.4.0` | Ecosystem — Plugin Store, community plugins |
+| **P6** | `0.5.0` | Stabilization — multi-OS strategy, performance gates, docs |
 
-- Rust (stable; toolchain pinned via rust-toolchain.toml): Follow standard conventions
+Full details, vision, and design docs live in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
+## Community
 
-## Links
+- **Discord**: https://discord.gg/dZM7fUtE94
+- **X (Twitter)**: https://x.com/nohdotrs
+- **GitHub**: https://github.com/noh-rs/nohrs
 
-- **Discord**: https://discord.gg/dZM7fUtE94  
-- **X (Twitter)**: https://x.com/nohrsdotapp
+Contributions are welcome — open an issue or a pull request.
+
+## License
+
+Released under the [MIT License](LICENSE).

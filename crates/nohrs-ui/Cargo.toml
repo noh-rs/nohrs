@@ -1,0 +1,36 @@
+[package]
+name = "nohrs-ui"
+description = "Reusable GPUI components, theme, and window chrome for nohrs."
+keywords = ["gpui", "ui", "components", "gui"]
+categories = ["gui"]
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+
+[lib]
+name = "nohrs_ui"
+path = "src/nohrs_ui.rs"
+
+[dependencies]
+nohrs-core   = { path = "../nohrs-core" }
+nohrs-models = { path = "../nohrs-models" }
+gpui = "0.2"
+gpui-component = "0.5"
+rust-embed = "8"
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true
+time.workspace       = true
+
+[dev-dependencies]
+# `test-support` gates `TestAppContext` and the `#[gpui::test]` macro. It is a
+# dev-dependency so the gpui test backend only links into the test build.
+gpui = { version = "0.2", features = ["test-support"] }
+proptest = "1"
+
+[lints]
+workspace = true
