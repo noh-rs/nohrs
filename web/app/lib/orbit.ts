@@ -36,3 +36,27 @@ export function originFor(centre: number, zoom: number, spill = 0): number {
   const inside = Math.min(Math.max(centre, half - spill / zoom), 1 - half)
   return (inside - half) / (1 - 1 / zoom)
 }
+
+/**
+ * A frame that is not the shot's shape shows a slice of it. `fraction` is how
+ * much of the axis survives — the number `object-fit: cover` arrives at, the
+ * ratio of the two aspects — and this is the `object-position` that centres
+ * `centre` in that slice, held far enough in to keep the frame filled.
+ *
+ * It is `originFor` again: holding a slice `fraction` wide against a point is
+ * the same problem as holding a whole frame against it under a zoom of
+ * `1 / fraction`.
+ */
+export function cropFor(centre: number, fraction: number): number {
+  return originFor(centre, 1 / fraction)
+}
+
+/**
+ * Where `centre` ends up inside the frame once that slice is taken — the middle
+ * of it, unless the slice had to be held off an edge. It is the point the
+ * opened shot has to unzoom from, which is no longer the point on the shot.
+ */
+export function centreOfCrop(centre: number, fraction: number): number {
+  if (fraction >= 1) return centre
+  return (centre - cropFor(centre, fraction) * (1 - fraction)) / fraction
+}
