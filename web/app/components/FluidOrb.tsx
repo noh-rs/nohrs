@@ -13,12 +13,18 @@ void main() { gl_Position = vec4(p, 0.0, 1.0); }
  * ADR 0008 bans background gradients, and this is the one exception it makes.
  * The line is shape versus surface: a full-bleed wash reads as dirt on the
  * page, a closed circle reads as something deliberately placed.
+ *
+ * `u_bloom` is the pointer being on it: the flow quickens, the warp deepens,
+ * and tongues of a brighter tone rise out of the middle. They are drawn from
+ * the same warp as the body rather than laid over it, so what brightens is the
+ * fluid itself and not a second shape on top of it.
  */
 const FRAGMENT = `
 precision mediump float;
 uniform vec2 u_res;
 uniform float u_t;
-uniform vec3 u_bg, u_top, u_mid, u_bot;
+uniform float u_bloom;
+uniform vec3 u_bg, u_top, u_mid, u_bot, u_flare;
 
 vec2 hash(vec2 p) {
   p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
@@ -42,11 +48,12 @@ float fbm(vec2 p) {
 
 void main() {
   vec2 uv = gl_FragCoord.xy / u_res;
-  float r = length(uv * 2.0 - 1.0);
-  float t = u_t * 0.05;
+  vec2 c = uv * 2.0 - 1.0;
+  float r = length(c);
+  float t = u_t * (0.05 + 0.055 * u_bloom);
 
   vec2 warp = vec2(fbm(uv * 2.3 + vec2(0.0, t)), fbm(uv * 2.3 + vec2(4.7, -t * 0.8)));
-  float n = fbm(uv * 2.0 + warp * 0.9 + vec2(t * 0.35, -t * 0.22));
+  float n = fbm(uv * 2.0 + warp * (0.9 + 0.45 * u_bloom) + vec2(t * 0.35, -t * 0.22));
   float y = clamp(uv.y + n * 0.46, 0.0, 1.0);
 
   vec3 col = mix(u_bot, u_mid, smoothstep(0.04, 0.58, y));
@@ -54,6 +61,16 @@ void main() {
 
   vec2 core = (uv - vec2(0.5 + warp.x * 0.12, 0.38 + warp.y * 0.12)) * 2.0;
   col = mix(col, u_bot, (1.0 - smoothstep(0.0, 0.9, length(core))) * 0.38);
+
+  // The direction rather than the angle itself: an fbm of atan() seams at ±π,
+  // and the seam reads as a crack across the orb.
+  vec2 dir = r > 0.001 ? c / r : vec2(0.0, 1.0);
+  float tongues = fbm(dir * 2.4 + vec2(r * 1.8 - t * 1.6, t * 0.6));
+  // A narrow ramp on purpose: widened out, the flare is a second wash over the
+  // body and the orb just gets darker. Narrow, it is tongues with gaps between
+  // them, and the eye reads the same peak colour as light rather than as tint.
+  float flare = smoothstep(0.36, 0.88, (1.0 - r * 0.85) + tongues * 0.78);
+  col = mix(col, u_flare, flare * u_bloom);
 
   gl_FragColor = vec4(mix(u_bg, col, 1.0 - smoothstep(0.84, 1.0, r)), 1.0);
 }
@@ -75,14 +92,11 @@ function readColor(probe: CanvasRenderingContext2D, value: string): Rgb {
 }
 
 function mix(a: Rgb, b: Rgb, amount: number): Rgb {
-  return [
-    a[0] + (b[0] - a[0]) * amount,
-    a[1] + (b[1] - a[1]) * amount,
-    a[2] + (b[2] - a[2]) * amount,
-  ]
+  const held = Math.min(Math.max(amount, 0), 1)
+  return [a[0] + (b[0] - a[0]) * held, a[1] + (b[1] - a[1]) * held, a[2] + (b[2] - a[2]) * held]
 }
 
-export function FluidOrb() {
+export function FluidOrb({ className, bloom }: { className: string; bloom: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   // The CSS hides the orb below 1080px. Tracking the same breakpoint here
   // means a phone never allocates a WebGL context or compiles a shader for a
@@ -91,6 +105,15 @@ export function FluidOrb() {
   // No WebGL, or a shader that will not compile: the orb is decoration, so it
   // is dropped rather than degraded. Held as state so React removes the node.
   const [unsupported, setUnsupported] = useState(false)
+  // Read inside the frame loop rather than restarting it: where the pointer is
+  // only changes the value the loop is easing towards.
+  const target = useRef(0)
+  const nudge = useRef<(() => void) | null>(null)
+
+  useEffect(() => {
+    target.current = bloom ? 1 : 0
+    nudge.current?.()
+  }, [bloom])
 
   useEffect(() => {
     // Must match the `max-[1080px]:hidden` on the canvas exactly. Tailwind
@@ -147,10 +170,12 @@ export function FluidOrb() {
     const uniforms = {
       res: gl.getUniformLocation(program, 'u_res'),
       time: gl.getUniformLocation(program, 'u_t'),
+      bloom: gl.getUniformLocation(program, 'u_bloom'),
       bg: gl.getUniformLocation(program, 'u_bg'),
       top: gl.getUniformLocation(program, 'u_top'),
       mid: gl.getUniformLocation(program, 'u_mid'),
       bot: gl.getUniformLocation(program, 'u_bot'),
+      flare: gl.getUniformLocation(program, 'u_flare'),
     }
 
     const probeCanvas = document.createElement('canvas')
@@ -161,16 +186,21 @@ export function FluidOrb() {
       const styles = getComputedStyle(document.documentElement)
       const paper = readColor(probe, styles.getPropertyValue('--paper').trim() || '#fff')
       const tan = readColor(probe, styles.getPropertyValue('--tan').trim() || '#dea584')
-      const strength = Number.parseFloat(styles.getPropertyValue('--orb-strength')) || 0.46
+      const strength = Number.parseFloat(styles.getPropertyValue('--orb-strength')) || 0.3
+      // How far the flare may carry the ramp. It is a token because the ceiling
+      // is a contrast one — the tagline is set over this, and dark has far less
+      // room above its ground colour before the text starts to go under.
+      const lit = Number.parseFloat(styles.getPropertyValue('--orb-bloom')) || 0.16
       gl.uniform3fv(uniforms.bg, paper)
       gl.uniform3fv(uniforms.top, mix(paper, tan, strength * 0.06))
       gl.uniform3fv(uniforms.mid, mix(paper, tan, strength * 0.42))
       gl.uniform3fv(uniforms.bot, mix(paper, tan, strength))
+      gl.uniform3fv(uniforms.flare, mix(paper, tan, strength + lit))
     }
 
     const resize = () => {
       const box = canvas.getBoundingClientRect()
-      const size = Math.round(Math.min(box.width, 420) * Math.min(devicePixelRatio, 2))
+      const size = Math.round(Math.min(box.width, 460) * Math.min(devicePixelRatio, 2))
       if (size <= 0 || (canvas.width === size && canvas.height === size)) return
       canvas.width = size
       canvas.height = size
@@ -178,8 +208,10 @@ export function FluidOrb() {
       gl.uniform2f(uniforms.res, size, size)
     }
 
+    let lit = target.current
     const draw = (seconds: number) => {
       gl.uniform1f(uniforms.time, seconds)
+      gl.uniform1f(uniforms.bloom, lit)
       gl.drawArrays(gl.TRIANGLES, 0, 3)
     }
 
@@ -196,6 +228,9 @@ export function FluidOrb() {
 
     const loop = () => {
       if (!running) return
+      // Quicker to warm than to cool, which is what a thing lighting up does.
+      const to = target.current
+      lit += (to - lit) * (to > lit ? 0.055 : 0.032)
       draw((performance.now() - start) / 1000)
       frame = requestAnimationFrame(loop)
     }
@@ -208,11 +243,23 @@ export function FluidOrb() {
     const play = () => {
       if (running || !onscreen || document.hidden) return
       if (reduce.matches) {
+        lit = target.current
         draw(0)
         return
       }
       running = true
       frame = requestAnimationFrame(loop)
+    }
+
+    // Reduced motion has no loop to carry the rise, so the pointer arriving or
+    // leaving is one redraw at the level it asks for.
+    nudge.current = () => {
+      if (!reduce.matches) {
+        play()
+        return
+      }
+      lit = target.current
+      if (onscreen && !document.hidden) draw(0)
     }
 
     // Off screen or on a hidden tab, the loop is pure waste.
@@ -231,6 +278,7 @@ export function FluidOrb() {
     const onReduce = () => {
       if (reduce.matches) {
         stop()
+        lit = target.current
         draw(0)
       } else {
         play()
@@ -259,6 +307,7 @@ export function FluidOrb() {
 
     return () => {
       stop()
+      nudge.current = null
       // Crossing the breakpoint re-runs this effect on the same canvas, so the
       // previous program, shaders and buffer have to go back; otherwise a
       // window resized back and forth accumulates them on the GPU.
@@ -281,13 +330,8 @@ export function FluidOrb() {
 
   if (unsupported) return null
 
-  // Hidden below 1080px: the hero text reaches the right margin there, and the
-  // orb would sit behind it.
-  return (
-    <canvas
-      ref={canvasRef}
-      aria-hidden="true"
-      className="pointer-events-none absolute top-[52%] right-2 z-0 aspect-square w-[clamp(220px,22vw,330px)] -translate-y-1/2 max-[1080px]:hidden"
-    />
-  )
+  // The caller places it, and must keep the `max-[1080px]:hidden` the effect
+  // above pairs with: below that width the ring closes in around the copy and
+  // there is no room behind it for anything else.
+  return <canvas ref={canvasRef} aria-hidden="true" className={className} />
 }

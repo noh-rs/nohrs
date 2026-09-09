@@ -32,6 +32,35 @@ const en = {
     sub: 'Nohrs is a keyboard-driven file explorer for macOS with a built-in launcher. Written in Rust. Open source, and still pre-alpha.',
     tryTitle: 'There is no release to download yet. To try it today, build it from source on macOS.',
     tryTitleReleased: 'Builds are published on GitHub. You can also build from source on macOS.',
+    screens: 'Screens',
+    close: 'Close',
+    shots: {
+      explorer: {
+        label: 'Explorer',
+        caption:
+          'The sidebar, the listing and the preview pane in one window — and the whole thing moves under the keyboard.',
+      },
+      preview: {
+        label: 'Preview',
+        caption:
+          'Markdown, code and text render in the pane beside the listing as soon as the selection lands on them.',
+      },
+      search: {
+        label: 'Search',
+        caption:
+          'Search from where you are standing: scope it to this folder or the whole tree, and match on the name or the contents.',
+      },
+      matches: {
+        label: 'Matches',
+        caption:
+          'Hits in file contents come back as a list of paths, with the number of matches found inside each one.',
+      },
+      source: {
+        label: 'Source',
+        caption:
+          'Open a hit and the file appears next to the results, with the matching line marked where it sits.',
+      },
+    },
   },
 
   note: {
@@ -339,6 +368,33 @@ const ja: Dict = {
       'ダウンロードできるリリースは、まだありません。いま試すには、macOS 上でソースからビルドしてください。',
     tryTitleReleased:
       'ビルド済みのバイナリは GitHub で配布しています。macOS 上でソースからビルドすることもできます。',
+    screens: '画面',
+    close: '閉じる',
+    shots: {
+      explorer: {
+        label: 'エクスプローラ',
+        caption:
+          'サイドバー・一覧・プレビューを 1 つのウィンドウにまとめています。移動はすべてキーボードで完結します。',
+      },
+      preview: {
+        label: 'プレビュー',
+        caption:
+          '選択したファイルは、一覧の隣のペインにそのまま表示されます。Markdown もコードもテキストも、別のアプリを開かずに読めます。',
+      },
+      search: {
+        label: '検索',
+        caption:
+          'いま開いている場所から検索します。このフォルダだけか全体か、ファイル名か中身か、を選べます。',
+      },
+      matches: {
+        label: 'マッチ',
+        caption: '中身のヒットはパスの一覧で返ります。ファイルごとの一致件数が付きます。',
+      },
+      source: {
+        label: 'ソース',
+        caption: 'ヒットを開くと、結果の隣にファイルが並び、一致した行に印が付きます。',
+      },
+    },
   },
 
   note: {
