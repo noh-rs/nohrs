@@ -9,7 +9,7 @@ import {
 import { createPortal } from 'react-dom'
 import { FluidOrb } from '~/components/FluidOrb'
 import { t, type Lang } from '~/lib/i18n'
-import { angleOf, originFor } from '~/lib/orbit'
+import { angleOf, centreOfCrop, cropFor, originFor } from '~/lib/orbit'
 
 /**
  * `centre` is the point of each screen the panel frames, and `zoom` how close
@@ -40,6 +40,7 @@ const SPILL = 0.3
 
 const SHOT_WIDTH = 900
 const SHOT_HEIGHT = 549
+const SHOT_ASPECT = SHOT_WIDTH / SHOT_HEIGHT
 
 /** The dialog's description. One panel is open at a time, so one id will do. */
 const CAPTION_ID = 'orbit-shot-caption'
@@ -51,10 +52,22 @@ function angleAt(index: number): number {
   return angleOf(index, SHOTS.length)
 }
 
-function focusOf({ centre, zoom }: (typeof SHOTS)[number]): string {
-  const x = originFor(centre[0], zoom)
-  const y = originFor(centre[1], zoom, SPILL)
+/**
+ * How much of one axis a frame keeps, given the two aspects. A frame that holds
+ * the shot to within a fraction of a pixel is not cropping it: rounding it up
+ * to the whole keeps the arithmetic away from where a half pixel of overflow
+ * would be answered with an edge's worth of offset.
+ */
+function fits(ratio: number): number {
+  return ratio > 0.999 ? 1 : ratio
+}
+
+function pair(x: number, y: number): string {
   return `${(x * 100).toFixed(2)}% ${(y * 100).toFixed(2)}%`
+}
+
+function focusOf({ centre, zoom }: (typeof SHOTS)[number]): string {
+  return pair(originFor(centre[0], zoom), originFor(centre[1], zoom, SPILL))
 }
 
 type Phase = 'measuring' | 'open' | 'closing'
@@ -73,24 +86,52 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
   const strings = t(lang).hero
   const cards = useRef<Array<HTMLButtonElement | null>>([])
   const panel = useRef<HTMLElement>(null)
+  const frame = useRef<HTMLDivElement>(null)
   const closer = useRef<HTMLButtonElement>(null)
   const [view, setView] = useState<{ index: number; phase: Phase } | null>(null)
   const [warm, setWarm] = useState(false)
 
-  /** Maps the opened panel onto the card it grew from, in viewport coordinates. */
+  /**
+   * Maps the opened panel onto the card it grew from, in viewport coordinates,
+   * and frames the shot for the panel's own frame — which is not always the
+   * shot's shape, so the two cannot share `focusOf`.
+   */
   const place = useCallback((index: number) => {
     const node = panel.current
+    const shot = frame.current
     const card = cards.current[index]
-    if (!node || !card) return
+    if (!node || !shot || !card) return
     // The card is rotated about its own centre, so the box around it is centred
     // on the same point — which is what the panel has to be moved onto.
     const box = card.getBoundingClientRect()
     node.style.setProperty('--from-x', `${box.left + box.width / 2 - window.innerWidth / 2}px`)
     node.style.setProperty('--from-y', `${box.top + box.height / 2 - window.innerHeight / 2}px`)
-    node.style.setProperty('--from-k', (card.offsetWidth / node.offsetWidth).toFixed(4))
+    // Whichever axis binds, so the panel starts inside the card on both. They
+    // are the same number wherever the frame is the shot's shape, and far apart
+    // where it stands up: matching the width there would start the flight at
+    // three quarters of the finished size and there would be no growth to see.
+    const shrink = Math.min(
+      card.offsetWidth / shot.offsetWidth,
+      card.offsetHeight / shot.offsetHeight,
+    )
+    node.style.setProperty('--from-k', shrink.toFixed(4))
     node.style.setProperty('--from-a', `${angleAt(index)}deg`)
-    node.style.setProperty('--from-zoom', String(SHOTS[index].zoom))
-    node.style.setProperty('--from-focus', focusOf(SHOTS[index]))
+
+    const { centre, zoom } = SHOTS[index]
+    const frames = shot.offsetWidth / shot.offsetHeight
+    const across = fits(frames / SHOT_ASPECT)
+    const down = fits(SHOT_ASPECT / frames)
+    node.style.setProperty('--crop', pair(cropFor(centre[0], across), cropFor(centre[1], down)))
+    node.style.setProperty('--from-zoom', String(zoom))
+    // The zoom unwinds from the point the frame is held on, which after a crop
+    // is where that point sits in the frame rather than where it is on the shot.
+    node.style.setProperty(
+      '--from-focus',
+      pair(
+        originFor(centreOfCrop(centre[0], across), zoom),
+        originFor(centreOfCrop(centre[1], down), zoom, SPILL),
+      ),
+    )
   }, [])
 
   // The panel is measured against a card, so it has to be laid out once before
@@ -140,6 +181,21 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
     if (view?.phase !== 'open') return
     closer.current?.focus()
   }, [view?.phase])
+
+  // The frame's shape is a responsive value and the crop is measured against
+  // it, so a phone turned on its side with the panel open moves the frame out
+  // from under the slice: it would keep showing the band the old shape put
+  // there, which for the two screens framed near an edge is not the band the
+  // caption is about. Same for the address bar coming and going, which `svh`
+  // holds still but a rotation does not.
+  const opened = view?.index
+  useEffect(() => {
+    const node = frame.current
+    if (opened === undefined || !node) return
+    const observer = new ResizeObserver(() => place(opened))
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [opened, place])
 
   const isOpen = view !== null
   useEffect(() => {
@@ -280,7 +336,7 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
           >
             <div className="orbit-scrim" onClick={dismiss} />
             <figure className="orbit-panel" ref={panel}>
-              <div className="orbit-shot">
+              <div className="orbit-shot" ref={frame}>
                 <img
                   src={`/shots/${SHOTS[view.index].id}.png`}
                   alt=""
