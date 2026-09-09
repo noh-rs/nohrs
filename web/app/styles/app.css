@@ -26,6 +26,8 @@
   --dur: 220ms;
   --frame: 1120px;
   --shot-dim: 1;
+  --orb-strength: 0.24;
+  --orb-bloom: 0.16;
 
   --sans: "Inter", "Noto Sans JP", ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -49,6 +51,11 @@
     /* Five screenshots of a light app glare on a dark ground. Only the ring is
        dimmed; the panel that opens shows the shot as it was taken. */
     --shot-dim: 0.9;
+    /* The orb carries the same ramp in both themes, but dark has far less room
+       above its ground colour before the tagline over it stops passing AA, so
+       the flare is held much closer in. */
+    --orb-strength: 0.22;
+    --orb-bloom: 0.16;
     color-scheme: dark;
   }
 }
@@ -66,6 +73,8 @@
   --tan-ink: #e7b693;
   --tan-wash: #241a13;
   --shot-dim: 0.9;
+  --orb-strength: 0.22;
+  --orb-bloom: 0.16;
   color-scheme: dark;
 }
 

@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
+import { FluidOrb } from '~/components/FluidOrb'
 import { t, type Lang } from '~/lib/i18n'
 import { angleOf, originFor } from '~/lib/orbit'
 
@@ -71,6 +72,7 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
   const panel = useRef<HTMLElement>(null)
   const closer = useRef<HTMLButtonElement>(null)
   const [view, setView] = useState<{ index: number; phase: Phase } | null>(null)
+  const [warm, setWarm] = useState(false)
 
   /** Maps the opened panel onto the card it grew from, in viewport coordinates. */
   const place = useCallback((index: number) => {
@@ -169,6 +171,14 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
 
   return (
     <div className="orbit">
+      {/* The one shape the ring turns around. It lights up while the pointer is
+          in the middle with it — the panels have their own answer to a pointer,
+          and this is the tagline's. */}
+      <FluidOrb
+        bloom={warm}
+        className="pointer-events-none absolute top-1/2 left-1/2 z-0 aspect-square w-[min(62vw,500px)] -translate-x-1/2 -translate-y-1/2 max-[1080px]:hidden"
+      />
+
       <ul className="orbit-ring" aria-label={strings.screens}>
         {SHOTS.map((shot, index) => {
           const { id, zoom } = shot
@@ -239,7 +249,13 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
         })}
       </ul>
 
-      <div className="orbit-core">{children}</div>
+      <div
+        className="orbit-core"
+        onPointerEnter={() => setWarm(true)}
+        onPointerLeave={() => setWarm(false)}
+      >
+        {children}
+      </div>
 
       {view !== null &&
         shown !== null &&

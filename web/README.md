@@ -42,7 +42,7 @@ fonts, the committed GitHub snapshot, and no OG cards — never a broken deploy.
 ```
 app/
 ├── routes/          file-based routes; `$lang` is the language segment
-├── components/      the design system (Header, Section, Phases, HeroOrbit, …)
+├── components/      the design system (Header, Section, Phases, HeroOrbit, FluidOrb, …)
 ├── lib/
 │   ├── strings.ts   every UI string, in both languages
 │   ├── negotiate.ts language negotiation — imported by the Workers too
