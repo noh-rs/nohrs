@@ -1,18 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { angleOf, centreOfCrop, cropFor, originFor } from './orbit.ts'
+import { angleOf, originFor } from './orbit.ts'
 
 /** What the panel actually shows: the band of the shot left inside it. */
 function framed(centre: number, zoom: number, spill = 0): [number, number] {
   const origin = originFor(centre, zoom, spill)
   const start = origin * (1 - 1 / zoom)
   return [start, start + 1 / zoom]
-}
-
-/** The same, for a frame that crops rather than zooms. */
-function slice(centre: number, fraction: number): [number, number] {
-  const start = cropFor(centre, fraction) * (1 - fraction)
-  return [start, start + fraction]
 }
 
 test('angles run clockwise from the top', () => {
@@ -61,27 +55,4 @@ test('spill lets the frame hang off the start, and no further than asked', () =>
 test('a shot that is not zoomed is framed whole', () => {
   assert.equal(originFor(0.2, 1), 0.5)
   assert.deepEqual(framed(0.2, 1), [0, 1])
-})
-
-test('a cropping frame takes its slice around the point it frames', () => {
-  for (const fraction of [0.35, 0.43, 0.5]) {
-    for (const centre of [0.3, 0.42, 0.72]) {
-      const [start, end] = slice(centre, fraction)
-      assert.ok(start >= -1e-9 && end <= 1 + 1e-9, `${centre} of ${fraction} → ${start}..${end}`)
-      assert.ok(Math.abs((start + end) / 2 - centre) < 1e-9, `${centre} of ${fraction}`)
-      assert.ok(Math.abs(centreOfCrop(centre, fraction) - 0.5) < 1e-9, 'and it lands mid-frame')
-    }
-  }
-})
-
-test('a point too near an edge to centre stays inside the slice it moved', () => {
-  const inside = centreOfCrop(0.05, 0.4)
-  assert.ok(inside > 0 && inside < 0.5, `held off the edge, not centred: ${inside}`)
-  assert.equal(slice(0.05, 0.4)[0], 0)
-})
-
-test('a frame the shot already fits crops nothing', () => {
-  assert.equal(cropFor(0.2, 1), 0.5)
-  assert.deepEqual(slice(0.2, 1), [0, 1])
-  assert.equal(centreOfCrop(0.2, 1), 0.2)
 })
