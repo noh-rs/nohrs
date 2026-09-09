@@ -100,9 +100,10 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
    * Runs the flight between the card at `index` and the opened panel. Returns
    * when the panel has arrived, so the caller can unmount on the way back.
    *
-   * `direction` only decides which end the keyframes are read from: the two
-   * halves of the gesture are the same journey, and neither one is measured
-   * from a style the engine may not have resolved yet.
+   * The way out is the way in played backwards, on the very same animations —
+   * not a fresh one from the open end. Starting fresh would jump the panel to
+   * fully open before flying it back, which is what a reader who closes it
+   * halfway through would see.
    */
   const fly = useCallback((index: number, direction: 'in' | 'out'): Promise<void> => {
     const node = panel.current
@@ -125,54 +126,57 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
     const cardRadius = `${(10 / k).toFixed(2)}px`
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const ms = reduced ? 0 : LIFT
-
-    const play = (
-      target: Element | null,
-      frames: Keyframe[],
-      options: KeyframeAnimationOptions = {},
-    ) => {
-      if (!target) return null
-      // The flight that just landed is still attached, holding its end value.
-      // Left there, the way back would be a second animation on the same
-      // property and which one wins is the engine's business, not ours.
-      for (const previous of target.getAnimations()) previous.cancel()
-      const run = target.animate(direction === 'in' ? frames : [...frames].reverse(), {
-        duration: ms,
-        easing: EASE,
-        // `forwards` is what holds the panel on the card at the end of the way
-        // out, for the frame between arriving and unmounting.
-        fill: 'both',
-        ...options,
-        ...(reduced ? { duration: 0, delay: 0 } : {}),
-      })
-      return run.finished
-    }
+    const fade = [{ opacity: 0 }, { opacity: 1 }]
+    // The copy waits for the panel to arrive. Reversing moves that wait to the
+    // tail on the way out, which is what it wants anyway: holding a caption
+    // over a panel already shrinking back reads as a stutter.
+    const late = { duration: reduced ? 0 : 300, delay: reduced ? 0 : 380, easing: SITE_EASE }
 
     const image = shot.querySelector('img')
     // Static through the flight: the point the shot is framed on is the point
     // the zoom unwinds from, and it is the same at both ends.
     if (image) image.style.transformOrigin = focusOf(SHOTS[index])
 
-    const arrived = play(node, [{ transform: onCard }, { transform: 'none' }])
-    play(shot, [{ borderRadius: cardRadius }, { borderRadius: '12px' }])
-    play(image, [{ transform: `scale(${zoom})` }, { transform: 'none' }])
-    play(veil, [{ opacity: 0 }, { opacity: 1 }], { duration: reduced ? 0 : 380, easing: SITE_EASE })
-    // The copy waits for the panel to arrive, and on the way out leaves at once:
-    // holding a caption over a panel already shrinking back reads as a stutter.
-    for (const fading of [node.querySelector('.orbit-caption'), closer.current]) {
-      play(fading, [{ opacity: 0 }, { opacity: 1 }], {
-        duration: reduced ? 0 : direction === 'in' ? 300 : 150,
-        delay: reduced || direction === 'out' ? 0 : 380,
-        easing: SITE_EASE,
-      })
+    const parts: Array<[Element | null, Keyframe[], KeyframeAnimationOptions]> = [
+      [node, [{ transform: onCard }, { transform: 'none' }], {}],
+      [shot, [{ borderRadius: cardRadius }, { borderRadius: '12px' }], {}],
+      [image, [{ transform: `scale(${zoom})` }, { transform: 'none' }], {}],
+      [veil, fade, { duration: reduced ? 0 : 380, easing: SITE_EASE }],
+      [node.querySelector('.orbit-caption'), fade, late],
+      [closer.current, fade, late],
+    ]
+
+    let arrived: Promise<void> | null = null
+    for (const [target, frames, options] of parts) {
+      if (!target) continue
+      // Nothing else animates these, so an animation already here is the way in
+      // — finished and holding the panel open, or still in the air.
+      const [flying] = target.getAnimations()
+      let run: Animation
+      if (direction === 'out' && flying) {
+        flying.reverse()
+        run = flying
+      } else {
+        for (const previous of target.getAnimations()) previous.cancel()
+        run = target.animate(frames, {
+          duration: ms,
+          easing: EASE,
+          // `forwards` is what holds the panel on the card at the end of the
+          // way out, for the frame between arriving and unmounting.
+          fill: 'both',
+          ...options,
+        })
+      }
+      // Cancelling rejects, and every one of these is a promise nobody is
+      // holding — an unhandled rejection each time a flight is interrupted.
+      const settled = run.finished.then(
+        () => undefined,
+        () => undefined,
+      )
+      if (target === node) arrived = settled
     }
 
-    return (arrived ?? Promise.resolve()).then(
-      () => undefined,
-      // A cancelled animation rejects. That happens when the reader closes the
-      // panel mid-flight, and the close that cancelled it owns what comes next.
-      () => undefined,
-    )
+    return arrived ?? Promise.resolve()
   }, [])
 
   // Layout, not passive: the flight has to be running before the browser paints
