@@ -25,7 +25,7 @@
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --dur: 220ms;
   --frame: 1120px;
-  --orb-strength: 0.46;
+  --shot-dim: 1;
 
   --sans: "Inter", "Noto Sans JP", ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -46,9 +46,9 @@
     --tan: #dea584;
     --tan-ink: #e7b693;
     --tan-wash: #241a13;
-    /* Dark needs a *stronger* tan ramp than light: sitting the orb near the
-       ground colour reads as a brown stain rather than a lit object. */
-    --orb-strength: 0.55;
+    /* Five screenshots of a light app glare on a dark ground. Only the ring is
+       dimmed; the panel that opens shows the shot as it was taken. */
+    --shot-dim: 0.9;
     color-scheme: dark;
   }
 }
@@ -65,7 +65,7 @@
   --tan: #dea584;
   --tan-ink: #e7b693;
   --tan-wash: #241a13;
-  --orb-strength: 0.55;
+  --shot-dim: 0.9;
   color-scheme: dark;
 }
 
@@ -331,6 +331,432 @@
     padding-right: 10px;
     color: var(--muted);
     user-select: none;
+  }
+}
+
+/* ── Hero orbit ───────────────────────────────────────────────────────────
+   Five screens of the app on a ring, the tagline and the CTAs inside it.
+
+   One angle per item places both of its halves: the panel out on an ellipse
+   and its name on the same ellipse, set in from the panel. Both are turned by
+   that angle, so a name always lies along the panel it belongs to — and
+   opening one is that angle unwinding to level as the panel grows, which is
+   the whole point of the composition.
+
+   Every length is derived from the stage's height rather than the window's
+   width, because height is what a hero runs out of first: sized from the width
+   alone, the ring falls through the fold on a laptop.
+   ────────────────────────────────────────────────────────────────────────── */
+.orbit {
+  /* The window, less the header and a little air. */
+  --stage: clamp(560px, calc(100vh - 128px), 880px);
+  --half-h: calc(var(--stage) / 2);
+  --ry: calc(var(--half-h) - 44px);
+  /* Wide enough to reach the left and right edges of a laptop window, and
+     capped so an ultrawide one does not strand the panels in its corners. */
+  --rx: clamp(calc(var(--ry) * 1.5), calc(50vw - 140px), calc(var(--ry) * 2.15));
+  /* Names ride the same ellipse as the panels, set in from it by half a panel
+     and a gap. Given a ring of their own they collide with the buttons on a
+     short window, where there is no band left between the two. */
+  --tag-inset: calc(var(--card-w) * 0.305 + 34px);
+  /* Off the stage, not the window: a short window gets smaller panels rather
+     than the same panels with nowhere to sit. */
+  --card-w: clamp(200px, calc(var(--half-h) * 0.78), 300px);
+  --peek: 0px;
+
+  position: relative;
+  height: var(--stage);
+  /* The panels are meant to run off the edges. This is what cuts them, and
+     `clip` does it without turning the stage into a scroll container. */
+  overflow: clip;
+}
+
+.orbit-ring {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A point at the centre of the ring. Both children hang off it, so hovering
+   either one is a hover on the same item. */
+.orbit-item {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+}
+
+.orbit-item:hover,
+.orbit-item:focus-within {
+  --peek: 56px;
+  z-index: 2;
+}
+
+.orbit-card {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--card-w);
+  /* Half the shot's height: 549 / 900 / 2. */
+  margin-top: calc(var(--card-w) * -0.305);
+  margin-left: calc(var(--card-w) / -2);
+  padding: 0;
+  overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 18px 40px -32px rgb(25 21 16 / 0.55);
+  cursor: pointer;
+  transform: translate(
+      calc(var(--sin) * (var(--rx) - var(--peek))),
+      calc(var(--cos) * (var(--ry) - var(--peek)) * -1)
+    )
+    rotate(var(--a));
+  transition:
+    transform 420ms var(--ease),
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.orbit-item:hover .orbit-card,
+.orbit-item:focus-within .orbit-card {
+  border-color: var(--tan);
+  box-shadow: 0 28px 56px -32px rgb(25 21 16 / 0.6);
+}
+
+.orbit-card img {
+  filter: brightness(var(--shot-dim));
+}
+
+.orbit-card img,
+.orbit-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  /* The panel shows a detail, not the whole window. The origin is the point the
+     detail is framed on, so it is also the point the opened shot unzooms from. */
+  transform: scale(var(--zoom, 1));
+  transform-origin: var(--focus, 50% 50%);
+}
+
+.orbit-tag {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 300px;
+  height: 80px;
+  margin: -40px 0 0 -150px;
+  overflow: visible;
+  pointer-events: none;
+  /* `--peek` again, so the name keeps its distance from the panel while the
+     panel slides in under the pointer — otherwise the panel covers it. */
+  transform: translate(
+      calc(var(--sin) * (var(--rx) - var(--tag-inset) - var(--peek))),
+      calc(var(--cos) * (var(--ry) - var(--tag-inset) - var(--peek)) * -1)
+    )
+    rotate(var(--a));
+  transition: transform 420ms var(--ease);
+}
+
+.orbit-tag text {
+  fill: var(--muted);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  cursor: pointer;
+  /* `all` rather than the painted area, because the stroke below is only there
+     to widen the target around glyphs that are a pixel of ink wide. */
+  pointer-events: all;
+  stroke: transparent;
+  stroke-width: 16;
+  paint-order: stroke;
+  transition: fill var(--dur) var(--ease);
+}
+
+.orbit-item:hover .orbit-tag text,
+.orbit-item:focus-within .orbit-tag text {
+  fill: var(--tan-ink);
+}
+
+/* The accessible name of the panel button. It carries the label on the ring,
+   where the drawn name is decoration, and becomes that name on a phone. */
+.orbit-name {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.orbit-core {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 1;
+  width: min(calc(var(--half-h) * 1.45), 82vw);
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+/* The tagline is set off the stage as well, so the block inside the ring keeps
+   its proportion to it instead of growing until it reaches the names. */
+.orbit-core h1 {
+  font-size: clamp(2.05rem, calc(var(--half-h) * 0.17), 3.85rem);
+}
+
+.orbit-core p {
+  margin-top: calc(var(--half-h) * 0.05);
+  font-size: clamp(0.9rem, calc(var(--half-h) * 0.042), 1.0625rem);
+}
+
+.orbit-core .orbit-cta {
+  margin-top: calc(var(--half-h) * 0.07);
+}
+
+/* ── The opened screen ────────────────────────────────────────────────────
+   Sized as it will end up and scaled *down* onto the card it came from, not
+   the other way round: the state the reader looks at is then the one whose
+   border and corners are authored, rather than a 1px hairline multiplied by
+   four. `--from-*` is measured in JS at the moment of the click. */
+.orbit-view {
+  /* Not the site's ease: it spends its distance in the first fifth of the
+     duration, which is over before the eye has found the panel. The turn is
+     the point of the gesture, so this curve keeps some of it in the middle. */
+  --lift: 620ms cubic-bezier(0.42, 0.04, 0.18, 1);
+
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+}
+
+.orbit-scrim {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--paper) 86%, transparent);
+  backdrop-filter: blur(7px);
+  opacity: 0;
+  transition: opacity 380ms var(--ease);
+}
+
+.orbit-panel {
+  position: relative;
+  width: min(1180px, 92vw, 130vh);
+  margin: 0;
+  transform: translate(var(--from-x, 0px), var(--from-y, 0px)) rotate(var(--from-a, 0deg))
+    scale(var(--from-k, 1));
+  transition: transform var(--lift);
+}
+
+.orbit-shot {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  /* Divided by the same factor the panel is scaled by, so the corners read at
+     the card's radius while it is still the size of a card. */
+  border-radius: calc(10px / var(--from-k, 1));
+  box-shadow: 0 40px 90px -50px rgb(25 21 16 / 0.6);
+  transition: border-radius var(--lift);
+}
+
+.orbit-shot img {
+  --zoom: var(--from-zoom, 1);
+  --focus: var(--from-focus, 50% 50%);
+  transition: transform var(--lift);
+}
+
+.orbit-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 18px;
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 0.9375rem;
+  opacity: 0;
+  transform: translateY(6px);
+  /* Fast and undelayed on the way out: the delay below is there to let the
+     panel arrive first, and holding a caption over a panel that is already
+     shrinking back into the ring reads as a stutter. */
+  transition:
+    opacity 150ms var(--ease),
+    transform 150ms var(--ease);
+}
+
+.orbit-caption-label {
+  color: var(--ink);
+  font: 500 0.75rem/1.6 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.orbit-close {
+  position: absolute;
+  top: 20px;
+  right: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font: 500 0.6875rem/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 150ms var(--ease),
+    color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.orbit-close:hover {
+  color: var(--ink);
+  border-color: var(--tan);
+}
+
+/* The panel is inserted with no transform, given the mapped one, and only then
+   opened. The middle step must not animate: a transition declared for it fires
+   on the way *into* the card's position, and the opening one then starts from
+   where that left off — which is where it already was, so nothing moved. */
+.orbit-view[data-phase="measuring"] .orbit-panel {
+  visibility: hidden;
+}
+
+.orbit-view[data-phase="measuring"] .orbit-panel,
+.orbit-view[data-phase="measuring"] .orbit-shot,
+.orbit-view[data-phase="measuring"] .orbit-shot img {
+  transition: none;
+}
+
+.orbit-view[data-phase="open"] .orbit-scrim {
+  opacity: 1;
+}
+
+.orbit-view[data-phase="open"] .orbit-caption,
+.orbit-view[data-phase="open"] .orbit-close {
+  opacity: 1;
+  transition:
+    opacity 300ms 380ms var(--ease),
+    transform 300ms 380ms var(--ease);
+}
+
+.orbit-view[data-phase="open"] .orbit-caption {
+  transform: none;
+}
+
+.orbit-view[data-phase="open"] .orbit-panel {
+  transform: translate(0px, 0px) rotate(0deg) scale(1);
+}
+
+.orbit-view[data-phase="open"] .orbit-shot {
+  border-radius: 12px;
+}
+
+.orbit-view[data-phase="open"] .orbit-shot img {
+  transform: scale(1);
+}
+
+/* Below the ring's width there is no ring: the screens become a strip under
+   the tagline, and tapping one opens the same panel. */
+@media (max-width: 1023px) {
+  .orbit {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    padding-inline: 24px;
+    overflow: visible;
+  }
+
+  .orbit-ring {
+    position: static;
+    display: flex;
+    order: 2;
+    gap: 14px;
+    margin: 40px -24px 0;
+    padding: 0 24px 10px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .orbit-ring::-webkit-scrollbar {
+    display: none;
+  }
+
+  .orbit-item {
+    position: static;
+    flex: none;
+    width: auto;
+    height: auto;
+  }
+
+  .orbit-item:hover,
+  .orbit-item:focus-within {
+    --peek: 0px;
+  }
+
+  .orbit-card {
+    position: static;
+    display: block;
+    width: 232px;
+    margin: 0;
+    text-align: left;
+    transform: none;
+  }
+
+  .orbit-tag {
+    display: none;
+  }
+
+  .orbit-name {
+    /* The shot is transformed, which paints it above ordinary content in the
+       same card; the name needs a layer of its own to sit on top of it. */
+    position: relative;
+    z-index: 1;
+    display: block;
+    background: var(--paper);
+    width: auto;
+    height: auto;
+    margin: 0;
+    padding: 9px 12px 10px;
+    overflow: visible;
+    border-top: 1px solid var(--line-soft);
+    clip-path: none;
+    color: var(--muted);
+    font: 500 0.6875rem/1 var(--mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .orbit-core {
+    position: static;
+    order: 1;
+    width: auto;
+    text-align: left;
+    transform: none;
+  }
+
+  .orbit-core h1 {
+    font-size: clamp(2.4rem, 8.4vw, 3.5rem);
+  }
+
+  .orbit-core p {
+    margin-top: 26px;
+    font-size: clamp(1rem, 1.5vw, 1.1875rem);
+  }
+
+  .orbit-core .orbit-cta {
+    margin-top: 34px;
   }
 }
 

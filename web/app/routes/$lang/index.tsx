@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { FluidOrb } from '~/components/FluidOrb'
+import { HeroOrbit } from '~/components/HeroOrbit'
 import { GitHubMark } from '~/components/Mark'
 import { Phases } from '~/components/Phases'
 import { Reveal } from '~/components/Reveal'
@@ -84,61 +84,59 @@ function Hero({ lang }: { lang: Lang }) {
   const strings = t(lang)
 
   return (
-    <section className="border-t-0">
-      <div className="frame relative pt-[clamp(56px,8vw,104px)] pb-[clamp(56px,7vw,92px)]">
-        <FluidOrb />
+    <section className="border-t-0 pb-[clamp(48px,6vw,84px)] max-lg:pt-[clamp(40px,8vw,72px)]">
+      <HeroOrbit lang={lang}>
+        {/* `Launcher ×` is held together on one line. The × is an
+            inline-block, which is a break opportunity on its own — a
+            non-breaking space does not close it — and a × alone at the head
+            of the second line reads as a bullet, not as an operator. */}
+        <h1 className="m-0 leading-[1.04] font-semibold tracking-[-0.045em]">
+          <span className="whitespace-nowrap">
+            Launcher{' '}
+            <span className="inline-block px-[0.1em] align-[0.035em] font-mono text-[0.74em] font-normal tracking-normal text-tan-ink">
+              ×
+            </span>
+          </span>{' '}
+          Explorer
+        </h1>
 
-        <div className="relative z-10">
-          {/* `Launcher ×` is held together on one line. The × is an
-              inline-block, which is a break opportunity on its own — a
-              non-breaking space does not close it — and a × alone at the head
-              of the second line reads as a bullet, not as an operator. */}
-          <h1 className="m-0 text-[clamp(2.6rem,8.2vw,6rem)] leading-[1.02] font-semibold tracking-[-0.045em]">
-            <span className="whitespace-nowrap">
-              Launcher{' '}
-              <span className="inline-block px-[0.1em] align-[0.035em] font-mono text-[0.74em] font-normal tracking-normal text-tan-ink">
-                ×
-              </span>
-            </span>{' '}
-            Explorer
-          </h1>
+        <p className="text-ink-2 max-lg:max-w-[44ch]">
+          {strings.hero.sub}
+        </p>
 
-          <p className="mt-7 max-w-[44ch] text-[clamp(1rem,1.5vw,1.1875rem)] text-ink-2">
-            {strings.hero.sub}
-          </p>
-
-          <div className="mt-10 flex flex-wrap gap-3">
-            {hasDownloads ? (
-              <Link to="/$lang/download" params={{ lang }} className="btn btn-primary">
-                {strings.nav.download}
-              </Link>
-            ) : (
-              <a href={SITE.repoUrl} className="btn btn-primary">
-                <GitHubMark />
-                <span>{strings.nav.star}</span>
-                <span className="count">{github.repo.stars}</span>
-              </a>
-            )}
-            <a href={SITE.discordUrl} className="btn btn-ghost">
-              <span>{strings.nav.joinDiscord}</span>
-              <span aria-hidden="true">↗</span>
+        <div className="orbit-cta flex flex-wrap gap-3 lg:justify-center">
+          {hasDownloads ? (
+            <Link to="/$lang/download" params={{ lang }} className="btn btn-primary">
+              {strings.nav.download}
+            </Link>
+          ) : (
+            <a href={SITE.repoUrl} className="btn btn-primary">
+              <GitHubMark />
+              <span>{strings.nav.star}</span>
+              <span className="count">{github.repo.stars}</span>
             </a>
-          </div>
+          )}
+          <a href={SITE.discordUrl} className="btn btn-ghost">
+            <span>{strings.nav.joinDiscord}</span>
+            <span aria-hidden="true">↗</span>
+          </a>
+        </div>
+      </HeroOrbit>
 
-          {/* Without a published binary, nothing else on the page answers
-              "so how do I try this today". */}
-          <div className="mt-13 max-w-[62ch] border-t border-line pt-6.5">
-            <p className="mb-3.5 text-sm text-muted">
-              {hasDownloads ? strings.hero.tryTitleReleased : strings.hero.tryTitle}
-            </p>
-            <pre className="cmd">
-              <code>
-                <span className="prompt">$</span>git clone https://github.com/noh-rs/nohrs{'\n'}
-                <span className="prompt">$</span>cd nohrs{'\n'}
-                <span className="prompt">$</span>cargo run -p nohrs
-              </code>
-            </pre>
-          </div>
+      {/* Without a published binary, nothing else on the page answers
+          "so how do I try this today". */}
+      <div className="frame">
+        <div className="mx-auto mt-[clamp(30px,4vw,58px)] max-w-[62ch] border-t border-line pt-6.5">
+          <p className="mb-3.5 text-sm text-muted">
+            {hasDownloads ? strings.hero.tryTitleReleased : strings.hero.tryTitle}
+          </p>
+          <pre className="cmd">
+            <code>
+              <span className="prompt">$</span>git clone https://github.com/noh-rs/nohrs{'\n'}
+              <span className="prompt">$</span>cd nohrs{'\n'}
+              <span className="prompt">$</span>cargo run -p nohrs
+            </code>
+          </pre>
         </div>
       </div>
     </section>
