@@ -718,6 +718,11 @@
     transform: none;
   }
 
+  /* Whole panels here, so the frame has to stay inside the shot. */
+  .orbit-card img {
+    transform-origin: var(--focus-whole, 50% 50%);
+  }
+
   .orbit-tag {
     display: none;
   }
