@@ -637,9 +637,13 @@ mod tests {
         // session has. Tightening only at startup would hold for the first day
         // of a long-running GUI and quietly stop holding after midnight.
         let directory = tempfile::tempdir().unwrap();
+        // `wrap` reads the real clock, so the file has to be named from the same
+        // one. A literal date here passes only on the day it is written: the
+        // wrapper tightens `<prefix>.<today>` and would find nothing to chmod.
+        let today = time::OffsetDateTime::now_utc().date();
         let rolled = directory
             .path()
-            .join(format!("{LOG_FILE_PREFIX}.2026-09-08"));
+            .join(log_file_name_for(today).expect("a name for today"));
         std::fs::write(&rolled, "{}\n").unwrap();
         std::fs::set_permissions(&rolled, std::fs::Permissions::from_mode(0o644)).unwrap();
 
