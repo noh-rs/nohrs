@@ -182,6 +182,21 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
     closer.current?.focus()
   }, [view?.phase])
 
+  // The frame's shape is a responsive value and the crop is measured against
+  // it, so a phone turned on its side with the panel open moves the frame out
+  // from under the slice: it would keep showing the band the old shape put
+  // there, which for the two screens framed near an edge is not the band the
+  // caption is about. Same for the address bar coming and going, which `svh`
+  // holds still but a rotation does not.
+  const opened = view?.index
+  useEffect(() => {
+    const node = frame.current
+    if (opened === undefined || !node) return
+    const observer = new ResizeObserver(() => place(opened))
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [opened, place])
+
   const isOpen = view !== null
   useEffect(() => {
     if (!isOpen) return

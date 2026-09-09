@@ -425,6 +425,7 @@
 @media (hover: hover) and (pointer: fine) {
   .orbit-item:hover {
     --peek: 56px;
+
     z-index: 2;
   }
 }
