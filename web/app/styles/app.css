@@ -686,28 +686,42 @@
   transform: scale(1);
 }
 
-/* A phone gets the same ring — but not the names. Five panels and the copy
-   they are arranged around leave no band between the two for a name to sit in;
-   the panel is still the control, and the name it carries for a screen reader
-   is the one that appears in the caption when it opens. */
-@media (max-width: 639px) {
+/* Standing up, for a window that is taller than it is wide. The ring above is
+   as wide as the window and no wider, which on a portrait one puts the pair on
+   the horizon so far out that only their corners are on the page. Here the
+   stage is the tall thing instead: the panels arrive from the top and bottom
+   edges with the copy in the band between them, and only slivers of the pair
+   on the horizon pass down its sides. */
+@media (max-width: 639px), (max-aspect-ratio: 5/4) {
   .orbit {
-    /* A tall stage rather than a wide one. The panels then arrive from the top
-       and bottom edges with the copy in the band between them, and only their
-       slivers pass down the sides where the copy is. Sized from the width, the
-       ring closes around the copy instead and there is nowhere to put it. */
     --stage: clamp(620px, calc(100vh - 130px), 820px);
-    --card-w: 66vw;
+    /* Capped in pixels as well: a panel scaled from the width alone outgrows
+       the ring on the wide end of this range, and neighbours start to touch. */
+    --card-w: min(66vw, 320px);
     --rx: 56vw;
     --ry: calc(var(--half-h) + 22px);
   }
 
-  .orbit-tag {
-    display: none;
+  /* Far enough out that the two of them clear each other. At the radius the
+     rest of the ring uses, the bottom pair's corners cross in the middle of
+     the page and the two panels read as one wedge. There is room to push them:
+     the copy ends well above where they come in. */
+  .orbit-item[data-low="true"] {
+    --rx: 70vw;
   }
 
   .orbit-core {
-    width: 72vw;
+    width: min(72vw, 430px);
+  }
+}
+
+/* Below the ring's own width there is no room for the names: five panels and
+   the copy they are arranged around leave no band between the two for one to
+   sit in. The panel is still the control, and the name it carries for a screen
+   reader is the one that appears in the caption when it opens. */
+@media (max-width: 639px) {
+  .orbit-tag {
+    display: none;
   }
 
   .orbit-core h1 {

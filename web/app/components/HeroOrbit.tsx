@@ -198,6 +198,9 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
             <li
               key={id}
               className="orbit-item"
+              // The pair below the horizon are the closest together of any two
+              // on the ring; a narrow window is where that starts to matter.
+              data-low={cos < -0.3}
               style={
                 {
                   '--sin': (sin * reach).toFixed(4),
