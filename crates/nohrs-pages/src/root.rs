@@ -138,6 +138,11 @@ impl RootView {
             Theme::change(mode, Some(window), cx);
         }
 
+        // Applied unconditionally: `Theme::change` restores the shipped palette,
+        // and on the first call the mode often already matches, so this cannot
+        // hang off the branch above.
+        Self::restyle_components(cx);
+
         // Condense the (possibly multi-line) diagnostic to a single line plus the
         // file path for the one-line status bar; full detail is in the logs.
         self.config_status = config_error.as_ref().map(|error| {
@@ -154,6 +159,30 @@ impl RootView {
 
         self.config = config;
         cx.notify();
+    }
+
+    /// Reconcile `gpui_component`'s palette with this app's tokens, for the two
+    /// places where its defaults read wrong here. Must be re-applied after every
+    /// `Theme::change`, which restores the shipped values.
+    ///
+    /// - `overlay` ships at 5% black, invisible against these white surfaces, so
+    ///   the file-operation dialogs read as floating panels rather than modals.
+    /// - `primary` ships near-black and drives every accent-bearing widget
+    ///   (buttons, checkbox, switch, radio, tabs), which left the dialogs
+    ///   looking unrelated to the rest of the window.
+    fn restyle_components(cx: &mut App) {
+        let palette = Theme::global_mut(cx);
+        palette.overlay = gpui::Rgba {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: theme::MODAL_SCRIM_ALPHA,
+        }
+        .into();
+        palette.primary = rgb(theme::ACCENT).into();
+        palette.primary_hover = rgb(theme::ACCENT_HOVER).into();
+        palette.primary_active = rgb(theme::ACCENT_HOVER).into();
+        palette.primary_foreground = rgb(theme::ACCENT_FG).into();
     }
 
     /// Watch `config.toml` and re-apply on change. The `notify` callback runs on

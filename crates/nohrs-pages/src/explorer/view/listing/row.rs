@@ -3,11 +3,18 @@ use super::truncate_middle;
 use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::Sizable as _;
 use gpui_component::input::Input;
 use gpui_component::list::ListItem;
 use gpui_component::{Icon, IconName};
 use nohrs_services::fs::listing::FileEntryDto;
 use nohrs_ui::theme::theme;
+
+/// Horizontal space a row's name column spends before the name itself: the
+/// 20px chevron gutter, the 16px type icon, and the two 4px gaps around them.
+/// The table header indents its "Name" label by the same amount so the column
+/// heading lines up with the file names beneath it.
+pub const NAME_INDENT: f32 = 44.0;
 
 /// Renders a single listing row for the given entry at row index `ix`.
 pub fn render(
@@ -24,20 +31,16 @@ pub fn render(
     };
     let icon_color = match item.kind.as_str() {
         "dir" => rgb(theme::ACCENT),
-        _ => rgb(theme::GRAY_600),
+        _ => rgb(theme::GRAY_500),
     };
 
-    let bg_color = if page.is_selected(ix) {
-        theme::ACCENT_LIGHT
-    } else if ix % 2 == 0 {
-        theme::BG
-    } else {
-        theme::GRAY_50
-    };
+    let is_selected = page.is_selected(ix);
 
     let file_type = get_file_type(&item.name, &item.kind);
 
-    let max_chars = (page.col_name_width / 8.0) as usize;
+    // Budget only the space the name actually gets: the column minus the
+    // chevron gutter, icon and gaps that precede it (see `NAME_INDENT`).
+    let max_chars = ((page.col_name_width - NAME_INDENT) / 7.0) as usize;
     let display_name = truncate_middle(&item.name, max_chars.max(20));
 
     let total_width = page.total_table_width();
@@ -117,8 +120,24 @@ pub fn render(
             ListItem::new(("file-row", ix))
                 .w(px(total_width))
                 .h(px(32.0))
-                .px(px(24.0))
-                .bg(rgb(bg_color))
+                .pr(px(24.0))
+                // A flush-left accent bar carries the selection instead of the
+                // former zebra striping, which fought with the selected color.
+                .border_l_2()
+                .border_color(rgb(if is_selected {
+                    theme::ACCENT
+                } else {
+                    theme::BG
+                }))
+                .pl(px(22.0))
+                // `ListItem` paints its own hover fill, which also covers a
+                // selected row's tint; the accent bar above is what keeps the
+                // selection legible while the pointer is over it.
+                .bg(rgb(if is_selected {
+                    theme::ACCENT_SUBTLE
+                } else {
+                    theme::BG
+                }))
                 .on_click(
                     cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                         if let gpui::ClickEvent::Mouse(mouse) = event {
@@ -156,12 +175,23 @@ pub fn render(
                                 .gap_1()
                                 .w(px(page.col_name_width))
                                 .flex_shrink_0()
+                                // The gutter before the Type column has to come
+                                // off this container: padding on the label itself
+                                // sits inside its `overflow_hidden` clip, so the
+                                // text would still run to the column edge.
+                                .pr(px(12.0))
                                 .when(has_content_matches, |this| {
                                     this.child(
                                         div()
+                                            // Same width as the empty gutter
+                                            // below, so a row with matches keeps
+                                            // its name aligned with the rest.
+                                            .w(px(20.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
                                             .cursor_pointer()
                                             .hover(|s| s.bg(rgb(theme::BG_HOVER)).rounded(px(4.0)))
-                                            .p(px(2.0))
                                             .on_mouse_down(
                                                 gpui::MouseButton::Left,
                                                 cx.listener({
@@ -192,12 +222,31 @@ pub fn render(
                                 .when(!has_content_matches, |this| this.child(div().w(px(20.0))))
                                 .child(Icon::new(icon_name).size_4().text_color(icon_color))
                                 .child(match rename_input {
+                                    // Borderless and flush with the label it
+                                    // stands in for, so the row keeps its shape
+                                    // and only the caret marks the edit.
                                     Some(input) => div()
                                         .flex_1()
                                         .min_w(px(0.0))
-                                        .child(Input::new(&input))
+                                        .child(
+                                            // Matches the resting label's
+                                            // typography exactly, so committing
+                                            // the rename is not a visible jump.
+                                            Input::new(&input)
+                                                .small()
+                                                .appearance(false)
+                                                .px(px(0.0))
+                                                .text_sm()
+                                                .font_weight(gpui::FontWeight::MEDIUM)
+                                                .text_color(rgb(theme::FG)),
+                                        )
                                         .into_any_element(),
+                                    // `flex_1` + `min_w(0)` give the ellipsis a
+                                    // width to clamp against; without them a long
+                                    // name overflows into the next column.
                                     None => div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
                                         .text_sm()
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(rgb(theme::FG))

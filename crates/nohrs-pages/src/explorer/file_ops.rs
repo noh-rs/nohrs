@@ -78,6 +78,26 @@ pub(crate) fn file_name_of(path: &Path) -> Option<String> {
         .map(|name| name.to_string_lossy().into_owned())
 }
 
+/// Where a rename's initial selection ends: after the name minus its extension,
+/// so typing replaces what you meant and `.rs` survives. Directories select
+/// whole — their dots are part of the name, not a suffix — as do files with no
+/// extension.
+///
+/// Measured in UTF-16 units because that is what the input's text API takes.
+/// Keys off `file_stem` rather than the last `.` so a dotfile stays whole:
+/// `.gitignore` is all stem, where `rfind('.')` would select nothing at all.
+fn rename_selection_end(name: &str, is_dir: bool) -> usize {
+    let whole = name.encode_utf16().count();
+    if is_dir {
+        return whole;
+    }
+    Path::new(name)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().encode_utf16().count())
+        .filter(|end| *end > 0)
+        .unwrap_or(whole)
+}
+
 // Performs a single copy or move from `src` to `dst` according to `mode`.
 fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
     match mode {
@@ -435,9 +455,23 @@ impl ExplorerPane {
         };
         let original_path = PathBuf::from(&entry.path);
         let name = entry.name.clone();
+        let selection_end = rename_selection_end(&name, entry.kind == "dir");
         let input = cx.new(|cx| InputState::new(window, cx));
         input.update(cx, |state, cx| {
-            state.set_value(name, window, cx);
+            // Seed the field *and* pre-select the part being renamed in one
+            // step. `set_value` always parks the caret at the end, and the
+            // selected range itself is not public, so this IME entry point is
+            // the only way in: inserting into the empty field lets it place the
+            // selection, and `unmark_text` then drops the composition marker so
+            // the result renders as ordinary selected text.
+            state.replace_and_mark_text_in_range(
+                Some(0..0),
+                &name,
+                Some(0..selection_end),
+                window,
+                cx,
+            );
+            state.unmark_text(window, cx);
             state.focus(window, cx);
         });
         let subscription = cx.subscribe_in(
@@ -462,6 +496,28 @@ impl ExplorerPane {
             _subscription: subscription,
         });
         cx.notify();
+    }
+
+    /// Abandons an in-progress rename without touching the filesystem, returning
+    /// focus to the listing. Bound to Escape while the field is open, and used
+    /// when the row being renamed goes away underneath the field — navigating to
+    /// another directory, say — since the field is positioned by row index and
+    /// would otherwise re-attach to whichever entry now occupies that slot.
+    pub(crate) fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.discard_rename(cx) {
+            cx.focus_self(window);
+        }
+    }
+
+    /// [`cancel_rename`](Self::cancel_rename) for callers without a `Window`
+    /// (pane-sync navigation). Returns whether a rename was in progress. Focus
+    /// is left alone, so the field's own blur handling settles it.
+    pub(crate) fn discard_rename(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.renaming.take().is_some() {
+            cx.notify();
+            return true;
+        }
+        false
     }
 
     /// Commits the in-progress rename, resolving a name collision by numbering
@@ -525,5 +581,48 @@ impl ExplorerPane {
                 cx.notify();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod rename_selection_tests {
+    use super::rename_selection_end;
+
+    #[test]
+    fn selects_the_name_without_its_extension() {
+        assert_eq!(rename_selection_end("notes.txt", false), 5);
+        assert_eq!(rename_selection_end("Cargo.toml", false), 5);
+    }
+
+    #[test]
+    fn keeps_only_the_final_extension_out_of_the_selection() {
+        // "archive.tar" stays selected; typing replaces it and ".gz" survives.
+        assert_eq!(rename_selection_end("archive.tar.gz", false), 11);
+    }
+
+    #[test]
+    fn selects_extensionless_names_whole() {
+        assert_eq!(rename_selection_end("Makefile", false), 8);
+    }
+
+    #[test]
+    fn selects_dotfiles_whole() {
+        // `file_stem` treats a leading dot as part of the name; keying off the
+        // last `.` instead would select nothing here.
+        assert_eq!(rename_selection_end(".gitignore", false), 10);
+    }
+
+    #[test]
+    fn selects_directories_whole_even_with_dots() {
+        assert_eq!(rename_selection_end("my.folder", true), 9);
+    }
+
+    #[test]
+    fn counts_utf16_units_not_bytes() {
+        // The input's text API indexes in UTF-16, so a multi-byte stem must not
+        // be measured in bytes (12 here) or chars alone.
+        assert_eq!(rename_selection_end("日本語.txt", false), 3);
+        // Astral-plane characters take two UTF-16 units each.
+        assert_eq!(rename_selection_end("🎉🎉.txt", false), 4);
     }
 }

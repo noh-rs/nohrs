@@ -10,6 +10,7 @@ use gpui_component::WindowExt as _;
 use gpui_component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::dialog::DialogButtonProps;
+use nohrs_core::telemetry::LogErr as _;
 use nohrs_services::fs::ops::ConflictResolution;
 
 use crate::explorer::ExplorerPane;
@@ -48,7 +49,7 @@ impl ExplorerPane {
                 .on_ok(move |_, _window, cx| {
                     let paths = paths.clone();
                     weak.update(cx, |pane, cx| pane.delete_permanent_paths(paths, cx))
-                        .ok();
+                        .log_err();
                     true
                 })
         });
@@ -75,10 +76,27 @@ impl ExplorerPane {
             };
 
             let checkbox_weak = weak.clone();
+            let close_weak = weak.clone();
             dialog
                 .title(format!(
                     "\u{201c}{name}\u{201d} already exists in \u{201c}{dest_name}\u{201d}"
                 ))
+                // Dismissing without choosing has to abandon the plan exactly as
+                // Cancel does, or the pending queue survives and the next paste
+                // resumes into this one.
+                .on_close(move |_, _window, cx| {
+                    close_weak
+                        .update(cx, |pane, cx| pane.cancel_paste(cx))
+                        .log_err();
+                })
+                // Enter reaches this dialog as `Confirm`. With a custom footer
+                // and no `on_ok`, gpui-component 0.5.1 takes its `else if
+                // has_footer` branch and closes the dialog *without* running
+                // `on_close` — leaking the plan the same way the close button
+                // used to. Claiming `on_ok` puts Enter back on the path that
+                // runs `on_close`, so it abandons the paste like Escape does
+                // rather than silently picking one of the four outcomes.
+                .on_ok(|_, _window, _cx| true)
                 .child(
                     div()
                         .flex()
@@ -97,17 +115,22 @@ impl ExplorerPane {
                                             .update(cx, |pane, cx| {
                                                 pane.set_apply_to_all(*checked, cx)
                                             })
-                                            .ok();
+                                            .log_err();
                                     }),
                             )
                         }),
                 )
+                // Cancel leads and Rename trails, keeping destructive Overwrite
+                // out of the slot the eye reads as the default. None of the four
+                // is styled primary: Enter abandons the paste (above), so
+                // highlighting one would promise a keyboard default it does not
+                // have — the four outcomes differ too much to guess between.
                 .footer(move |_ok, _cancel, _window, _cx| {
                     vec![
-                        conflict_button(&weak, "skip", "Skip", ConflictResolution::Skip),
-                        conflict_button(&weak, "rename", "Rename", ConflictResolution::Rename),
                         cancel_button(&weak),
                         overwrite_button(&weak),
+                        conflict_button(&weak, "skip", "Skip", ConflictResolution::Skip),
+                        conflict_button(&weak, "rename", "Rename", ConflictResolution::Rename),
                     ]
                 })
         });
@@ -135,8 +158,7 @@ fn conflict_button(
 }
 
 fn overwrite_button(weak: &WeakEntity<ExplorerPane>) -> Button {
-    // Right-most and danger-coloured to keep it away from the safe defaults
-    // (§1.2 mock).
+    // Danger-coloured, and placed away from the trailing default slot (§1.2).
     conflict_button(
         weak,
         "overwrite",
@@ -152,6 +174,6 @@ fn cancel_button(weak: &WeakEntity<ExplorerPane>) -> Button {
         .label("Cancel")
         .on_click(move |_, window, cx| {
             window.close_dialog(cx);
-            weak.update(cx, |pane, cx| pane.cancel_paste(cx)).ok();
+            weak.update(cx, |pane, cx| pane.cancel_paste(cx)).log_err();
         })
 }
