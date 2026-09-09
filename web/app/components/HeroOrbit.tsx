@@ -41,6 +41,9 @@ const SPILL = 0.3
 const SHOT_WIDTH = 900
 const SHOT_HEIGHT = 549
 
+/** The dialog's description. One panel is open at a time, so one id will do. */
+const CAPTION_ID = 'orbit-shot-caption'
+
 /** A shallow arc, drawn as the top of a circle so the name sits along the ring. */
 const ARC = 'M -140 34.7 A 300 300 0 0 1 140 34.7'
 
@@ -115,11 +118,15 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
     if (view?.phase !== 'closing') return
     const index = view.index
     const node = panel.current
-    const finish = () => {
+    const finish = (event?: TransitionEvent) => {
+      // Only the panel's own transition ends the close. The caption inside it
+      // fades in 150ms and that event bubbles here, so taking the first one to
+      // arrive cut the panel's 620ms flight short a quarter of the way back.
+      if (event && event.target !== node) return
       setView(null)
       cards.current[index]?.focus()
     }
-    node?.addEventListener('transitionend', finish, { once: true })
+    node?.addEventListener('transitionend', finish)
     // `prefers-reduced-motion` collapses the duration to nothing, and a
     // transition that never runs never ends; the timer closes it either way.
     const timer = window.setTimeout(finish, 700)
@@ -269,6 +276,7 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
             role="dialog"
             aria-modal="true"
             aria-label={shown.label}
+            aria-describedby={CAPTION_ID}
           >
             <div className="orbit-scrim" onClick={dismiss} />
             <figure className="orbit-panel" ref={panel}>
@@ -282,7 +290,7 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
               </div>
               <figcaption className="orbit-caption">
                 <span className="orbit-caption-label">{shown.label}</span>
-                <span>{shown.caption}</span>
+                <span id={CAPTION_ID}>{shown.caption}</span>
               </figcaption>
             </figure>
             <button type="button" className="orbit-close" onClick={dismiss} ref={closer}>
