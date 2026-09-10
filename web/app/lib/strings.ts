@@ -33,6 +33,7 @@ const en = {
     tryTitle: 'There is no release to download yet. To try it today, build it from source on macOS.',
     tryTitleReleased: 'Builds are published on GitHub. You can also build from source on macOS.',
     screens: 'Screens',
+    hint: 'Press any screen to see it in full',
     close: 'Close',
     shots: {
       explorer: {
@@ -369,6 +370,7 @@ const ja: Dict = {
     tryTitleReleased:
       'ビルド済みのバイナリは GitHub で配布しています。macOS 上でソースからビルドすることもできます。',
     screens: '画面',
+    hint: 'まわりの画面は、押すと大きく開きます',
     close: '閉じる',
     shots: {
       explorer: {
