@@ -405,9 +405,10 @@ Environment では届かない。そして**これはそもそも秘密ではな
 配られる。`secrets` に置いているのは、fork でビルドしたときに本家の Analytics に計上しないため
 だけで、**secret が無い場合は機能ごと出さない**方に倒す。
 
-`DISCUSSIONS_TOKEN` を **repository secret から消したら Cloudflare 側からも消える** (改訂
-2026-09-10)。deploy ジョブは、値があれば `wrangler secret put`、無ければ `wrangler secret delete`
-する。put だけにすると、意図的に引き上げた資格情報が誰かが気づくまでエッジで生き続ける。
+`DISCUSSIONS_TOKEN` を **`production` Environment から消したら Cloudflare 側からも消える** (改訂
+2026-09-10)。deploy ジョブは、値があれば `wrangler secret put`、無ければ Worker のシークレット一覧を
+見て `wrangler secret delete` する。put だけにすると、意図的に引き上げた資格情報が誰かが気づくまで
+エッジで生き続ける。**削除の失敗を握り潰さない**のも同じ理由で、消えていないなら deploy を落とす。
 
 > `production` Environment の **Deployment branches** 制限は、チェックアウト先ではなく
 > **ワークフロー実行の ref** で判定される。スケジュール実行の ref はデフォルトブランチ

@@ -163,10 +163,19 @@ jobs:
         run: |
           if [ -n "$DISCUSSIONS_TOKEN" ]; then
             printf '%s' "$DISCUSSIONS_TOKEN" | npx wrangler secret put GITHUB_TOKEN
+            exit 0
+          fi
+
+          echo "DISCUSSIONS_TOKEN is unset — withdrawing the Worker secret."
+          # Asked for rather than suppressed: already absent is the state we
+          # want, and anything else that goes wrong has to fail the deploy.
+          # Swallowing a delete would report a credential as withdrawn while it
+          # kept working at the edge.
+          existing="$(npx wrangler secret list)"
+          if printf '%s' "$existing" | grep -q 'GITHUB_TOKEN'; then
+            npx wrangler secret delete GITHUB_TOKEN --force
           else
-            echo "DISCUSSIONS_TOKEN is unset — withdrawing the Worker secret."
-            # Absent already is the state being asked for, not a failure.
-            npx wrangler secret delete GITHUB_TOKEN --force || true
+            echo "The Worker has no GITHUB_TOKEN secret; nothing to withdraw."
           fi
         env:
           DISCUSSIONS_TOKEN: ${{ secrets.DISCUSSIONS_TOKEN }}

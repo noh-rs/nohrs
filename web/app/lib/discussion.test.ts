@@ -86,6 +86,14 @@ test('two discussions with the same title resolve to the same one every time', a
   assert.equal((await load(payload(search([older, newer]))))?.url, 'https://example.invalid/old')
 })
 
+test('discussions created at the same instant still resolve the same way', async () => {
+  const a = discussion({ createdAt: '2026-08-01T00:00:00Z', url: 'https://example.invalid/a' })
+  const b = discussion({ createdAt: '2026-08-01T00:00:00Z', url: 'https://example.invalid/b' })
+
+  assert.equal((await load(payload(search([b, a]))))?.url, 'https://example.invalid/a')
+  assert.equal((await load(payload(search([a, b]))))?.url, 'https://example.invalid/a')
+})
+
 test('a same-titled discussion outside the blog category loses to one inside it', async () => {
   const elsewhere = discussion({
     category: { slug: 'general' },

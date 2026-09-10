@@ -171,9 +171,14 @@ function pick(nodes: (RawDiscussion | null)[], term: string): RawDiscussion | un
   const inCategory = titled.filter((node) => node.category?.slug?.toLowerCase() === CATEGORY)
   const candidates = inCategory.length > 0 ? inCategory : titled
 
+  // The URL breaks a tie on creation time, which two discussions really can
+  // share. Without it the last step would fall back to GitHub's order, which
+  // is the thing this function exists to stop depending on.
   return candidates.reduce<RawDiscussion | undefined>((oldest, node) => {
     if (!oldest) return node
-    return (node.createdAt ?? '') < (oldest.createdAt ?? '') ? node : oldest
+    const age = (node.createdAt ?? '').localeCompare(oldest.createdAt ?? '')
+    if (age !== 0) return age < 0 ? node : oldest
+    return (node.url ?? '') < (oldest.url ?? '') ? node : oldest
   }, undefined)
 }
 
