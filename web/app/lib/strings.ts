@@ -30,7 +30,7 @@ const en = {
 
   hero: {
     sub: 'Nohrs is a keyboard-driven file explorer for macOS, with a launcher built into the same application. Written in Rust, open source under MIT.',
-    tryTitle: 'There is no published build yet. To run Nohrs today, build it from source on macOS.',
+    tryTitle: 'Build Nohrs from source on macOS — one clone and one command.',
     tryTitleReleased: 'Builds are published with every release. You can also build from source on macOS.',
     screens: 'Screens',
     hint: 'Press any screen to see it in full',
@@ -100,7 +100,7 @@ const en = {
   preview: {
     eyebrow: 'The application',
     title: 'One window, from finding a file to acting on it.',
-    lede: 'A screenshot of the application, not a mockup — nothing on this site is a picture of something that does not exist.',
+    lede: 'The sidebar, the listing and the preview pane are one surface. Nothing here opens a second window.',
     caption: 'Explorer — list and grid views, with the preview pane open',
     parts: [
       {
@@ -179,13 +179,13 @@ const en = {
   openSource: {
     eyebrow: 'Open source',
     title: 'All of it is in the repository.',
-    lede: 'No testimonials, no wall of logos. The repository is public, and the numbers below are read out of it when this page is built.',
+    lede: 'Every commit, every issue and every decision that shaped Nohrs is public.',
     stars: 'Stars',
     forks: 'Forks',
     issues: 'Open issues',
     license: 'License',
     recent: 'Recent commits',
-    fetched: 'Read from the GitHub API when this page was built, on',
+    fetched: 'Read from GitHub on',
   },
 
   community: {
@@ -232,7 +232,7 @@ const en = {
   download: {
     title: 'Download',
     ledePreRelease:
-      'There is no published build yet. To run Nohrs today, build it from source — one clone and one command on macOS.',
+      'Nohrs is built from source on macOS — one clone and one command. Binaries arrive with the first release.',
     ledeReleased: 'macOS builds are published with each release.',
     buildTitle: 'Build from source',
     buildIntro: 'You need a Rust toolchain and Xcode command line tools. The build takes a few minutes from cold.',
@@ -244,7 +244,7 @@ const en = {
     ],
     watchTitle: 'Get told when there is something to download',
     watchBody:
-      'Watching releases on GitHub is the reliable channel — the site reads the same list. Release notes also go out on X.',
+      'Watch releases on GitHub and you hear first. Release notes also go out on X.',
     watchCta: 'Watch releases on GitHub',
   },
 
@@ -252,7 +252,7 @@ const en = {
     title: 'Releases',
     lede: 'Every published build, newest first.',
     empty:
-      'Nothing has been published yet. Every build appears here as soon as it is cut, newest first, with its notes and its macOS binary.',
+      'No releases yet. Each one arrives here with its notes and its macOS build, newest first.',
     emptyCta: 'Follow the roadmap',
     viewOnGitHub: 'Read the release notes on GitHub',
     downloads: 'Downloads',
@@ -268,13 +268,12 @@ const en = {
     publishedOn: 'Published',
     tags: 'Tags',
     commentsTitle: 'Comments',
-    commentsBody:
-      'This article has a thread in GitHub Discussions. It is read here, and replied to there.',
+    commentsBody: 'Replies go to this article’s thread on GitHub.',
     commentsLoading: 'Reading the thread…',
     commentsEmpty: 'Nothing has been said about this article yet.',
     commentsReply: 'Reply on GitHub',
     commentsStart: 'Start the thread on GitHub',
-    commentsError: 'The thread could not be read just now. It is readable on GitHub.',
+    commentsError: 'The thread could not be loaded. It is readable on GitHub.',
     commentsDeleted: 'Deleted account',
     commentsReactions: 'Reactions to this article',
     translationMissingTitle: 'This article has no Japanese translation yet',
@@ -307,7 +306,7 @@ const en = {
     title: 'Plugins',
     lede: 'Nohrs plugins are WASM components. They run in a sandbox and hold only the capabilities you grant them.',
     previewNotice:
-      'The registry is young. What is listed here is what has been submitted so far, and adding to it is one pull request.',
+      'Every plugin here lists the permissions it asks for. Nohrs hands over nothing that is not on that list.',
     categories: {
       productivity: 'Productivity',
       'developer-tools': 'Developer tools',
@@ -374,8 +373,7 @@ const ja: Dict = {
 
   hero: {
     sub: 'Nohrs は、ランチャーを同じアプリに内蔵した、macOS 向けのキーボード操作中心のファイルエクスプローラーです。Rust 製、MIT ライセンスのオープンソースです。',
-    tryTitle:
-      '公開しているビルドは、まだありません。いま動かすには、macOS 上でソースからビルドしてください。',
+    tryTitle: 'macOS でソースからビルドします。clone とコマンド 1 つです。',
     tryTitleReleased:
       'ビルド済みのバイナリは、リリースごとに配布しています。macOS 上でソースからビルドすることもできます。',
     screens: '画面',
@@ -444,7 +442,7 @@ const ja: Dict = {
   preview: {
     eyebrow: 'アプリケーション',
     title: '見つけるところから操作まで、1 つのウィンドウで。',
-    lede: 'モックではなく、実際のアプリのスクリーンショットです。このサイトには、存在しないものの絵は 1 枚もありません。',
+    lede: 'サイドバーも一覧もプレビューも、1 つのウィンドウの中にあります。ここで別のウィンドウが開くことはありません。',
     caption: 'エクスプローラー — リスト／グリッド表示と、開いたプレビューペイン',
     parts: [
       {
@@ -523,13 +521,13 @@ const ja: Dict = {
   openSource: {
     eyebrow: 'オープンソース',
     title: 'すべて、リポジトリにあります。',
-    lede: '推薦の言葉も、ロゴの列も置きません。リポジトリは公開されていて、下の数字はこのページのビルド時にそこから読んでいます。',
+    lede: 'Nohrs を形づくったコミットも、議論も、決定も、すべて公開されています。',
     stars: 'スター',
     forks: 'フォーク',
     issues: 'オープンな課題',
     license: 'ライセンス',
     recent: '最近のコミット',
-    fetched: 'このページのビルド時に GitHub API から取得した値です — 取得日',
+    fetched: 'GitHub から取得',
   },
 
   community: {
@@ -576,7 +574,7 @@ const ja: Dict = {
   download: {
     title: 'ダウンロード',
     ledePreRelease:
-      '公開しているビルドは、まだありません。いま動かすには、ソースからビルドしてください。clone とコマンド 1 つで済みます。',
+      'いまはソースからビルドします。macOS で、clone とコマンド 1 つです。バイナリは最初のリリースから配ります。',
     ledeReleased: 'macOS 向けのビルドを、リリースごとに配布しています。',
     buildTitle: 'ソースからビルドする',
     buildIntro:
@@ -589,7 +587,7 @@ const ja: Dict = {
     ],
     watchTitle: 'ダウンロードできるようになったら知る',
     watchBody:
-      'GitHub のリリース通知が確実です。このサイトも同じ一覧を読んでいます。リリース情報は X にも流します。',
+      'GitHub でリリースを watch しておくのが確実です。リリース情報は X にも流します。',
     watchCta: 'GitHub でリリースを watch する',
   },
 
@@ -597,7 +595,7 @@ const ja: Dict = {
     title: 'リリース',
     lede: '公開したビルドの一覧です。新しいものから並べています。',
     empty:
-      'まだ公開したビルドはありません。リリースを切るたびに、リリースノートと macOS 向けバイナリを添えて、新しいものから順にここに並びます。',
+      'まだリリースはありません。リリースノートと macOS 向けビルドを添えて、新しいものから順にここに並びます。',
     emptyCta: 'ロードマップを見る',
     viewOnGitHub: 'GitHub でリリースノートを読む',
     downloads: 'ダウンロード',
@@ -613,13 +611,12 @@ const ja: Dict = {
     publishedOn: '公開日',
     tags: 'タグ',
     commentsTitle: 'コメント',
-    commentsBody:
-      'この記事のスレッドは GitHub Discussions にあります。読むのはここで、返信は向こうです。',
+    commentsBody: '返信は、この記事の GitHub のスレッドに書けます。',
     commentsLoading: 'スレッドを読み込んでいます…',
     commentsEmpty: 'この記事について、まだ何も書かれていません。',
     commentsReply: 'GitHub で返信する',
     commentsStart: 'GitHub で最初に書く',
-    commentsError: 'いまスレッドを読み込めませんでした。GitHub 側では読めます。',
+    commentsError: 'スレッドを読み込めませんでした。GitHub では読めます。',
     commentsDeleted: '削除されたアカウント',
     commentsReactions: 'この記事へのリアクション',
     translationMissingTitle: 'この記事の日本語訳は、まだありません',
@@ -652,7 +649,7 @@ const ja: Dict = {
     title: 'プラグイン',
     lede: 'Nohrs のプラグインは WASM コンポーネントです。サンドボックスの中で動き、許可した権限だけを持ちます。',
     previewNotice:
-      'レジストリはまだ小さく、ここに並ぶのは、これまでに登録されたものだけです。追加はプルリクエスト 1 つで済みます。',
+      'どのプラグインにも、要求する権限が並んでいます。Nohrs がそこに無いものを渡すことはありません。',
     categories: {
       productivity: '生産性',
       'developer-tools': '開発者向け',
