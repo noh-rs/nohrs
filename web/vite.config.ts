@@ -15,6 +15,8 @@ import remarkFrontmatterExport from './scripts/remark-frontmatter-export.mjs'
 import { sitePaths, alternateRefs } from './scripts/content-index.mjs'
 // @ts-expect-error -- see above
 import pluginRegistry from './scripts/vite-plugin-registry.mjs'
+// @ts-expect-error -- see above
+import discussionDev from './scripts/vite-plugin-discussion.mjs'
 
 const HOST = process.env.SITE_HOST ?? 'https://nohrs.app'
 
@@ -39,6 +41,7 @@ export default defineConfig({
       }),
     },
     pluginRegistry(),
+    discussionDev(),
     tailwindcss(),
     tanstackStart({
       srcDirectory: 'app',

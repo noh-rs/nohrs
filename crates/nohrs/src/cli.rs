@@ -29,6 +29,8 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Open the launcher window on its own, without the explorer.
+    Launcher,
 }
 
 #[derive(Subcommand, Debug)]

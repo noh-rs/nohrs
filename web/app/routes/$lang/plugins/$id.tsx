@@ -59,9 +59,14 @@ function PluginDetail() {
             </span>
           </DefinitionRow>
           <DefinitionRow label={strings.install}>
-            <span className="text-muted">{strings.installUnavailable}</span>
+            <span className="text-muted">{strings.installHint}</span>
             <br />
-            <code className="font-mono text-[0.8125rem]">nohrs://install?source={entry.repo}</code>
+            {/* Shown as an address rather than an anchor: nothing registers
+                the scheme until the plugin host ships, and a link that does
+                nothing when clicked is worse than text you can read. */}
+            <span className="font-mono text-[0.8125rem]">
+              nohrs://install?source={entry.repo}
+            </span>
           </DefinitionRow>
         </DefinitionRows>
       </Section>

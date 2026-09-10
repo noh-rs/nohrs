@@ -366,6 +366,23 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
                   decoding="async"
                   style={{ '--zoom': zoom, '--focus': focusOf(shot) } as CSSProperties}
                 />
+                {/* A picture on a page is not read as a control, and a touch
+                    screen has no hover with which to discover that it is one:
+                    the border, the peek and the pointer all answer a mouse
+                    that is already on it. This is the part that says so
+                    before anything is touched, so it is drawn at rest. */}
+                <span className="orbit-open" aria-hidden="true">
+                  <svg width="13" height="13" viewBox="0 0 16 16" focusable="false">
+                    <path
+                      d="M9.6 2.6 H13.4 V6.4 M13.4 2.6 L9.2 6.8 M6.4 13.4 H2.6 V9.6 M2.6 13.4 L6.8 9.2"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </span>
                 <span className="orbit-name">{copy.label}</span>
               </button>
               {/* The name is the card's other half, not a second control: the
@@ -398,6 +415,10 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
         onPointerLeave={() => setWarm(false)}
       >
         {children}
+        {/* The mark on each card says that one screen is a control. This says
+            it once in words, for the reader who takes the ring for a picture
+            of five windows and never brings a pointer near one. */}
+        <p className="orbit-hint">{strings.hint}</p>
       </div>
 
       {view !== null &&

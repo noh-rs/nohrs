@@ -17,6 +17,10 @@ npm test             # the Workers' redirect logic
 `npm run dev` skips the `prebuild` scripts, so it runs with the committed GitHub snapshot
 and without the self-hosted fonts. Both are build artifacts, not source; see below.
 
+Comments are read live from GitHub Discussions, which needs a token. Export a
+`GITHUB_TOKEN` with read access to Discussions before `npm run dev` to see real threads;
+without one the section shows the same unconfigured state a fork gets.
+
 ## How a page gets built
 
 Every page is rendered once, at build time, and served as a static file. The only things
@@ -86,7 +90,7 @@ translating, not the normal state. Launch parity is required
 
 Deploys run from CI, so no Cloudflare credential ever has to sit on a laptop.
 
-**One-time setup.** The five secrets are split by blast radius, not filed together.
+**One-time setup.** The secrets are split by blast radius, not filed together.
 
 Settings → Environments → new environment named `production`, then as **environment
 secrets** there:
@@ -95,11 +99,19 @@ secrets** there:
 |--------|--------------------|
 | `CLOUDFLARE_API_TOKEN` | A Cloudflare API token from the **Edit Cloudflare Workers** template, with the `nohrs.app` and `noh.rs` zones included in its zone resources |
 | `CLOUDFLARE_ACCOUNT_ID` | The account ID on any Cloudflare dashboard page |
+| `DISCUSSIONS_TOKEN` | A fine-grained personal access token for this repository, **read-only**, with the `Discussions` permission and nothing else |
 
-These two can deploy to production, and an environment secret is only visible to a job
+The first two can deploy to production, and an environment secret is only visible to a job
 that declares `environment: production` — which is the deploy job and nothing else. In a
 public repository that is a real boundary: a repository secret can be read by any workflow
 run from any branch someone can push to.
+
+`DISCUSSIONS_TOKEN` is the one credential the site needs at request time rather than at
+build time — the Worker reads each article's comment thread with it. The deploy job pushes
+it into the Worker as the `GITHUB_TOKEN` secret; nothing about it reaches the browser. It
+is filed as an environment secret for that reason, and a workflow run outside `production`
+never sees it. Fine-grained tokens expire: when this one does, comments stop loading and
+the section falls back to a link to GitHub. Nothing else on the site is affected.
 
 The token needs the zones because the Workers claim `nohrs.app` and `noh.rs` as custom
 domains; an account-only token uploads the script and then fails attaching the routes.
@@ -108,15 +120,16 @@ Settings → Secrets and variables → Actions, as **repository secrets**:
 
 | Secret | Where it comes from | Without it |
 |--------|--------------------|------------|
-| `GISCUS_REPO_ID`, `GISCUS_CATEGORY_ID` | giscus.app, for this repository's Discussions | No comment section |
 | `CF_ANALYTICS_TOKEN` | Cloudflare Web Analytics | No beacon |
 
-The build job reads these and does not declare an environment, so environment secrets
-would not reach it. They are also not really secrets — all three are served to every
-visitor inside the built HTML. They live in `secrets` so that a fork building this site
-does not post into our Discussions or count against our analytics.
+The build job reads this and does not declare an environment, so environment secrets
+would not reach it. It is also not really a secret — it is served to every visitor inside
+the built HTML. It lives in `secrets` so that a fork building this site does not count
+against our analytics.
 
-`GITHUB_TOKEN` is provided automatically; there is nothing to add.
+`GITHUB_TOKEN` is provided automatically; there is nothing to add. In the build it only
+lifts the API rate limit for the figures baked into the pages, and is unrelated to the
+Worker secret of the same name.
 
 **If you put a Deployment branches rule on the `production` environment**, it has to allow
 `develop` as well as `main`. The rule is evaluated against the workflow run's ref, and a
@@ -138,8 +151,10 @@ npx wrangler deploy                                          # nohrs.app
 npx wrangler deploy --config workers/wrangler.noh-rs.jsonc   # noh.rs
 ```
 
-The optional secrets are optional on purpose: comments and analytics are simply absent
-without them, which is what a fork building this site should get.
+The optional secrets are optional on purpose: comments fall back to a link and analytics
+is simply absent without them, which is what a fork building this site should get.
+A hand deploy does not carry `DISCUSSIONS_TOKEN`; the Worker keeps the secret it already
+has, so this does not take comments down.
 
 ### While the site is gated
 

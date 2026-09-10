@@ -1,6 +1,6 @@
 import { createFileRoute, Link, notFound } from '@tanstack/react-router'
 import { MDXProvider } from '@mdx-js/react'
-import { Giscus } from '~/components/Giscus'
+import { Comments } from '~/components/Comments'
 import { mdxComponents } from '~/components/MdxComponents'
 import { blogPost } from '~/lib/content'
 import { formatDate, t, type Lang } from '~/lib/i18n'
@@ -95,7 +95,7 @@ function BlogPost() {
         </div>
       </article>
 
-      <Giscus lang={lang} term={`blog/${slug}`} />
+      <Comments lang={lang} term={`blog/${slug}`} />
     </>
   )
 }

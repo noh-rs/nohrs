@@ -1,33 +1,34 @@
 ---
 title: Getting started
-description: What Nohrs is today, and what to expect from a pre-alpha build.
+description: What Nohrs is, what it does, and what to read next.
 category: getting-started
 order: 1
 ---
 
 Nohrs is a keyboard-driven file explorer for macOS with a launcher built into the same
-application. It is written in Rust on top of [gpui](https://github.com/zed-industries/zed),
-the GPU-accelerated UI framework Zed is built on.
+application. It is written in Rust on top of
+[gpui](https://github.com/zed-industries/zed), the GPU-accelerated UI framework Zed is
+built on.
 
-<Callout title="Pre-alpha">
-There is no published release yet. The explorer runs; the launcher, the search index and the
-plugin host are on the roadmap and are not written. Nothing on this site shows a feature that
-does not exist.
+<Callout title="macOS only">
+Nohrs runs on macOS 13 or later, on Apple silicon and Intel. Whether it goes further than
+that is a decision the project has not made.
 </Callout>
 
-## What works today
+## What it does
 
 - Browsing the file system with the keyboard, in a list or grid view
-- A preview pane for the selected file
+- A preview pane that renders the selected file — Markdown, code and text
 - Multi-select, with click, shift-click and command-click
 - File operations: copy, move, rename, create, trash and delete, with cross-volume handling
+- Search scoped to one folder or the whole tree, over names or over file contents
+- A launcher on `Cmd+Shift+Space` from any application, or `Cmd+K` inside Nohrs, that
+  fuzzy-searches files and folders and opens one on `Enter`
 
-## What does not work yet
+## What is still ahead
 
-- The global-hotkey launcher (P3)
-- Full-text search over file contents (P3)
-- Plugins of any kind — the WASM host is P4 work
-- Any operating system other than macOS
+- **Plugins** as WASM components, each holding only the permissions you granted it. The
+  host that runs them arrives in P4.
 
 ## Where to go next
 
