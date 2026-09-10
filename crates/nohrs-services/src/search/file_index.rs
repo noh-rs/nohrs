@@ -130,13 +130,28 @@ impl FileIndexConfig {
 /// Synchronous and slow enough to matter (seconds on a large home directory),
 /// so callers run it on a background executor — see
 /// [`FileNameIndex::rebuild`].
-pub fn scan(config: &FileIndexConfig) -> Vec<IndexedEntry> {
+///
+/// Fails when `root` is not a readable directory. That case has to be an error
+/// rather than an empty result: an unreadable home would otherwise be installed
+/// as a perfectly good empty index, and every search would answer "no results"
+/// for a scan that never happened.
+pub fn scan(config: &FileIndexConfig) -> Result<Vec<IndexedEntry>> {
+    let metadata = std::fs::metadata(&config.root)
+        .with_context(|| format!("cannot read {}", config.root.display()))?;
+    if !metadata.is_dir() {
+        anyhow::bail!("{} is not a directory", config.root.display());
+    }
+
     let mut entries = Vec::new();
     let walker = ignore::WalkBuilder::new(&config.root)
         .hidden(!config.include_hidden)
-        .git_ignore(true)
+        // Git-ignored files are still files a person may want to open by name —
+        // a local `.env`, a scratch note, a build output they are hunting for.
+        // Hiding them is a source-control policy, not a search one; the noise
+        // that actually matters is pruned by `SKIPPED_DIRECTORIES` instead.
+        .git_ignore(false)
         .max_depth(Some(config.max_depth))
-        .filter_entry(|entry| !is_skipped_directory(entry.path()))
+        .filter_entry(|entry| !is_skipped_directory(entry))
         .build();
 
     for result in walker {
@@ -154,7 +169,7 @@ pub fn scan(config: &FileIndexConfig) -> Vec<IndexedEntry> {
                 if entry.depth() == 0 {
                     continue;
                 }
-                let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
+                let is_dir = is_directory(&entry);
                 if let Some(indexed) = IndexedEntry::new(entry.into_path(), is_dir) {
                     entries.push(indexed);
                 }
@@ -165,23 +180,67 @@ pub fn scan(config: &FileIndexConfig) -> Vec<IndexedEntry> {
         }
     }
 
-    entries
+    Ok(entries)
 }
 
-fn is_skipped_directory(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| SKIPPED_DIRECTORIES.contains(&name))
+/// Whether a walked entry is a directory, following symlinks.
+///
+/// A symlink's own file type is not its target's, so a link to a directory
+/// would otherwise be indexed — and shown — as a file. Resolving it costs a
+/// `stat`, which is why only symlinks pay for it.
+fn is_directory(entry: &ignore::DirEntry) -> bool {
+    match entry.file_type() {
+        Some(kind) if kind.is_dir() => true,
+        Some(kind) if kind.is_symlink() => entry.path().is_dir(),
+        _ => false,
+    }
+}
+
+/// Whether the walk should prune this entry.
+///
+/// Only directories are pruned: the names in [`SKIPPED_DIRECTORIES`] describe
+/// trees, and a regular file that happens to be called `target` or `venv` is an
+/// ordinary file someone may be looking for. The root is never pruned, so a home
+/// directory that happens to carry one of these names still gets scanned.
+fn is_skipped_directory(entry: &ignore::DirEntry) -> bool {
+    entry.depth() > 0
+        && entry.file_type().is_some_and(|kind| kind.is_dir())
+        && entry
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| SKIPPED_DIRECTORIES.contains(&name))
+}
+
+/// How far along the index is, which is what the UI reports when a search
+/// comes back with nothing.
+///
+/// "Empty" has three quite different meanings to a user — still working, found
+/// nothing, and broken — and answering all three with "no results" is what
+/// makes a launcher feel unreliable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexState {
+    /// The first scan has not finished. Results so far are incomplete.
+    Scanning,
+    /// A scan completed; the index is whatever the filesystem held.
+    Ready,
+    /// The scan failed, so there is nothing to search and no point waiting.
+    Failed,
 }
 
 /// A shared, swappable snapshot of the name index.
 ///
 /// Readers take an `Arc` of the current entries and match against it without
 /// holding the lock, so a rebuild never blocks a keystroke.
+///
+/// The snapshot is replaced wholesale by a rescan and does not track the
+/// filesystem live: files created after startup are not searchable until the
+/// next scan. Wiring it to the watcher behind the content index is future work.
 #[derive(Debug, Default)]
 pub struct FileNameIndex {
     entries: RwLock<Arc<[IndexedEntry]>>,
     ready: AtomicBool,
+    failed: AtomicBool,
 }
 
 impl FileNameIndex {
@@ -200,10 +259,15 @@ impl FileNameIndex {
         }
     }
 
-    /// Whether a scan has completed. Before that, searches run against an empty
-    /// index and the UI says so rather than reporting "no results".
-    pub fn is_ready(&self) -> bool {
-        self.ready.load(Ordering::Acquire)
+    /// How far along the index is.
+    pub fn state(&self) -> IndexState {
+        if self.failed.load(Ordering::Acquire) {
+            IndexState::Failed
+        } else if self.ready.load(Ordering::Acquire) {
+            IndexState::Ready
+        } else {
+            IndexState::Scanning
+        }
     }
 
     /// Number of indexed entries.
@@ -217,20 +281,38 @@ impl FileNameIndex {
     }
 
     /// Installs `entries` as the current snapshot and marks the index ready.
+    ///
+    /// Also clears a previous failure: a rescan that succeeds supersedes one
+    /// that did not.
     pub fn replace(&self, entries: Vec<IndexedEntry>) {
         let entries: Arc<[IndexedEntry]> = entries.into();
         match self.entries.write() {
             Ok(mut guard) => *guard = entries,
             Err(poisoned) => *poisoned.into_inner() = entries,
         }
+        self.failed.store(false, Ordering::Release);
         self.ready.store(true, Ordering::Release);
+    }
+
+    /// Records that there is nothing to scan, so callers stop waiting on one.
+    pub fn mark_failed(&self) {
+        self.failed.store(true, Ordering::Release);
     }
 
     /// Scans `config.root` and installs the result. Blocking — call it from a
     /// background executor.
-    pub fn rebuild(&self, config: &FileIndexConfig) {
+    ///
+    /// A failed scan marks the index failed rather than leaving it to look like
+    /// a scan still in progress.
+    pub fn rebuild(&self, config: &FileIndexConfig) -> Result<()> {
         let started = std::time::Instant::now();
-        let entries = scan(config);
+        let entries = match scan(config) {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.mark_failed();
+                return Err(error);
+            }
+        };
         tracing::info!(
             "indexed {} names under {} in {:?}",
             entries.len(),
@@ -238,6 +320,7 @@ impl FileNameIndex {
             started.elapsed()
         );
         self.replace(entries);
+        Ok(())
     }
 }
 
@@ -267,7 +350,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_tree(dir.path());
 
-        let entries = scan(&FileIndexConfig::for_root(dir.path().to_path_buf()));
+        let entries = scan(&FileIndexConfig::for_root(dir.path().to_path_buf())).unwrap();
 
         // `src` (a directory) and its file are indexed; node_modules is pruned
         // wholesale and hidden entries are excluded by default.
@@ -291,7 +374,7 @@ mod tests {
 
         let mut config = FileIndexConfig::for_root(dir.path().to_path_buf());
         config.include_hidden = true;
-        let entries = scan(&config);
+        let entries = scan(&config).unwrap();
 
         assert!(entries.iter().any(|entry| entry.name() == "secret.txt"));
         // Pruned directory names are skipped even when hidden entries are in.
@@ -307,11 +390,88 @@ mod tests {
         shallow.max_depth = 1;
         // At depth 1 only the root's direct children are visited, so `src` is
         // indexed but `src/main.rs` is not.
-        assert_eq!(names(&scan(&shallow)), vec!["README.md", "src"]);
+        assert_eq!(names(&scan(&shallow).unwrap()), vec!["README.md", "src"]);
 
         let mut capped = FileIndexConfig::for_root(dir.path().to_path_buf());
         capped.max_entries = 1;
-        assert_eq!(scan(&capped).len(), 1);
+        assert_eq!(scan(&capped).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_git_ignored_file_is_still_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "secret.txt\n").unwrap();
+        std::fs::write(dir.path().join("secret.txt"), "x").unwrap();
+
+        let mut config = FileIndexConfig::for_root(dir.path().to_path_buf());
+        config.include_hidden = true;
+        // Git-ignored is not the same as unwanted: the launcher opens files, it
+        // does not commit them.
+        assert!(
+            scan(&config)
+                .unwrap()
+                .iter()
+                .any(|entry| entry.name() == "secret.txt")
+        );
+    }
+
+    #[test]
+    fn a_file_named_like_a_noise_directory_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("target")).unwrap();
+        std::fs::write(dir.path().join("target/artifact.bin"), "x").unwrap();
+        std::fs::write(dir.path().join("venv"), "a regular file").unwrap();
+
+        let entries = scan(&FileIndexConfig::for_root(dir.path().to_path_buf())).unwrap();
+        let names = names(&entries);
+        // The directory is pruned with everything under it; the file is not.
+        assert!(names.contains(&"venv"), "{names:?}");
+        assert!(!names.contains(&"artifact.bin"), "{names:?}");
+    }
+
+    #[test]
+    fn a_root_named_like_a_noise_directory_is_still_scanned() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("target");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("inside.txt"), "x").unwrap();
+
+        // Pruning applies below the root, never to the root itself.
+        assert_eq!(
+            names(&scan(&FileIndexConfig::for_root(root)).unwrap()),
+            vec!["inside.txt"]
+        );
+    }
+
+    #[test]
+    fn an_unreadable_root_is_an_error_not_an_empty_index() {
+        let index = FileNameIndex::new();
+        let missing = FileIndexConfig::for_root(PathBuf::from("/definitely/not/here"));
+
+        assert!(scan(&missing).is_err());
+        assert!(index.rebuild(&missing).is_err());
+        // Not "Ready and empty", which would read to the user as "no results".
+        assert_eq!(index.state(), IndexState::Failed);
+    }
+
+    #[test]
+    fn a_later_successful_scan_clears_an_earlier_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        write_tree(dir.path());
+        let index = FileNameIndex::new();
+
+        index
+            .rebuild(&FileIndexConfig::for_root(PathBuf::from(
+                "/definitely/not/here",
+            )))
+            .unwrap_err();
+        assert_eq!(index.state(), IndexState::Failed);
+
+        index
+            .rebuild(&FileIndexConfig::for_root(dir.path().to_path_buf()))
+            .unwrap();
+        assert_eq!(index.state(), IndexState::Ready);
+        assert!(!index.is_empty());
     }
 
     #[test]
@@ -327,13 +487,13 @@ mod tests {
     #[test]
     fn index_starts_empty_and_becomes_ready_after_replace() {
         let index = FileNameIndex::new();
-        assert!(!index.is_ready());
+        assert_eq!(index.state(), IndexState::Scanning);
         assert!(index.is_empty());
 
         let entry = IndexedEntry::new(PathBuf::from("/a/b.txt"), false).unwrap();
         index.replace(vec![entry.clone()]);
 
-        assert!(index.is_ready());
+        assert_eq!(index.state(), IndexState::Ready);
         assert_eq!(index.len(), 1);
         assert_eq!(index.snapshot().first(), Some(&entry));
     }

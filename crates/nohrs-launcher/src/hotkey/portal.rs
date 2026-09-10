@@ -15,7 +15,9 @@
 //!
 //! The portal interface reached version 1 in xdg-desktop-portal 1.17 and is
 //! implemented by GNOME 45+ and KDE Plasma 5.27+. Where it is missing the
-//! request fails and the caller falls back to the grab.
+//! request fails and there is no global shortcut at all: a grab would bind and
+//! then only fire over XWayland windows, so the caller reports the failure and
+//! leaves the in-app binding as the way in.
 
 use anyhow::{Context as _, Result, bail};
 use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
@@ -50,7 +52,7 @@ pub fn is_wayland_session() -> bool {
 /// specification (for example `CTRL+SHIFT+space`). The desktop is free to bind
 /// something else — the user may already have that chord — so it is a request,
 /// not an instruction.
-pub async fn listen(trigger: &str, on_activated: impl Fn()) -> Result<()> {
+pub async fn listen(trigger: &str, on_bound: impl FnOnce(), on_activated: impl Fn()) -> Result<()> {
     let shortcuts = GlobalShortcuts::new()
         .await
         .context("no GlobalShortcuts portal on the session bus")?;
@@ -58,6 +60,14 @@ pub async fn listen(trigger: &str, on_activated: impl Fn()) -> Result<()> {
         .create_session()
         .await
         .context("the portal refused a shortcuts session")?;
+
+    // Subscribed before binding, not after: the compositor may deliver an
+    // activation as soon as the binding exists, and a stream opened afterwards
+    // would miss anything pressed in the gap.
+    let mut activated = shortcuts
+        .receive_activated()
+        .await
+        .context("could not subscribe to portal shortcut activations")?;
 
     let shortcut = NewShortcut::new(SHORTCUT_ID, DESCRIPTION).preferred_trigger(Some(trigger));
     let request = shortcuts
@@ -71,19 +81,18 @@ pub async fn listen(trigger: &str, on_activated: impl Fn()) -> Result<()> {
         .context("the desktop did not grant the launcher shortcut")?;
 
     match bound.shortcuts().iter().find(|s| s.id() == SHORTCUT_ID) {
-        Some(shortcut) => tracing::info!(
-            "launcher bound to {} by the desktop portal",
-            shortcut.trigger_description()
-        ),
+        Some(shortcut) => {
+            tracing::info!(
+                "launcher bound to {} by the desktop portal",
+                shortcut.trigger_description()
+            );
+            on_bound();
+        }
         // Nothing to listen for: the portal accepted the request but bound no
         // shortcut, so say so instead of waiting on a signal that cannot come.
         None => bail!("the portal bound no shortcut for {SHORTCUT_ID}"),
     }
 
-    let mut activated = shortcuts
-        .receive_activated()
-        .await
-        .context("could not subscribe to portal shortcut activations")?;
     while let Some(event) = activated.next().await {
         if event.shortcut_id() == SHORTCUT_ID {
             on_activated();

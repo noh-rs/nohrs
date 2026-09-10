@@ -18,7 +18,6 @@ path = "src/nohrs_launcher.rs"
 [dependencies]
 nohrs-core     = { path = "../nohrs-core" }
 nohrs-services = { path = "../nohrs-services" }
-nohrs-ui       = { path = "../nohrs-ui" }
 gpui = "0.2"
 gpui-component = "0.5"
 # The fuzzy matcher behind the result ranking (docs/launcher.md §6). Only the

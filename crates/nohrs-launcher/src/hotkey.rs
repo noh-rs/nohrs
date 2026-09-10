@@ -28,7 +28,12 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-use gpui::{App, AppContext as _, Global};
+// Only the portal backend reaches for `background_spawn`; the grab backend uses
+// `App`'s own methods, so on a platform without the portal this trait would be
+// an unused import.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+use gpui::AppContext as _;
+use gpui::{App, Global};
 
 /// How often the grab backend's channel is drained.
 ///
@@ -48,6 +53,11 @@ struct Registration {
 }
 
 impl Global for Registration {}
+
+/// Reports, on the foreground, whether the global shortcut is actually in
+/// place. Boxed because the portal path carries it across an await.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+type OutcomeReport = Box<dyn FnOnce(&mut App, Result<()>)>;
 
 /// Which mechanism ended up carrying the shortcut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,16 +118,21 @@ pub fn default_chord() -> Chord {
 /// Note that the portal path returns as soon as the request is *sent*. The
 /// binding is confirmed asynchronously and reported from its own task, because
 /// the desktop may be putting the request in front of the user first.
-pub fn install(cx: &mut App, on_summon: impl Fn(&mut App) + 'static) -> Result<Backend> {
+pub fn install(
+    cx: &mut App,
+    on_summon: impl Fn(&mut App) + 'static,
+    on_outcome: impl FnOnce(&mut App, Result<()>) + 'static,
+) -> Result<Backend> {
     let chord = default_chord();
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     if portal::is_wayland_session() {
-        install_portal(cx, chord, Rc::new(on_summon));
+        install_portal(cx, chord, Rc::new(on_summon), Box::new(on_outcome));
         return Ok(Backend::Portal);
     }
 
     install_grab(cx, chord, on_summon)?;
+    on_outcome(cx, Ok(()));
     Ok(Backend::Grab)
 }
 
@@ -132,16 +147,25 @@ fn install_grab(cx: &mut App, chord: Chord, on_summon: impl Fn(&mut App) + 'stat
 
     let hotkey_id = chord.hotkey.id();
     cx.spawn(async move |cx| {
+        // A held chord auto-repeats `Pressed` for as long as it is down. Summon
+        // on the edge into "pressed" only, so holding the key opens the launcher
+        // once instead of toggling it every poll interval.
+        let mut held = false;
         loop {
             cx.background_executor().timer(POLL_INTERVAL).await;
 
-            // Drain the channel and collapse a burst into a single summon: a
-            // held key repeats, and toggling once per repeat would leave the
-            // launcher flickering open and shut.
             let mut summoned = false;
             while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-                if event.id == hotkey_id && event.state == HotKeyState::Pressed {
-                    summoned = true;
+                if event.id != hotkey_id {
+                    continue;
+                }
+                match event.state {
+                    HotKeyState::Pressed if !held => {
+                        held = true;
+                        summoned = true;
+                    }
+                    HotKeyState::Pressed => {}
+                    HotKeyState::Released => held = false,
                 }
             }
 
@@ -159,31 +183,55 @@ fn install_grab(cx: &mut App, chord: Chord, on_summon: impl Fn(&mut App) + 'stat
 /// Starts the portal conversation and forwards its activations.
 ///
 /// The D-Bus session talks over threads, so it runs on the background executor;
-/// `on_summon` opens windows and therefore cannot leave the foreground. Only a
-/// bare notification crosses between them, over a channel.
+/// `on_summon` opens windows and therefore cannot leave the foreground. Only
+/// bare notifications cross between them, over channels.
+///
+/// `on_outcome` is called once, on the foreground, with whether the binding was
+/// granted. The caller cannot learn that synchronously — the desktop may be
+/// asking the user first — and a launcher that has no way to be summoned is not
+/// something to discover in a log file.
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-fn install_portal(cx: &mut App, chord: Chord, on_summon: Rc<dyn Fn(&mut App)>) {
+fn install_portal(
+    cx: &mut App,
+    chord: Chord,
+    on_summon: Rc<dyn Fn(&mut App)>,
+    on_outcome: OutcomeReport,
+) {
     // Bounded at one: a burst of activations arriving while the foreground is
     // busy should collapse into a single summon rather than queue up toggles.
     let (sender, receiver) = async_channel::bounded::<()>(1);
+    let (bound_sender, bound_receiver) = async_channel::bounded::<Result<()>>(1);
 
-    cx.background_spawn(async move {
-        let result = portal::listen(chord.portal_trigger, || {
-            // A full channel already holds an unhandled summon, so dropping this
-            // one is the coalescing described above, not a lost event.
-            sender.try_send(()).ok();
-        })
-        .await;
-        if let Err(error) = result {
-            tracing::warn!(
-                "no global shortcut on this Wayland session; \
-                 the launcher can still be opened from nohrs with Ctrl+K: {error:#}"
-            );
+    cx.background_spawn({
+        let bound_sender = bound_sender.clone();
+        async move {
+            let result = portal::listen(
+                chord.portal_trigger,
+                || {
+                    bound_sender.try_send(Ok(())).ok();
+                },
+                || {
+                    // A full channel already holds an unhandled summon, so
+                    // dropping this one is coalescing, not a lost event.
+                    sender.try_send(()).ok();
+                },
+            )
+            .await;
+            if let Err(error) = result {
+                // Only reported if the binding never succeeded; a later failure
+                // (the portal hanging up) finds the channel already used.
+                bound_sender.try_send(Err(error)).ok();
+            }
         }
     })
     .detach();
 
     cx.spawn(async move |cx| {
+        if let Ok(outcome) = bound_receiver.recv().await {
+            if cx.update(|cx| on_outcome(cx, outcome)).is_err() {
+                return;
+            }
+        }
         // Ends when the sender drops, which is when the portal task has given up.
         while receiver.recv().await.is_ok() {
             if cx.update(|cx| on_summon(cx)).is_err() {

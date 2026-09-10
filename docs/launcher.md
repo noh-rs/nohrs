@@ -242,11 +242,11 @@ struct Action {
 | グローバルホットキー (§2) | `hotkey.rs`。既定 `Cmd+Shift+Space` (macOS) / `Ctrl+Shift+Space` (他)。セッションに応じて 2 経路を使い分ける (下記) |
 | アプリ内ショートカット (§2) | `Cmd+K` / `Ctrl+K`。binary 側で `ToggleLauncher` action に bind |
 | ホーム画面 (§3) | 入力前は結果ゼロ、placeholder のみ |
-| 検索欄 | `field.rs`。gpui 直書きの 1 行入力。IME (preedit の下線表示・確定まで検索しない)、grapheme 単位のカーソル、選択・クリップボード対応 |
+| 検索欄 | `field.rs`。gpui 直書きの 1 行入力。IME (preedit の下線表示・確定まで検索しない・変換中は ↑↓/Enter を IME に譲る)、grapheme 単位のカーソル、選択・クリップボード対応 |
 | ウィンドウ (§1) | borderless + 角丸 + 透過。`gpui_component::Root` を使わないことで実現 (下記) |
 | 結果リスト (§5) | icon / title / subtitle / kind badge、マッチ文字のハイライト |
 | ランキング (§6) | `nucleo-matcher` + exact / prefix / 深さ boost |
-| ファイル名インデックス | `nohrs-services::search::file_index`。起動時に home を走査して常駐 |
+| ファイル名インデックス | `nohrs-services::search::file_index`。起動時に home を走査して常駐。`Scanning` / `Ready` / `Failed` を UI に出し分ける |
 | アクション (§10) | `Enter` = Open、`Cmd/Ctrl+Enter` = Reveal |
 
 #### グローバルホットキーの 2 経路
@@ -286,3 +286,11 @@ portal 側は Wayland コンポジタ無しでは実機確認できないため�
 - **Linux 常駐には 1px の keep-alive ウィンドウが必要。** gpui の Linux バックエンドは
   最後のウィンドウが閉じた時点でイベントループを止める (`x11/client.rs`) ため、
   `nohrs launcher` は不可視ウィンドウを 1 つ保持してプロセスを生かしている。macOS では不要。
+- **インデックスは起動時の 1 回きりで、ファイルシステムを追従しない。**
+  起動後に作られたファイルは次回起動まで検索に出ず、消えたファイルは残る。
+  content index 側の watcher に繋ぐのは今後の作業。
+- **Windows のパス区切りは未対応。** `src/main` のようなパスクエリは `/` を前提にしており、
+  `\` 区切りのパスとは一致しない。ADR 0002 のとおり当面 Windows は対象外。
+- **Wayland の activation token を渡していない。** `Activated` シグナルが持つトークンを
+  ウィンドウ生成に引き渡せば確実にフォーカスを得られるが、gpui 0.2 に
+  そのための公開 API がない (トークンは gpui 内部で管理されている)。

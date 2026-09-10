@@ -2,8 +2,8 @@
 //!
 //! One of the app's two top-level pillars (the other being the Explorer, rooted
 //! at `nohrs_pages::RootView`). It is a separate window with its own view tree
-//! and depends only downward — on `nohrs-ui`, `nohrs-services` and `nohrs-core`
-//! — so the Explorer and the launcher never reference each other.
+//! and depends only downward — on `nohrs-services` and `nohrs-core` — so the
+//! Explorer and the launcher never reference each other.
 //!
 //! This is the search half of docs/launcher.md: a query field, a fuzzy-ranked
 //! list of files and folders, `Enter` to open one, and the global hotkey (§2)
@@ -69,8 +69,8 @@ impl LauncherIndex {
     /// handle to it. Returns immediately: the launcher opens against an empty
     /// index and fills in when the scan completes, rather than blocking startup.
     ///
-    /// A missing home directory is not fatal — the launcher opens and reports
-    /// that it has nothing indexed.
+    /// A missing home directory is not fatal — the launcher opens and says its
+    /// index is unavailable, rather than claiming to still be building one.
     pub fn start(cx: &mut App) -> Self {
         // The search field's editing keys are bound once for the process, not
         // per window, so a launcher summoned later is already typable.
@@ -81,6 +81,10 @@ impl LauncherIndex {
             Ok(config) => config,
             Err(error) => {
                 tracing::error!("launcher search disabled, no home directory: {error}");
+                // Without this the index sits in `Scanning` for the whole run and
+                // every search reports "Indexing your files…" for a scan that
+                // will never start.
+                index.mark_failed();
                 return Self { index, home: None };
             }
         };
@@ -88,7 +92,13 @@ impl LauncherIndex {
         let home = Some(config.root.clone());
         cx.background_spawn({
             let index = index.clone();
-            async move { index.rebuild(&config) }
+            async move {
+                // `rebuild` marks the index failed on its own; this is only
+                // about not swallowing the reason.
+                if let Err(error) = index.rebuild(&config) {
+                    tracing::error!("launcher index unavailable: {error:#}");
+                }
+            }
         })
         .detach();
 
@@ -110,11 +120,25 @@ impl LauncherIndex {
     /// otherwise a silent mystery.
     pub fn install_global_hotkey(&self, cx: &mut App) {
         let launcher = self.clone();
-        match hotkey::install(cx, move |cx| {
-            if let Err(error) = launcher.toggle(cx) {
-                tracing::error!("failed to toggle the launcher from the global hotkey: {error}");
+        let outcome = |_cx: &mut App, outcome: anyhow::Result<()>| {
+            if let Err(error) = outcome {
+                tracing::error!(
+                    "no global shortcut: the launcher can only be opened from nohrs \
+                     with Cmd+K / Ctrl+K: {error:#}"
+                );
             }
-        }) {
+        };
+        match hotkey::install(
+            cx,
+            move |cx| {
+                if let Err(error) = launcher.toggle(cx) {
+                    tracing::error!(
+                        "failed to toggle the launcher from the global hotkey: {error}"
+                    );
+                }
+            },
+            outcome,
+        ) {
             Ok(hotkey::Backend::Grab) => tracing::info!(
                 "launcher listening on {}",
                 hotkey::describe(&hotkey::default_chord())

@@ -4145,7 +4145,6 @@ dependencies = [
  "gpui-component",
  "nohrs-core",
  "nohrs-services",
- "nohrs-ui",
  "nucleo-matcher",
  "tempfile",
  "tracing",

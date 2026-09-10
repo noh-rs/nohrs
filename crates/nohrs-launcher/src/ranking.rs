@@ -121,9 +121,10 @@ pub fn rank(
         scored.push((boost(base, entry, query, home), position));
     }
 
-    // Sort by score, then prefer the shorter name (the more likely target), then
-    // by path so equally-ranked results keep a stable order between keystrokes.
-    scored.sort_unstable_by(|left, right| {
+    // Rank by score, then prefer the shorter name (the more likely target),
+    // then by path so equally-ranked results keep a stable order between
+    // keystrokes.
+    let better = |left: &(u32, usize), right: &(u32, usize)| {
         let (left_score, left_position) = *left;
         let (right_score, right_position) = *right;
         let left_entry = entries.get(left_position);
@@ -140,8 +141,16 @@ pub fn rank(
                 let right_path = right_entry.map(IndexedEntry::path);
                 left_path.cmp(&right_path)
             })
-    });
-    scored.truncate(limit);
+    };
+
+    // Partition off the best `limit` before sorting. A broad query over a
+    // home-sized index matches six figures of entries, and ordering all of them
+    // to show fifty is most of the keystroke budget spent on rows nobody sees.
+    if scored.len() > limit {
+        scored.select_nth_unstable_by(limit, better);
+        scored.truncate(limit);
+    }
+    scored.sort_unstable_by(better);
 
     // Match indices cost more than scoring, so they are only computed for the
     // rows that survived the cut.

@@ -21,7 +21,7 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme, Icon, IconName};
 use nohrs_core::telemetry::LogErr;
-use nohrs_services::search::file_index::FileNameIndex;
+use nohrs_services::search::file_index::{FileNameIndex, IndexState};
 
 use crate::field::{FieldChanged, FieldStyle, SearchField};
 use crate::ranking::{self, LauncherItem};
@@ -39,6 +39,10 @@ const DEBOUNCE: Duration = Duration::from_millis(50);
 
 /// Rows moved by `PageUp` / `PageDown`.
 const PAGE_JUMP: usize = 8;
+
+/// How often the view checks whether the first scan has finished. Only runs
+/// while one is in flight, and a scan takes seconds, so this is cheap.
+const INDEX_POLL: Duration = Duration::from_millis(250);
 
 /// Height of the search field.
 pub const SEARCH_BAR_HEIGHT: f32 = 58.0;
@@ -115,6 +119,8 @@ impl LauncherView {
 
         window.focus(&query_input.read(cx).focus_handle(cx));
 
+        Self::watch_for_index(&index, cx);
+
         Self {
             focus_handle: cx.focus_handle(),
             query_input,
@@ -127,6 +133,33 @@ impl LauncherView {
             search_task: None,
             _subscriptions: vec![subscription],
         }
+    }
+
+    /// Re-runs the current query once the first scan finishes.
+    ///
+    /// Someone who summons the launcher and types immediately would otherwise be
+    /// left looking at "Indexing your files…" for a query that is never asked
+    /// again — the index has no way to tell the view it filled up.
+    fn watch_for_index(index: &Arc<FileNameIndex>, cx: &mut Context<Self>) {
+        if index.state() != IndexState::Scanning {
+            return;
+        }
+        let index = index.clone();
+        cx.spawn(async move |this, cx| {
+            while index.state() == IndexState::Scanning {
+                cx.background_executor().timer(INDEX_POLL).await;
+            }
+            this.update(cx, |this, cx| {
+                if !this.query.trim().is_empty() {
+                    this.schedule_search(cx);
+                }
+                // Redraw regardless: the footer and the empty-state message both
+                // report the index's state.
+                cx.notify();
+            })
+            .log_err();
+        })
+        .detach();
     }
 
     /// The rows currently on screen, in rank order.
@@ -163,10 +196,13 @@ impl LauncherView {
             return;
         }
 
-        let entries = self.index.snapshot();
+        let index = self.index.clone();
         let home = self.home.clone();
         self.search_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(DEBOUNCE).await;
+            // Snapshotted after the wait, not before it: a scan that finishes
+            // mid-debounce should be searched, not missed by 50ms.
+            let entries = index.snapshot();
             let items = cx
                 .background_spawn(async move {
                     ranking::rank(&entries, &query, MAX_RESULTS, home.as_deref())
@@ -191,8 +227,11 @@ impl LauncherView {
             return;
         }
         self.selected = index.min(self.items.len().saturating_sub(1));
+        // Non-strict (`_with_offset`, offset 0) scrolls only when the row is off
+        // screen. `scroll_to_item` is strict and would drag the whole list up by
+        // one on every arrow press, even when the next row is already visible.
         self.scroll_handle
-            .scroll_to_item(self.selected, ScrollStrategy::Top);
+            .scroll_to_item_with_offset(self.selected, ScrollStrategy::Top, 0);
         cx.notify();
     }
 
@@ -253,6 +292,15 @@ impl LauncherView {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // While an IME is composing, these keys belong to the conversion:
+        // `enter` commits the candidate, the arrows walk the candidate list, and
+        // `escape` abandons the reading. Acting on them here would open a result
+        // out from under a half-typed word — the launcher would be unusable for
+        // anyone typing Japanese.
+        if self.query_input.read(cx).is_composing() {
+            return;
+        }
+
         let modifiers = event.keystroke.modifiers;
         // `secondary` is Cmd on macOS and Ctrl elsewhere, which is what the
         // Cmd-prefixed bindings in docs/launcher.md mean on each platform.
@@ -383,10 +431,12 @@ impl LauncherView {
         }
 
         if self.items.is_empty() {
-            let message = if self.index.is_ready() {
-                format!("No results for “{}”", self.query.trim())
-            } else {
-                "Indexing your files…".to_string()
+            let message = match self.index.state() {
+                IndexState::Ready => format!("No results for “{}”", self.query.trim()),
+                IndexState::Scanning => "Indexing your files…".to_string(),
+                // Saying "no results" here would blame the query for a scan that
+                // never happened; the reason is in the log.
+                IndexState::Failed => "Search index unavailable".to_string(),
             };
             return container.child(
                 div()
@@ -438,10 +488,10 @@ impl LauncherView {
     }
 
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let status: SharedString = if self.index.is_ready() {
-            "nohrs".into()
-        } else {
-            "Indexing…".into()
+        let status: SharedString = match self.index.state() {
+            IndexState::Ready => "nohrs".into(),
+            IndexState::Scanning => "Indexing…".into(),
+            IndexState::Failed => "Index unavailable".into(),
         };
 
         div()
@@ -652,7 +702,7 @@ fn highlight_ranges(text: &str, matches: &[u32]) -> Vec<Range<usize>> {
 mod tests {
     use std::path::PathBuf;
 
-    use gpui::{TestAppContext, WindowHandle};
+    use gpui::{EntityInputHandler as _, Keystroke, Modifiers, TestAppContext, WindowHandle};
     use nohrs_services::search::file_index::IndexedEntry;
 
     use super::*;
@@ -734,6 +784,41 @@ mod tests {
             self.window
                 .read_with(cx, |view, _cx| view.selected_index())
                 .expect("the launcher window should be open")
+        }
+
+        /// Deliver a bare key press to the view's own key handler, the way the
+        /// window would.
+        fn press(&self, cx: &mut TestAppContext, key: &str) {
+            let key = key.to_string();
+            self.window
+                .update(cx, |view, window, cx| {
+                    view.on_key_down(
+                        &KeyDownEvent {
+                            keystroke: Keystroke {
+                                key,
+                                modifiers: Modifiers::default(),
+                                key_char: None,
+                            },
+                            is_held: false,
+                        },
+                        window,
+                        cx,
+                    );
+                })
+                .expect("the launcher window should be open");
+        }
+
+        /// Begin an IME composition, as a Japanese input method does before the
+        /// user has chosen a conversion.
+        fn start_composing(&self, cx: &mut TestAppContext, reading: &str) {
+            let reading = reading.to_string();
+            self.window
+                .update(cx, |view, window, cx| {
+                    view.query_input.update(cx, |field, cx| {
+                        field.replace_and_mark_text_in_range(None, &reading, None, window, cx);
+                    });
+                })
+                .expect("the launcher window should be open");
         }
 
         /// Run a navigation method against the view.
@@ -846,6 +931,30 @@ mod tests {
             view.page_down(cx);
         });
         assert_eq!(launcher.selected(cx), ordered.last().cloned());
+    }
+
+    #[gpui::test]
+    async fn navigation_keys_are_left_to_the_ime_while_composing(cx: &mut TestAppContext) {
+        let launcher = Launcher::new(cx, &["/home/u/note-a.md", "/home/u/note-b.md"]);
+        launcher.type_query(cx, "note").await;
+        let ordered = launcher.titles(cx);
+        assert_eq!(ordered.len(), 2);
+
+        // Control: with nothing being composed, the key moves the selection.
+        launcher.press(cx, "down");
+        assert_eq!(launcher.selected(cx), Some(ordered[1].clone()));
+
+        // Mid-conversion the same key belongs to the IME's candidate list, and
+        // `enter` would commit the conversion rather than open a file. Acting on
+        // either here makes the launcher unusable for anyone typing Japanese.
+        launcher.start_composing(cx, "にほん");
+        launcher.press(cx, "down");
+        launcher.press(cx, "up");
+        assert_eq!(launcher.selected(cx), Some(ordered[1].clone()));
+
+        // `enter` is likewise ignored, so the window is still open to receive it.
+        launcher.press(cx, "enter");
+        assert_eq!(launcher.titles(cx).len(), 2);
     }
 
     #[gpui::test]

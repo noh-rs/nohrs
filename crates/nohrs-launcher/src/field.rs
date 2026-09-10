@@ -38,6 +38,8 @@ actions!(
         FieldDelete,
         /// Delete the word before the cursor.
         FieldDeleteWord,
+        /// Delete from the cursor back to the start of the query.
+        FieldDeleteToStart,
         /// Move the cursor one character left.
         FieldLeft,
         /// Move the cursor one character right.
@@ -77,7 +79,7 @@ pub fn init(cx: &mut App) {
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-backspace", FieldDeleteWord, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-backspace", FieldSelectAll, Some(CONTEXT)),
+        KeyBinding::new("cmd-backspace", FieldDeleteToStart, Some(CONTEXT)),
         KeyBinding::new("left", FieldLeft, Some(CONTEXT)),
         KeyBinding::new("right", FieldRight, Some(CONTEXT)),
         KeyBinding::new("shift-left", FieldSelectLeft, Some(CONTEXT)),
@@ -332,6 +334,18 @@ impl SearchField {
         self.replace_text_in_range(None, "", window, cx);
     }
 
+    fn on_delete_to_start(
+        &mut self,
+        _: &FieldDeleteToStart,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            self.select_to(0, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
     fn on_left(&mut self, _: &FieldLeft, _window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
@@ -475,8 +489,14 @@ impl EntityInputHandler for SearchField {
             .map(|range| self.range_to_utf16(range))
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.marked_range = None;
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.marked_range.take().is_none() {
+            return;
+        }
+        // The preedit text stays in `content` — the platform is saying it is no
+        // longer a composition, which makes it a committed query worth running,
+        // and the underline has to come off.
+        self.notify_changed(cx);
     }
 
     fn replace_text_in_range(
@@ -525,10 +545,18 @@ impl EntityInputHandler for SearchField {
         self.content = replaced.into();
         self.marked_range =
             (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
+        // The platform reports this selection in UTF-16 units *of `new_text`*,
+        // not of the whole field. Converting it against the content would land
+        // the caret somewhere else entirely whenever anything precedes the
+        // composition — which is the common case, since people type before they
+        // convert.
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|selection| self.range_from_utf16(selection))
-            .map(|selection| range.start + selection.start..range.start + selection.end)
+            .map(|selection| {
+                let start = range.start + utf16_to_utf8_offset(new_text, selection.start);
+                let end = range.start + utf16_to_utf8_offset(new_text, selection.end);
+                start..end
+            })
             .unwrap_or_else(|| {
                 let cursor = range.start + new_text.len();
                 cursor..cursor
@@ -571,6 +599,24 @@ impl EntityInputHandler for SearchField {
     }
 }
 
+/// Converts a UTF-16 offset into `text` to the matching byte offset.
+///
+/// [`SearchField`]'s own conversions run against its content; this one runs
+/// against whatever string the platform is talking about, which during
+/// composition is the fragment it just handed over rather than the whole query.
+fn utf16_to_utf8_offset(text: &str, offset: usize) -> usize {
+    let mut utf8 = 0;
+    let mut utf16 = 0;
+    for character in text.chars() {
+        if utf16 >= offset {
+            break;
+        }
+        utf16 += character.len_utf16();
+        utf8 += character.len_utf8();
+    }
+    utf8
+}
+
 impl SearchField {
     /// Splices `new_text` into `range`, or returns `None` when the range is not
     /// on character boundaries — the platform can hand back a stale range after
@@ -592,6 +638,7 @@ impl Render for SearchField {
             .on_action(cx.listener(Self::on_backspace))
             .on_action(cx.listener(Self::on_delete))
             .on_action(cx.listener(Self::on_delete_word))
+            .on_action(cx.listener(Self::on_delete_to_start))
             .on_action(cx.listener(Self::on_left))
             .on_action(cx.listener(Self::on_right))
             .on_action(cx.listener(Self::on_select_left))
@@ -944,6 +991,75 @@ mod tests {
                 .read_with(cx, |field, _cx| field.is_composing())
                 .expect("open")
         );
+    }
+
+    #[gpui::test]
+    fn a_composition_selection_is_placed_relative_to_the_new_text(cx: &mut TestAppContext) {
+        let field = new_field(cx);
+        // Something already typed, so the composition does not start at 0 — the
+        // case where interpreting the IME's offsets against the whole content
+        // puts the caret in the wrong place.
+        type_text(&field, cx, "見て");
+
+        field
+            .update(cx, |field, window, cx| {
+                // The IME supplies "にほん" and says the caret sits after its
+                // second UTF-16 unit, i.e. after "にほ".
+                field.replace_and_mark_text_in_range(None, "にほん", Some(2..2), window, cx);
+            })
+            .expect("open");
+
+        assert_eq!(text_of(&field, cx), "見てにほん");
+        field
+            .read_with(cx, |field, _cx| {
+                // "見て" is 6 bytes, "にほ" a further 6.
+                assert_eq!(field.selected_range, 12..12);
+                assert_eq!(field.marked_range, Some(6..15));
+            })
+            .expect("open");
+    }
+
+    #[gpui::test]
+    fn ending_a_composition_publishes_the_text(cx: &mut TestAppContext) {
+        let field = new_field(cx);
+        field
+            .update(cx, |field, window, cx| {
+                field.replace_and_mark_text_in_range(None, "にほん", None, window, cx);
+            })
+            .expect("open");
+        assert!(
+            field
+                .read_with(cx, |field, _cx| field.is_composing())
+                .expect("open")
+        );
+
+        // The platform can end a composition without replacing it — the preedit
+        // stays and becomes ordinary text, which makes it a query.
+        field
+            .update(cx, |field, window, cx| field.unmark_text(window, cx))
+            .expect("open");
+
+        assert!(
+            !field
+                .read_with(cx, |field, _cx| field.is_composing())
+                .expect("open")
+        );
+        assert_eq!(text_of(&field, cx), "にほん");
+    }
+
+    #[gpui::test]
+    fn delete_to_start_clears_everything_before_the_cursor(cx: &mut TestAppContext) {
+        let field = new_field(cx);
+        type_text(&field, cx, "src/main.rs");
+
+        field
+            .update(cx, |field, window, cx| {
+                field.on_left(&FieldLeft, window, cx);
+                field.on_left(&FieldLeft, window, cx);
+                field.on_delete_to_start(&FieldDeleteToStart, window, cx);
+            })
+            .expect("open");
+        assert_eq!(text_of(&field, cx), "rs");
     }
 
     #[gpui::test]

@@ -35,6 +35,11 @@ use zbus::{Connection, interface};
 /// The trigger the launcher asks for; the mock echoes it back as granted.
 const TRIGGER: &str = "CTRL+SHIFT+space";
 
+/// How long the whole exchange gets before the test calls it a failure. Generous
+/// for a conversation that takes milliseconds on a local bus, and far short of a
+/// CI job timeout, which is the point: report, do not hang.
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The id the launcher files its binding under, and the one an `Activated`
 /// signal has to carry to count as a summon.
 use portal::SHORTCUT_ID;
@@ -55,20 +60,18 @@ impl PrivateBus {
     /// Starts a bus and points this process at it, or returns `None` when
     /// `dbus-daemon` is not installed.
     fn start() -> Option<Self> {
-        let mut process = Command::new("dbus-daemon")
+        let process = Command::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address=1"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .ok()?;
 
-        let stdout = process.stdout.take()?;
-        let mut address = String::new();
-        BufReader::new(stdout).read_line(&mut address).ok()?;
-        let address = address.trim().to_string();
-        if address.is_empty() {
-            return None;
-        }
+        // Wrapped before anything else can fail: `Child` does not kill on drop,
+        // so an early return past this point would leave a bus running for the
+        // rest of the test session.
+        let mut bus = Self { process };
+        let address = bus.read_address()?;
 
         // ashpd caches the session connection in a `OnceLock` on first use, so
         // this has to be set before anything in the launcher touches D-Bus. The
@@ -77,7 +80,16 @@ impl PrivateBus {
         // SAFETY-adjacent: single-threaded at this point, before any task is
         // spawned that could read the environment concurrently.
         unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &address) };
-        Some(Self { process })
+        Some(bus)
+    }
+
+    /// Reads the address `dbus-daemon` prints, or `None` if it printed nothing.
+    fn read_address(&mut self) -> Option<String> {
+        let stdout = self.process.stdout.take()?;
+        let mut address = String::new();
+        BufReader::new(stdout).read_line(&mut address).ok()?;
+        let address = address.trim().to_string();
+        (!address.is_empty()).then_some(address)
     }
 }
 
@@ -234,36 +246,40 @@ fn a_portal_activation_becomes_a_summon() {
             .build()
             .await?;
 
+        let (bound_notice, bound_confirmed) = async_channel::bounded::<()>(1);
         let (summoned_sender, summoned_receiver) = async_channel::bounded::<()>(1);
-        let listen = portal::listen(TRIGGER, move || {
-            summoned_sender.try_send(()).ok();
-        });
+        let listen = portal::listen(
+            TRIGGER,
+            move || {
+                bound_notice.try_send(()).ok();
+            },
+            move || {
+                summoned_sender.try_send(()).ok();
+            },
+        );
 
         let drive = async {
             let session = bound_receiver.recv().await?;
+            // The launcher subscribes to `Activated` *before* it binds, so once
+            // it reports the binding, one signal is enough. A retry loop here
+            // would paper over exactly the race the subscription order closes.
+            bound_confirmed.recv().await?;
+            emit_activated(&connection, &session).await?;
+            summoned_receiver.recv().await?;
+            Ok(())
+        };
 
-            // The launcher only subscribes to `Activated` once the binding is
-            // confirmed, so a single signal could land in the gap before that.
-            // Repeating until the summon arrives removes the race without
-            // pretending a fixed sleep is long enough.
-            for _ in 0..50 {
-                emit_activated(&connection, &session).await?;
-                let summoned =
-                    future::or(async { summoned_receiver.recv().await.is_ok() }, async {
-                        Timer::after(Duration::from_millis(100)).await;
-                        false
-                    })
-                    .await;
-                if summoned {
-                    return Ok(());
-                }
-            }
-            anyhow::bail!("the portal activation never reached the launcher")
+        // Without this the test hangs rather than fails if `listen` stalls before
+        // binding: `drive` would wait on a notice that never comes while `listen`
+        // stays pending, and neither side of the race can finish.
+        let give_up = async {
+            Timer::after(TEST_TIMEOUT).await;
+            anyhow::bail!("timed out waiting for the portal activation")
         };
 
         // `listen` only returns on failure, so whichever finishes first is the
         // verdict: the driver succeeding, or the listener explaining why not.
-        future::or(drive, listen).await
+        future::or(future::or(drive, listen), give_up).await
     });
 
     result.expect("a bound portal shortcut should summon the launcher");
