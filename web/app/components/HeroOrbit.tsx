@@ -75,6 +75,16 @@ const EASE = 'cubic-bezier(0.42, 0.04, 0.18, 1)'
 const SITE_EASE = 'cubic-bezier(0.16, 1, 0.3, 1)'
 
 /**
+ * The way out has its own curve. Both of the above are arrival curves — a slow
+ * start into a long settle — and a settle at the end of the way *out* is the
+ * panel hanging a few pixels short of the card, barely moving, until it is
+ * swapped for it: the last 93ms of the flight covered 2px of 256. Reversing
+ * them outright only moves the fault to the front, where nothing happens for
+ * the first 90ms after the tap. Shallow at both ends is what leaves neither.
+ */
+const BACK_EASE = 'cubic-bezier(0.35, 0.1, 0.5, 0.9)'
+
+/**
  * The share of its own time `run` has played, and 1 when there is none to read.
  * The way back takes that share of the flight, which is the length `reverse()`
  * would have given it: a panel dismissed just after it was opened has only a
@@ -131,11 +141,18 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
     if (!node || !shot || !veil || !card) return Promise.resolve()
 
     // The card is rotated about its own centre, so the box around it is centred
-    // on the same point — which is what the panel has to be moved onto.
+    // on the same point — which is what the *shot* has to be moved onto.
     const box = card.getBoundingClientRect()
-    const x = box.left + box.width / 2 - window.innerWidth / 2
-    const y = box.top + box.height / 2 - window.innerHeight / 2
     const k = card.offsetWidth / node.offsetWidth
+    const turn = (angleAt(index) * Math.PI) / 180
+    // The panel is the shot with the caption under it, so its centre sits below
+    // the shot's. Moving the panel's centre onto the card leaves the picture —
+    // which by then is all that is left to see — about 30px off the card it is
+    // swapped for, and a shrinking panel is read at the end, where that shows.
+    // Rotated with the panel, since the turn is applied after this offset.
+    const lean = k * (shot.offsetTop + shot.offsetHeight / 2 - node.offsetHeight / 2)
+    const x = box.left + box.width / 2 - window.innerWidth / 2 + lean * Math.sin(turn)
+    const y = box.top + box.height / 2 - window.innerHeight / 2 - lean * Math.cos(turn)
     const { zoom } = SHOTS[index]
 
     const onCard = `translate(${x}px, ${y}px) rotate(${angleAt(index)}deg) scale(${k})`
@@ -150,6 +167,15 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
     const played = direction === 'in' ? 1 : playedShare(lift.current)
     const span = (full: number) => (reduced ? 0 : Math.round(full * played))
     const ms = span(LIFT)
+    const ease = direction === 'in' ? EASE : BACK_EASE
+    // The dimming belongs to the open state, so on the way out it lasts exactly
+    // as long as the panel does. Given its own shorter length it was down to
+    // 3% a third of the way through, leaving the panel to fly the rest of the
+    // way home across a page that had already come back.
+    const backdrop =
+      direction === 'in'
+        ? { duration: span(380), easing: SITE_EASE }
+        : { duration: ms, easing: BACK_EASE }
     // The copy waits for the panel to arrive, and leaves at once on the way
     // out: holding a caption over a panel already shrinking back is a stutter.
     const late = {
@@ -168,7 +194,7 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
       [node, 'transform', onCard, 'none', {}],
       [shot, 'borderRadius', cardRadius, '12px', {}],
       [image, 'transform', `scale(${zoom})`, 'none', {}],
-      [veil, 'opacity', '0', '1', { duration: span(380), easing: SITE_EASE }],
+      [veil, 'opacity', '0', '1', backdrop],
       [node.querySelector('.orbit-caption'), 'opacity', '0', '1', late],
       [closer.current, 'opacity', '0', '1', late],
     ]
@@ -192,7 +218,7 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
       const to = direction === 'in' ? atRest : atCard
       const run = target.animate([{ [property]: from }, { [property]: to }], {
         duration: ms,
-        easing: EASE,
+        easing: ease,
         // `forwards` is what holds the panel on the card at the end of the way
         // out, for the frame between arriving and unmounting.
         fill: 'both',
