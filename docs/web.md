@@ -10,7 +10,7 @@
 当初 P1 は「web MVP (landing + redirect + blog/docs skeleton)」だったが、**P1 から本格的・production-grade で立ち上げる**方針に変更した (issue #55 を re-scope)。
 
 - **見た目・構造はフル完成**: デザイン DNA は **zed.dev** を土台に、Vercel (タイポグラフィ規律) / Cursor (製品デモの見せ方) をアクセントとして借りる。詳細は [ADR 0008](./adr/0008-web-design-system.md) と §2.5。
-- **機能スコープもフル**: blog 本格機能 (giscus / RSS / OG 自動生成) を P2 から **P1 に前倒し**。Plugin Store / コマンド一覧など本体未実装に依存するページは、**シードデータ + "Coming soon / Preview" 状態**で器を作り込み、バックエンド (P3–P5) が揃い次第データを差し込む。
+- **機能スコープもフル**: blog 本格機能 (コメント / RSS / OG 自動生成) を P2 から **P1 に前倒し**。Plugin Store / コマンド一覧など本体未実装に依存するページは、**シードデータ + "Coming soon / Preview" 状態**で器を作り込み、バックエンド (P3–P5) が揃い次第データを差し込む。
 - **品質基準**: a11y (WCAG AA) / パフォーマンス予算 (Lighthouse 95+) / フル SEO (sitemap・hreflang・OG/Twitter meta・JSON-LD) をローンチ条件に含める。
 - **デリバリ**: M1 (顔) → M2 (知識) → M3 (動的) → M4 (インフラ) の段階的本番デプロイ。各 M で preview→本番が回る。マイルストーン詳細は issue #55 のサブイシュー (M1–M4) を参照。
 
@@ -52,7 +52,7 @@
 | ドキュメント検索 | **Pagefind** (ビルド時に静的インデックス生成、CJK セグメンテーション内蔵で和文 docs も対応) |
 | 分析 | **Cloudflare Web Analytics** (cookie 不要、cookie banner 不要) |
 | OG 画像 | Satori で自動生成。**Worker ではなくビルド時に生成する** (入力はビルド時に確定しており、エッジでラスタライザを動かして毎回同じ画像を作る理由がない)。**P1 から有効** |
-| コメント (blog) | giscus (GitHub Discussions backed)。**P1 から有効** |
+| コメント (blog) | GitHub Discussions を**保管場所として使い、描画は自前**。Worker が API で読み、サイトの組みで出す。**P1 から有効** |
 | RSS / Atom | 両方提供 (`/<lang>/blog/rss.xml`, `/<lang>/blog/atom.xml`)、言語別。**ルートではなくビルドスクリプトで出力する** (全ページ prerender のため、フィードのためだけにサーバを残す理由がない)。**P1 から有効** |
 
 ホスティングを Pages から Workers + assets binding に変えたのは、**成果物を 1 つにするため**。
@@ -138,10 +138,11 @@ web/
 │   │   ├── $lang/docs.tsx     # サイドバーのレイアウト
 │   │   ├── $lang/docs/{index,$slug}.tsx
 │   │   └── $lang/plugins/{index,$id}.tsx
-│   ├── components/            # Header / Footer / Section / Phases / HeroOrbit / FluidOrb / DocsSearch …
+│   ├── components/            # Header / Footer / Section / Phases / HeroOrbit / FluidOrb / DocsSearch / Comments …
 │   ├── data/github.json       # API が使えないときのフォールバック (コミット済)
 │   ├── lib/
 │   │   ├── content.ts         # mdx loader + plugin レジストリ
+│   │   ├── discussion.ts      # コメントスレッドの取得と整形。Worker からも import する
 │   │   ├── github.ts          # ビルド時に取得した GitHub のスナップショット
 │   │   ├── negotiate.ts       # 言語判定。Worker からも import する (依存ゼロ)
 │   │   ├── seo.ts             # canonical / hreflang / OG / JSON-LD
@@ -152,11 +153,12 @@ web/
 │   ├── ja/{blog,docs}/*.mdx
 │   └── plugins/<plugin-id>.toml
 ├── scripts/                   # fetch-fonts / fetch-github / build-og / build-feeds
+│                              # + vite-plugin-discussion (`/api/discussion` を dev でも出す)
 ├── public/
 │   └── shots/                 # Hero のリングに出す実在の画面 (demo.gif から抜いたフレーム)
 └── workers/
-    ├── site.ts                # 静的配信 + 正規ホスト + `/` の言語振り分け
-    ├── workers.test.ts        # 両 Worker のリダイレクトの単体テスト (`npm test`)
+    ├── site.ts                # 静的配信 + 正規ホスト + `/` の言語振り分け + `/api/discussion`
+    ├── workers.test.ts        # 両 Worker のリダイレクトと `/api/discussion` の単体テスト (`npm test`)
     ├── noh-rs-redirect.ts     # noh.rs リダイレクト Worker
     └── wrangler.noh-rs.jsonc
 ```
@@ -225,7 +227,7 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 1. **Hero**: 5 枚の画面をリング状に置き、その中心に tagline (大タイポ) + サブコピー + 主 CTA を置く (**改訂 2026-09-09**。それまでは「製品スクショは Hero に置かない」= 大タイポのみだった)。実装は `components/HeroOrbit.tsx` + `.orbit*` (app.css)
    - tagline は **`Launcher × Explorer`** で確定。`×` のみ mono + Rust tan で組み、他は Inter。リポジトリ description の冒頭と一致させる
    - サブコピーは事実のみ 1〜2 行 (何であるか・何で書かれているか・ライセンス)。バッジや煽り文句を足さない
-   - **背景は無地**。ステータスバッジの類は置かない。pre-alpha であることはサブコピーの文中で述べる
+   - **背景は無地**。ステータスバッジの類は置かない。サブコピーで述べるのは「何であるか・何で書かれているか・ライセンス」で、開発段階の自己申告は書かない (改訂 2026-09-10。それまでは pre-alpha であることをここで述べていた)
    - **リングに置くのは実在の画面だけ** (改訂 2026-09-09)。素材は `assets/doc/demo.gif` から抜いたフレーム (`public/shots/*.png`、900×549、英語ロケール) で、Explorer / Preview / Search / Matches / Source の 5 状態。**Launcher・Plugin のパネルは作らない** — 本体が未実装であり、§6.1 の正直主義はスクショを Hero に出しても変わらない
    - **縦は 1 つの単位 (ステージ高) から引く**。パネルとタイポの大きさもこれに従う — 幅だけから引くとノート PC の縦で破綻する。一方 **横半径 (`--rx`) はウィンドウの半幅に追従させる**。これは意図で、どの幅でも左右のパネルが縁で切れるようにするため。狭い幅と縦長のウィンドウでは幾何そのものを差し替える (下記)
      - **パネルの中心はステージの外に置く**。画面に出るのは各パネルの 4〜6 割で、残りは画面の外にある。`--rx` はウィンドウの半幅に追従させ、どの幅でも左右のパネルが縁で切れるようにする
@@ -244,6 +246,10 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
      - **帰りのスクリムはパネルと同じ長さにする** (改訂 2026-09-10)。暗転は「開いている状態」に属するので、パネルより先に終わらせない。往きの 380ms を帰りにも使うと 1/3 の地点で 0.03 まで落ち、**戻り切っていないパネルだけが、もう戻ったページの上を飛ぶ**
      - **帰りは `reverse()` せず、長さだけを往きから取る** (改訂 2026-09-10)。`reverse()` は自分のキーフレームを巻き戻すので、開いている間にウィンドウがリサイズされると**動く前のカードの位置へ着地する** (実測 181px ずれ)。かといって毎回 620ms を掛けると、開いた直後に閉じたパネルは残り 2% の距離を 620ms かけて這う。**着地点は閉じる瞬間に測り直し、長さは往きが再生し終えた割合を掛ける** — `reverse()` と同じ尺で、着地はずれない (実測: 62ms で閉じると帰りは 62ms、着地 0px)。スクリム・キャプションの尺にも同じ割合を掛ける。でないと本体が着地して unmount した後もスクリムがフェード途中で消える
    - **検証は WebKit でも行う** (改訂 2026-09-09)。上記の 2 個目は Chromium のモバイルエミュレーションでは再現せず、実機で報告されて初めて分かった。`npx playwright install webkit` + `npx playwright install-deps webkit` で Linux でも **Playwright の WebKit** が動く。ただしこれは Safari そのものではない (コーデック・フォント・GPU 合成は OS 側に依存し、ITP など Apple 固有の統合も入っていない) ので、**Safari 固有の挙動は macOS の Safari か実機で確かめる**。ここで捕まえられるのはレイアウトと JS とアニメーションの、エンジン共通の部分。アニメーションは `getAnimations()` を `pause()` してから `effect.getKeyframes()` を読む — ヘッドレスの WebKit は rAF を数百 ms 止めることがあり、フレーム単位のサンプリングは信用できない
+   - **押せることは静止状態で示す** (改訂 2026-09-10)。ページの中のスクショは「絵」として読まれ、コントロールには見えない。カードの縁取り・せり出し・ポインタの形はどれも**すでにポインタを乗せた人にしか届かず**、タッチにはそもそも hover が無い。実機で「クリックできることがわかりづらい」と報告されたのはこれ
+     - **印はカードのローカル下端に置く** (`.orbit-open`)。どのパネルも外を向いて縁で切られるので、画面に残るのは必ずその側。形は**円**にする — 角丸のカードに切り取られず、どの角度でも傾いて見えない唯一の形。中のグリフには `--a` の逆回転を掛ける (±144° の 2 枚が逆さになるため)
+     - **加えて中央に 1 行だけ文で言う** (文言は `hero.hint`、組みは `.orbit-hint`)。印は「この 1 枚が押せる」、文は「まわりの画面はどれも押せる」で、役割が違う。組みは他の傍注と同じ mono ラベル (11px・muted) にして、タグラインと競わせない
+     - 印はカードの側にあり、開いたパネルには無い。パネルは着地したカードをちょうど覆うので、印が出るのは unmount の瞬間 — そこはページ全体が戻ってくる瞬間でもあり、印だけが飛び出して見えることはない
    - ホバーでパネルが中心方向へ 56px せり出す。`prefers-reduced-motion` では全部即時
      - **せり出しは「離れられるポインタ」だけに答える** (改訂 2026-09-09)。`@media (hover: hover) and (pointer: fine)` で囲う。`:hover` はタッチだとタップした要素に残り、`:focus-within` は閉じたときに元のカードへフォーカスを戻す実装と噛み合う。両方を無条件に効かせていたため、**タップ 1 回ごとにパネル 1 枚がコピーの上に 56px 出たまま残っていた**
      - **フォーカスには枠線と outline で答える**。`:focus-visible` の判定はエンジンごとにヒューリスティックが違い、プログラム的な `.focus()` を含めるかどうかも一致しない。**判定が外れても位置が動かないもの** (罫線の色・ページ共通の outline) に割り当て、レイアウトを動かすせり出しの側は推測に依存させない
@@ -263,10 +269,17 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
      - 1080px 未満では非表示 (リングがコピーの周りまで詰まっており、背後に置く余地がない)
    - **バッジ・タグ・中黒区切りを禁止する** (改訂 2026-09-08)。`Pre-alpha · macOS · MIT` のような属性の羅列、枠線付きの小ラベル、見出し上のカテゴリタグは使わない。伝えるべき属性は本文の文として書くか、罫線で区切った行に落とす
    - CTA の下に罫線を挟んで **build from source のコマンド** を置く (改訂 2026-09-08)。公開 release が 0 件の間、「では今どう試すのか」に答える導線がページ上に存在しないため。release が出たら、このブロックは `/download` へのリンクに差し替える
-   - **正直主義は維持**: リングに出すのは実在する画面のみ。Launcher/Plugins は **偽装せず** mock も作らず、テキスト行のみで見せる。直後の Preview セクションは残っており、ここだけ **ja ロケールの静止スクショ** のままなので **en で撮り直す** (README 約束の操作 GIF も後日)
+   - **正直主義の対象は「載せる証拠」であって「文章の語り口」ではない** (改訂 2026-09-10)。リングに出すのは実在する画面のみ、Launcher/Plugins のパネルは**偽装せず mock も作らない** — ここは変えない。一方で**文章は完成した製品として書く**: サイトは「ある程度完成してから世に出す」前提で公開するので、pre-alpha の自己申告 (「まだ pre-alpha」「まだユーザーがいません」「スクショが無いので載せていません」) は置かず、製品として何であるかを書く
+     - **実物に従わせるもの**: スクリーンショット (実際にビルドできるアプリのもののみ)、ロードマップ各フェーズの状態、リリース一覧、GitHub の数字。これらはデータであり、**公開前に実物へ合わせて更新する**。文章だけを先に完成形にしてある
+     - **正直であることと、正直さを宣言することは別** (改訂 2026-09-10)。「モックではなく実際のスクショです」「推薦の言葉もロゴの列も置きません」「下の数字はビルド時に読んでいます」の類は、**疑われている前提で喋る文**であって、製品サイトには載らない。方針はコードとこのドキュメントに書き、**ページには製品のことだけを書く**
+       - 判定は「同じ文を、完成した競合製品のサイトに置けるか」。置けないなら、それはサイトが自分の振る舞いを説明している文
+       - **サイトの仕組みを訪問者に説明しない**。ビルド時に取得している・同じ一覧を読んでいる・ここに何が並ぶ予定か、はこちらの都合であって読者の関心ではない
+     - **ただし「今できること」を名乗る文は別** (改訂 2026-09-10)。製品が何であるかを述べる文 (tagline・`hero.sub`・`why` の 4 本柱・`note`) は完成形で書いてよいが、読者が**手元で今できることとして読む**文 — docs の `getting-started`、`plugins` の `installHint` — では、**未実装のランチャー (P3) とプラグインホスト (P4) を「これから入るもの」として書く**。判定基準は「読んだ人がこれから 5 分でそれを試そうとするか」。ロードマップが両者を `planned` と表示している以上、docs だけが現在形で語ると自サイト内で矛盾する
+     - 併せて `preview` セクションは「未実装の一覧」から**アプリの説明**に変わった (`upcoming` → `parts`。P ラベルは 01/02/03 に置き換え)。docs の `getting-started` / `plugin-authoring` の callout、`plugins` の `previewNotice` と `installHint`、`releases` / `download` の空状態も同じ方針で書き直した
+     - Preview セクションのスクショはまだ **ja ロケールの静止画** のままなので **en で撮り直す** (README 約束の操作 GIF も後日)
    - **スクショに額装をしない** (改訂 2026-09-08)。スクショには実物の macOS ウィンドウ (信号ボタン・角丸・影) が既に写っているため、外側にウィンドウクロームを模した枠・タイトルバー・影を重ねると二重になる。画像をそのまま置き、キャプションを罫線で受ける。撮影時に背景を含めて整えるのが正しい対処であり、web 側で飾って補うのは誤り
 2. **"Why nohrs?"** — 3-4 ポイントで差別化 (Launcher first-class / Explorer first-class / WASM plugins / Spotlight 非依存の検索。README の柱を流用)
-3. **主要機能ハイライト** (Explorer=実在 / Launcher・Plugin・Search=Coming カードで mock 提示)
+3. **アプリケーションの説明** (改訂 2026-09-10)。実在するスクショ 1 枚 + 機能行 3 つで組む。**"Coming" の mock カードは作らない** — 当初は Launcher・Plugin・Search をそれで見せる案だったが、上の「実在する画面しか出さない」と正面から矛盾する
 4. **Built in Rust / craft セクション** (tan ブランド・性能の語り。zed の care & craftsmanship 相当)
 5. **OSS 透明性 = 社会的証明の置換** (pre-alpha でユーザがいないため testimonials は作らない):
    - live GitHub シグナル (star 数・最近のコミット activity feed・contributors) — zed の activity feed の nohrs 版
@@ -291,8 +304,22 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 - frontmatter: title / date / author / tags / canonical / og_image
 - カスタムコンポーネント: `<Callout>`, `<Screenshot>`, `<CodeTabs>`, `<YouTube>`
 - タグページ (`/blog/tags/<tag>`)、年別アーカイブ (`/blog/2026/`)
-- giscus コメント (GitHub Discussions)
+- コメント (GitHub Discussions を自前で描画。下記)
 - RSS / Atom feed (言語別)
+
+**コメントは「保管場所」と「見た目」を分ける** (改訂 2026-09-10)。当初は giscus を埋め込んでいたが、giscus は **iframe** であり、中身は giscus.app のドキュメントなので `--paper`・`--tan`・`--mono` が一切届かない。渡せるのはテーマ名 1 つだけで、結果としてページの中に GitHub のサイトが埋まっている状態になっていた。設定では直らないので iframe をやめた。
+
+- **保管は GitHub Discussions のまま**。モデレーション・通報・スパム処理・通知メールを GitHub 側に置いたままにでき、訪問者の名前もアドレスもこちらには保存されない。完全自前 (D1) にすると、これを全部自分で持つことになる
+- **スレッドの同定は giscus の `specific` マッピングを踏襲**し、記事 1 本につき `blog/<slug>` という**タイトルのディスカッション 1 つ**。giscus 時代に書かれたスレッドがそのまま読める
+- **読み取りは Worker の `/api/discussion?term=blog/<slug>`**。GraphQL の検索はランキングであって一致ではない (`blog/nohrs` は `blog/nohrs-and-gpui` も返す) ので、**タイトルの完全一致で選び直す**
+  - `term` は `THREAD_TERM` で検証してから検索文字列に埋める。ここが**インジェクション境界**であって、単なる入力チェックではない
+  - **エッジキャッシュ 60 秒**が事実上のレートリミッタ。人気記事でも GitHub への呼び出しは 1 分に 1 回
+  - トークンは **Worker シークレット** (`GITHUB_TOKEN`)。ビルド時に HTML へ焼かれる `VITE_*` 系とは種類が違う。CI が `DISCUSSIONS_TOKEN` (repo 単位・read-only・Discussions のみの fine-grained PAT) を deploy 後に押し込む
+  - 未設定なら 503。fork では giscus 時代と同じく**黙って GitHub へのリンクに落ちる**
+- **本文は GitHub が返す `bodyHTML` をそのまま入れる**。GitHub 側でサニタイズ済みで、giscus の iframe が出していたものと同一。ここで生 Markdown を描くと、パーサとサニタイザを自前で持つことになる
+- **リンクは全状態で描く**。prerender される静止状態 (`idle`) では読み込み中の文言を出さない — JavaScript が無い読者を、来ない fetch の前で待たせないため
+- 取得は `IntersectionObserver` で**セクションが近づいてから**。記事はコメントより手前で閉じられる方が多い
+- アバターは出さず、名前は mono。リアクションは絵文字を `aria-hidden` にせず、読み上げに任せる (文字自身の名前が読まれるので、こちらで書くラベルより正確)
 - OG 画像: Satori で frontmatter から自動生成
 
 ### 6.4 `/docs`
@@ -312,7 +339,8 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 - 5 カテゴリ (productivity / developer-tools / media / cloud / theme)
 - 各カードに permission バッジ
 - Install ボタン: `nohrs://install?source=user/repo` で deeplink
-- **本体未実装 (P4–P5) のため P1 では Preview**: シードの `<id>.toml` 数件 + "Coming soon" 状態でカード/グリッド/カテゴリの器を作り込む
+  - **プラグインホスト (P4) が入るまでは `<a>` にしない** (改訂 2026-09-10)。スキームを登録しているものが無い状態でアンカーにすると、押しても何も起きない死んだコントロールになる。アドレスとして読める `<span>` で出し、`installHint` 側で「P4 で入る」と述べる。ホストが入ったらアンカーに戻す
+- **P1 ではシードの `<id>.toml` 数件**でカード/グリッド/カテゴリの器を作り込む。**器に "Coming soon" とは書かない** (改訂 2026-09-10)。ページ上部の注記はレジストリがまだ小さいことを述べるにとどめ、登録の増減で嘘にならない文にする
 
 ### 6.6 `/about`
 
@@ -323,7 +351,7 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 ### 6.7 `/download`
 
 - OSS 最重要 CTA。macOS バイナリ (release asset) · build from source 手順 · システム要件を集約
-- pre-alpha の現状を誠実に提示 (まだ正式 release が無い旨)。release が出たら `/releases` と連動
+- **release の有無はデータで分岐させる** (`hasDownloads`)。無い間は「ソースからビルドする」を主導線にし、出たら `/releases` と連動する。開発段階そのものの説明は書かない (改訂 2026-09-10)
 
 ### 6.8 `/roadmap`
 
@@ -362,18 +390,25 @@ npm run build
 | 変数 | 置き場所 | 用途 | 無いとどうなるか |
 |------|---------|------|-----------------|
 | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | **Environment (`production`)** | デプロイ | デプロイできない |
-| `GISCUS_REPO_ID` / `GISCUS_CATEGORY_ID` | Repository | giscus コメント | コメント欄を出さない |
+| `DISCUSSIONS_TOKEN` | **Environment (`production`)** | コメント読み取り。deploy 後に Worker シークレット `GITHUB_TOKEN` として押し込む | コメントが GitHub へのリンクに落ちる |
 | `CF_ANALYTICS_TOKEN` | Repository | Cloudflare Web Analytics | ビーコンを埋め込まない |
 | `GITHUB_TOKEN` | (自動供給) | ビルド時の GitHub API rate limit 回避 | コミット済みスナップショットにフォールバック |
 
-Cloudflare の 2 つだけ Environment に置くのは、**`environment: production` を宣言したジョブ
-(= deploy ジョブのみ) からしか見えないため**。public リポジトリでは、repository secret は
-push できるブランチのワークフローから読み出せてしまうので、これは実質的な境界になる。
+`DISCUSSIONS_TOKEN` だけは**ビルド時ではなくリクエスト時**に要る唯一の資格情報で、ブラウザには一切届かない。だから Repository ではなく Environment に置く (改訂 2026-09-10)。fine-grained PAT には期限があり、切れるとコメントがリンクに落ちる — 他は何も壊れない。
 
-残り 3 つは build ジョブが読み、build ジョブは `environment:` を持たないので Environment では
-届かない。そして**この 3 つはそもそも秘密ではない** — いずれもビルド後の HTML に入って全訪問者に
-配られる。`secrets` に置いているのは、fork でビルドしたときに本家の Discussions へ書き込んだり、
-本家の Analytics に計上したりしないためだけで、**secret が無い場合は機能ごと出さない**方に倒す。
+Environment に置く 3 つ (Cloudflare の 2 つと `DISCUSSIONS_TOKEN`) は、**`environment: production`
+を宣言したジョブ (= deploy ジョブのみ) からしか見えない**。public リポジトリでは、repository
+secret は push できるブランチのワークフローから読み出せてしまうので、これは実質的な境界になる。
+
+残る `CF_ANALYTICS_TOKEN` は build ジョブが読み、build ジョブは `environment:` を持たないので
+Environment では届かない。そして**これはそもそも秘密ではない** — ビルド後の HTML に入って全訪問者に
+配られる。`secrets` に置いているのは、fork でビルドしたときに本家の Analytics に計上しないため
+だけで、**secret が無い場合は機能ごと出さない**方に倒す。
+
+`DISCUSSIONS_TOKEN` を **`production` Environment から消したら Cloudflare 側からも消える** (改訂
+2026-09-10)。deploy ジョブは、値があれば `wrangler secret put`、無ければ Worker のシークレット一覧を
+見て `wrangler secret delete` する。put だけにすると、意図的に引き上げた資格情報が誰かが気づくまで
+エッジで生き続ける。**削除の失敗を握り潰さない**のも同じ理由で、消えていないなら deploy を落とす。
 
 > `production` Environment の **Deployment branches** 制限は、チェックアウト先ではなく
 > **ワークフロー実行の ref** で判定される。スケジュール実行の ref はデフォルトブランチ
@@ -422,11 +457,11 @@ Worker が 1 回起きる代わりに、正規ホストの規則がダッシュ�
 
 ## 8. 後続フェーズの拡張
 
-> スコープ変更により blog 本格化 (RSS / giscus / OG 自動生成) は **P1 に前倒し済**。以下は P1 以降に *データ・コンテンツが充実する* ものを中心に記載。
+> スコープ変更により blog 本格化 (RSS / コメント / OG 自動生成) は **P1 に前倒し済**。以下は P1 以降に *データ・コンテンツが充実する* ものを中心に記載。
 
 | Phase | 追加内容 |
 |-------|---------|
-| P1 (前倒し済) | blog 本格化 (MDX components / RSS / giscus / OG 自動生成)。器・機能はローンチ時に完成、記事は順次追加 |
+| P1 (前倒し済) | blog 本格化 (MDX components / RSS / コメント / OG 自動生成)。器・機能はローンチ時に完成、記事は順次追加 |
 | P3 | コマンド一覧ページ (`/docs/commands`) を本体の inventory レジストリからビルド時生成 |
 | P4 | plugin authoring docs / WIT API reference 自動生成 |
 | P5 | Plugin Store の実データ投入 (器は P1 で Preview 済、P4–P5 で本物の plugin metadata を enrich)、release frontmatter リッチ化 |

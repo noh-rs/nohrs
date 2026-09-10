@@ -165,12 +165,14 @@ function Preview({ lang }: { lang: Lang }) {
       <p className="mt-3.5 font-mono text-xs leading-relaxed text-muted">{strings.caption}</p>
 
       <div className="mt-11 border-t border-line">
-        {strings.upcoming.map((item) => (
+        {strings.parts.map((item) => (
           <div
             key={item.title}
             className="grid items-baseline gap-x-6 gap-y-1.5 border-b border-line-soft py-[19px] last:border-line md:grid-cols-[48px_minmax(0,1fr)_minmax(0,1.6fr)] max-md:grid-cols-[48px_minmax(0,1fr)]"
           >
-            <span className="font-mono text-sm leading-relaxed font-medium text-muted">{item.phase}</span>
+            <span className="font-mono text-sm leading-relaxed font-medium text-muted tabular-nums">
+              {item.index}
+            </span>
             <span className="text-[0.9375rem] text-ink max-md:col-start-2">{item.title}</span>
             <span className="text-[0.9375rem] text-muted max-md:col-start-2">{item.body}</span>
           </div>

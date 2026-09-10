@@ -17,9 +17,11 @@ const listeners = new Set<(theme: Theme) => void>()
 /**
  * One value shared by every `useTheme` caller.
  *
- * Per-hook state was a real defect rather than a tidiness point: the header's
- * toggle and the comments section each held their own copy, so switching the
- * theme left giscus rendering its previous one until the page reloaded.
+ * Per-hook state was a real defect rather than a tidiness point: when the
+ * header's toggle and the comments section each held their own copy, switching
+ * the theme left the comments on the previous one until the page reloaded.
+ * The comments no longer read it — they are styled from the same tokens as
+ * everything else now — but the next second caller would hit the same bug.
  *
  * Deliberately not `useSyncExternalStore`: the server cannot know the
  * viewer's OS preference, so a snapshot that read it on the client would

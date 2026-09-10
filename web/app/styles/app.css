@@ -458,10 +458,22 @@
   box-shadow: 0 28px 56px -32px rgb(25 21 16 / 0.6);
 }
 
+.orbit-item:focus-within .orbit-open {
+  background: var(--tan-wash);
+  border-color: var(--tan);
+  color: var(--tan-ink);
+}
+
 @media (hover: hover) and (pointer: fine) {
   .orbit-item:hover .orbit-card {
     border-color: var(--tan);
     box-shadow: 0 28px 56px -32px rgb(25 21 16 / 0.6);
+  }
+
+  .orbit-item:hover .orbit-open {
+    background: var(--tan-wash);
+    border-color: var(--tan);
+    color: var(--tan-ink);
   }
 }
 
@@ -478,6 +490,39 @@
      detail is framed on, so it is also the point the opened shot unzooms from. */
   transform: scale(var(--zoom, 1));
   transform-origin: var(--focus, 50% 50%);
+}
+
+/* The mark that says the picture is a control.
+   Every card is turned to face outward and cut by the edge it faces, so the
+   half that stays on the page is always its lower one — which is where this
+   sits, at the point of the card nearest the middle of the ring. It is round
+   because the card's own rounded corners clip it otherwise, and because a
+   circle is the one shape the turn cannot leave lying at an angle; the glyph
+   inside is turned back by that angle, or the pair below the horizon would
+   carry it upside down. */
+.orbit-open {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  box-shadow: 0 8px 18px -12px rgb(25 21 16 / 0.55);
+  color: var(--ink-2);
+  transform: translateX(-50%);
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.orbit-open svg {
+  display: block;
+  transform: rotate(calc(var(--a) * -1));
 }
 
 .orbit-tag {
@@ -561,6 +606,17 @@
 
 .orbit-core .orbit-cta {
   margin-top: calc(var(--half-h) * 0.07);
+}
+
+/* Set as a mono label, like every other aside on the page, so that a line of
+   instruction in the middle of the hero reads as part of the furniture rather
+   than as a second piece of copy competing with the tagline. */
+.orbit-core .orbit-hint {
+  margin-top: calc(var(--half-h) * 0.055);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
 }
 
 /* ── The opened screen ────────────────────────────────────────────────────
@@ -694,6 +750,10 @@
 
   .orbit-core .orbit-cta {
     margin-top: 24px;
+  }
+
+  .orbit-core .orbit-hint {
+    margin-top: 20px;
   }
 }
 
