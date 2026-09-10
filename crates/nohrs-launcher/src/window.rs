@@ -138,8 +138,10 @@ pub fn toggle_launcher(
 ///
 /// It renders nothing, is one pixel, and is a pop-up (`_NET_WM_WINDOW_TYPE_
 /// _NOTIFICATION` on X11), which keeps it out of taskbars and window switchers.
+#[cfg(not(target_os = "macos"))]
 struct KeepAlive;
 
+#[cfg(not(target_os = "macos"))]
 impl gpui::Render for KeepAlive {
     fn render(
         &mut self,
@@ -150,16 +152,21 @@ impl gpui::Render for KeepAlive {
     }
 }
 
+/// Nothing to do: a macOS application outlives its windows on its own.
+///
+/// Compile-gated rather than a runtime branch so neither platform carries the
+/// other's dead code.
+#[cfg(target_os = "macos")]
+pub fn open_keep_alive_window(_cx: &mut App) -> Result<()> {
+    Ok(())
+}
+
 /// Opens the keep-alive window described by [`KeepAlive`].
 ///
-/// A no-op on macOS, where the application outlives its windows on its own.
 /// Only daemon-style runs need this: when the explorer is open, its own window
 /// already holds the loop.
+#[cfg(not(target_os = "macos"))]
 pub fn open_keep_alive_window(cx: &mut App) -> Result<()> {
-    if cfg!(target_os = "macos") {
-        return Ok(());
-    }
-
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds {
             origin: point(px(0.0), px(0.0)),
@@ -201,7 +208,26 @@ fn open_window(cx: &App) -> Option<WindowHandle<LauncherView>> {
 
 #[cfg(test)]
 mod tests {
+    use gpui::TestAppContext;
+
     use super::*;
+
+    /// A launcher over an index with nothing in it: these tests are about the
+    /// window's lifetime, not about what it searches.
+    fn summon(cx: &mut TestAppContext) -> Result<()> {
+        cx.update(|cx| toggle_launcher(Arc::new(FileNameIndex::new()), None, cx))
+    }
+
+    /// How many windows the application is holding open.
+    fn window_count(cx: &mut TestAppContext) -> usize {
+        cx.update(|cx| cx.windows().len())
+    }
+
+    /// The globals [`LauncherView`] reads its colours and key bindings from.
+    fn init(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(crate::field::init);
+    }
 
     #[test]
     fn window_options_are_a_fixed_borderless_panel() {
@@ -220,5 +246,76 @@ mod tests {
             options.window_bounds,
             Some(WindowBounds::Windowed(_))
         ));
+    }
+
+    #[gpui::test]
+    fn the_window_sits_high_on_the_primary_display(cx: &mut TestAppContext) {
+        let (bounds, screen) = cx.update(|cx| {
+            let screen = cx.primary_display().map(|display| display.bounds());
+            (launcher_bounds(cx), screen)
+        });
+        let screen = screen.expect("the test platform has a display");
+
+        assert_eq!(bounds.size.width, px(LAUNCHER_WIDTH));
+        assert_eq!(bounds.size.height, px(LAUNCHER_HEIGHT));
+        // Centred across, and above the middle: a panel centred vertically sits
+        // below where the eye rests.
+        assert_eq!(bounds.center().x, screen.origin.x + screen.size.width / 2.0);
+        assert!(
+            bounds.origin.y < screen.origin.y + screen.size.height / 2.0,
+            "{bounds:?} is not in the upper half of {screen:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn summoning_twice_leaves_no_window_behind(cx: &mut TestAppContext) {
+        init(cx);
+
+        summon(cx).expect("the launcher should open");
+        assert_eq!(window_count(cx), 1);
+
+        summon(cx).expect("the launcher should close");
+        // The close is deferred until the dispatch that asked for it unwinds,
+        // so it has not happened yet.
+        cx.run_until_parked();
+        assert_eq!(
+            window_count(cx),
+            0,
+            "the second summon should have closed it"
+        );
+
+        summon(cx).expect("the launcher should open again");
+        cx.run_until_parked();
+        assert_eq!(window_count(cx), 1);
+    }
+
+    #[gpui::test]
+    fn a_window_closed_behind_our_back_still_reopens(cx: &mut TestAppContext) {
+        init(cx);
+        summon(cx).expect("the launcher should open");
+
+        // What `escape` and opening a result both do: close the window without
+        // going through `toggle_launcher`, leaving the remembered handle stale.
+        let handle = cx
+            .update(|cx| open_window(cx))
+            .expect("the launcher window should be remembered");
+        handle
+            .update(cx, |_, window, _| window.remove_window())
+            .expect("the launcher window should still be open");
+        cx.run_until_parked();
+        assert_eq!(window_count(cx), 0);
+
+        // A stale handle taken at face value would make this summon do nothing.
+        summon(cx).expect("the launcher should open");
+        cx.run_until_parked();
+        assert_eq!(window_count(cx), 1);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[gpui::test]
+    fn the_keep_alive_window_holds_the_event_loop_open(cx: &mut TestAppContext) {
+        cx.update(open_keep_alive_window)
+            .expect("the keep-alive window should open");
+        assert_eq!(window_count(cx), 1);
     }
 }

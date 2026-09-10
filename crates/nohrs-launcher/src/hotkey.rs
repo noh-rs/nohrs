@@ -147,29 +147,13 @@ fn install_grab(cx: &mut App, chord: Chord, on_summon: impl Fn(&mut App) + 'stat
 
     let hotkey_id = chord.hotkey.id();
     cx.spawn(async move |cx| {
-        // A held chord auto-repeats `Pressed` for as long as it is down. Summon
-        // on the edge into "pressed" only, so holding the key opens the launcher
-        // once instead of toggling it every poll interval.
         let mut held = false;
         loop {
             cx.background_executor().timer(POLL_INTERVAL).await;
 
-            let mut summoned = false;
-            while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-                if event.id != hotkey_id {
-                    continue;
-                }
-                match event.state {
-                    HotKeyState::Pressed if !held => {
-                        held = true;
-                        summoned = true;
-                    }
-                    HotKeyState::Pressed => {}
-                    HotKeyState::Released => held = false,
-                }
-            }
-
-            if summoned && cx.update(|cx| on_summon(cx)).is_err() {
+            let drained = std::iter::from_fn(|| GlobalHotKeyEvent::receiver().try_recv().ok());
+            if fold_presses(&mut held, hotkey_id, drained) && cx.update(|cx| on_summon(cx)).is_err()
+            {
                 // The application is gone; nothing left to summon into.
                 break;
             }
@@ -178,6 +162,36 @@ fn install_grab(cx: &mut App, chord: Chord, on_summon: impl Fn(&mut App) + 'stat
     .detach();
 
     Ok(())
+}
+
+/// Folds one poll's worth of grab events into whether to summon.
+///
+/// A held chord auto-repeats `Pressed` for as long as it is down, and a poll
+/// can see several of those at once, so `held` carries across calls and the
+/// summon is taken on the edge into "pressed" only. Otherwise holding the chord
+/// would toggle the launcher every poll interval for as long as it is down.
+///
+/// Events for other hotkeys share the one process-wide channel, hence the id.
+fn fold_presses(
+    held: &mut bool,
+    hotkey_id: u32,
+    events: impl Iterator<Item = GlobalHotKeyEvent>,
+) -> bool {
+    let mut summoned = false;
+    for event in events {
+        if event.id != hotkey_id {
+            continue;
+        }
+        match event.state {
+            HotKeyState::Pressed if !*held => {
+                *held = true;
+                summoned = true;
+            }
+            HotKeyState::Pressed => {}
+            HotKeyState::Released => *held = false,
+        }
+    }
+    summoned
 }
 
 /// Starts the portal conversation and forwards its activations.
@@ -344,6 +358,87 @@ mod tests {
         assert!(trigger.ends_with("space"), "{trigger}");
     }
 
+    /// The chord's own events, as the grab backend would deliver them.
+    fn press(id: u32) -> GlobalHotKeyEvent {
+        GlobalHotKeyEvent {
+            id,
+            state: HotKeyState::Pressed,
+        }
+    }
+
+    fn release(id: u32) -> GlobalHotKeyEvent {
+        GlobalHotKeyEvent {
+            id,
+            state: HotKeyState::Released,
+        }
+    }
+
+    /// The id under test; any other value stands for a different application's
+    /// hotkey arriving on the same process-wide channel.
+    const CHORD_ID: u32 = 7;
+
+    #[test]
+    fn a_press_summons_the_launcher() {
+        let mut held = false;
+        assert!(fold_presses(
+            &mut held,
+            CHORD_ID,
+            [press(CHORD_ID)].into_iter()
+        ));
+        assert!(held, "the chord is still down");
+    }
+
+    #[test]
+    fn holding_the_chord_summons_once() {
+        // What the bug was: auto-repeat delivers `Pressed` for as long as the
+        // chord is down, and one summon per repeat toggled the launcher open and
+        // shut for as long as the user held the key.
+        let mut held = false;
+        assert!(fold_presses(
+            &mut held,
+            CHORD_ID,
+            [press(CHORD_ID), press(CHORD_ID), press(CHORD_ID)].into_iter()
+        ));
+        assert!(!fold_presses(
+            &mut held,
+            CHORD_ID,
+            [press(CHORD_ID)].into_iter()
+        ));
+    }
+
+    #[test]
+    fn releasing_the_chord_arms_the_next_summon() {
+        let mut held = false;
+        assert!(fold_presses(
+            &mut held,
+            CHORD_ID,
+            [press(CHORD_ID)].into_iter()
+        ));
+        assert!(fold_presses(
+            &mut held,
+            CHORD_ID,
+            [release(CHORD_ID), press(CHORD_ID)].into_iter()
+        ));
+        assert!(held);
+    }
+
+    #[test]
+    fn another_applications_hotkey_is_not_a_summon() {
+        let mut held = false;
+        assert!(!fold_presses(
+            &mut held,
+            CHORD_ID,
+            [press(CHORD_ID + 1), release(CHORD_ID + 1)].into_iter()
+        ));
+        assert!(!held, "someone else's chord must not arm ours");
+    }
+
+    #[test]
+    fn a_quiet_poll_summons_nothing() {
+        let mut held = false;
+        assert!(!fold_presses(&mut held, CHORD_ID, std::iter::empty()));
+    }
+
     #[test]
     fn a_chord_is_described_in_platform_terms() {
         let described = describe(&default_chord());
@@ -353,6 +448,26 @@ mod tests {
             assert_eq!(described, "Cmd+Shift+Space");
         } else {
             assert_eq!(described, "Ctrl+Shift+Space");
+        }
+    }
+
+    #[test]
+    fn every_modifier_is_named_in_a_stable_order() {
+        // Not a chord the launcher uses; it is here to pin the order and the
+        // naming of the modifiers `default_chord` does not exercise, so that a
+        // future chord is described the way keyboards label it.
+        let chord = Chord {
+            hotkey: HotKey::new(
+                Some(Modifiers::META | Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
+                Code::KeyK,
+            ),
+            portal_trigger: "LOGO+CTRL+ALT+SHIFT+k",
+        };
+
+        if cfg!(target_os = "macos") {
+            assert_eq!(describe(&chord), "Cmd+Ctrl+Option+Shift+KeyK");
+        } else {
+            assert_eq!(describe(&chord), "Super+Ctrl+Alt+Shift+KeyK");
         }
     }
 }
