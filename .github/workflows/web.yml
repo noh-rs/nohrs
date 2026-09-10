@@ -171,8 +171,14 @@ jobs:
           # want, and anything else that goes wrong has to fail the deploy.
           # Swallowing a delete would report a credential as withdrawn while it
           # kept working at the edge.
-          existing="$(npx wrangler secret list)"
-          if printf '%s' "$existing" | grep -q 'GITHUB_TOKEN'; then
+          #
+          # JSON is asked for so the name is quoted and the match can be an
+          # exact one: a plain substring would also hit `OLD_GITHUB_TOKEN` and
+          # then fail on deleting a secret that was never there. If the flag
+          # ever goes away this fails loudly, which is the right direction for
+          # a step that withdraws a credential.
+          existing="$(npx wrangler secret list --format json)"
+          if printf '%s' "$existing" | grep -q '"GITHUB_TOKEN"'; then
             npx wrangler secret delete GITHUB_TOKEN --force
           else
             echo "The Worker has no GITHUB_TOKEN secret; nothing to withdraw."
