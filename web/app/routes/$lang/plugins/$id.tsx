@@ -61,7 +61,11 @@ function PluginDetail() {
           <DefinitionRow label={strings.install}>
             <span className="text-muted">{strings.installHint}</span>
             <br />
-            <code className="font-mono text-[0.8125rem]">nohrs://install?source={entry.repo}</code>
+            {/* The copy calls it a link, so it has to be one: a scheme the
+                browser hands to whatever registered it, which is Nohrs. */}
+            <a href={`nohrs://install?source=${entry.repo}`} className="font-mono text-[0.8125rem]">
+              nohrs://install?source={entry.repo}
+            </a>
           </DefinitionRow>
         </DefinitionRows>
       </Section>
