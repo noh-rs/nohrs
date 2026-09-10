@@ -74,6 +74,19 @@ const LIFT = 620
 const EASE = 'cubic-bezier(0.42, 0.04, 0.18, 1)'
 const SITE_EASE = 'cubic-bezier(0.16, 1, 0.3, 1)'
 
+/**
+ * The share of its own time `run` has played, and 1 when there is none to read.
+ * The way back takes that share of the flight, which is the length `reverse()`
+ * would have given it: a panel dismissed just after it was opened has only a
+ * little way to go, and taking the full flight over it reads as a crawl.
+ */
+function playedShare(run: Animation | null): number {
+  if (!run || run.playState === 'idle') return 1
+  const total = Number(run.effect?.getComputedTiming().duration ?? 0)
+  if (!(total > 0)) return 1
+  return Math.min(Math.max(Number(run.currentTime ?? total) / total, 0), 1)
+}
+
 type Phase = 'open' | 'closing'
 
 /**
@@ -94,6 +107,7 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
   const scrim = useRef<HTMLDivElement>(null)
   const closer = useRef<HTMLButtonElement>(null)
   const flights = useRef<Animation[]>([])
+  const lift = useRef<Animation | null>(null)
   const [view, setView] = useState<{ index: number; phase: Phase } | null>(null)
   const [warm, setWarm] = useState(false)
 
@@ -106,7 +120,8 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
    * fully open before flying back when a reader closes it halfway through, and
    * it must land on where the card is *now* — the ring is sized from the
    * viewport, so a window resized while the panel was open has moved it.
-   * Playing the way in backwards would satisfy the first and fail the second.
+   * Playing the way in backwards would satisfy the first and fail the second,
+   * so only its length is taken from it, which is the part a reader can feel.
    */
   const fly = useCallback((index: number, direction: 'in' | 'out'): Promise<void> => {
     const node = panel.current
@@ -130,12 +145,16 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
     // Read afresh every flight: a reader who turns reduced motion on while the
     // panel is open gets it on the way back out.
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    const ms = reduced ? 0 : LIFT
+    // Every part is shortened by the same share, or the scrim would still be
+    // fading when the panel it belongs to has already landed and unmounted.
+    const played = direction === 'in' ? 1 : playedShare(lift.current)
+    const span = (full: number) => (reduced ? 0 : Math.round(full * played))
+    const ms = span(LIFT)
     // The copy waits for the panel to arrive, and leaves at once on the way
     // out: holding a caption over a panel already shrinking back is a stutter.
     const late = {
-      duration: reduced ? 0 : direction === 'in' ? 300 : 150,
-      delay: reduced || direction === 'out' ? 0 : 380,
+      duration: span(direction === 'in' ? 300 : 150),
+      delay: direction === 'in' ? span(380) : 0,
       easing: SITE_EASE,
     }
 
@@ -149,7 +168,7 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
       [node, 'transform', onCard, 'none', {}],
       [shot, 'borderRadius', cardRadius, '12px', {}],
       [image, 'transform', `scale(${zoom})`, 'none', {}],
-      [veil, 'opacity', '0', '1', { duration: reduced ? 0 : 380, easing: SITE_EASE }],
+      [veil, 'opacity', '0', '1', { duration: span(380), easing: SITE_EASE }],
       [node.querySelector('.orbit-caption'), 'opacity', '0', '1', late],
       [closer.current, 'opacity', '0', '1', late],
     ]
@@ -186,7 +205,10 @@ export function HeroOrbit({ lang, children }: { lang: Lang; children: ReactNode 
         () => undefined,
         () => undefined,
       )
-      if (target === node) arrived = settled
+      if (target === node) {
+        arrived = settled
+        lift.current = run
+      }
     })
 
     return arrived ?? Promise.resolve()
