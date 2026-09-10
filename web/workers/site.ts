@@ -1,5 +1,5 @@
 import { LANG_COOKIE, langFromCookie, negotiateLang } from '../app/lib/negotiate.ts'
-import { loadThread, THREAD_TERM } from '../app/lib/discussion.ts'
+import { loadThread, THREAD_TERM, type Thread } from '../app/lib/discussion.ts'
 
 /**
  * Structurally typed rather than pulling in `@cloudflare/workers-types`: these
@@ -55,6 +55,18 @@ function json(body: unknown, status: number, headers: Record<string, string> = {
 }
 
 /**
+ * Reads of the same thread that are already in flight, so that a cold cache
+ * does not turn a burst of readers into a burst of GitHub calls. The cache
+ * entry only exists once the first response comes back; until then every
+ * request is a miss.
+ *
+ * Per isolate, which is all a Worker can do without a Durable Object — and
+ * enough, since a colo runs few isolates and the two mechanisms cover the same
+ * hole from either side.
+ */
+const inFlight = new Map<string, Promise<Thread | null>>()
+
+/**
  * The comment thread for one article.
  *
  * The token stays on this side: it is a credential for our repository, and the
@@ -75,7 +87,16 @@ async function thread(url: URL, env: Env, ctx?: Ctx): Promise<Response> {
 
   let found
   try {
-    found = await loadThread(term, { token: env.GITHUB_TOKEN, repo: REPO })
+    const running = inFlight.get(term)
+    const read = running ?? loadThread(term, { token: env.GITHUB_TOKEN, repo: REPO })
+    if (!running) inFlight.set(term, read)
+    try {
+      found = await read
+    } finally {
+      // Only the request that started it clears it, or a later arrival would
+      // free the slot while the read it joined is still running.
+      if (!running) inFlight.delete(term)
+    }
   } catch {
     // An outage or an expired token must not take the article down with it.
     // Nothing is cached, so the next reader tries again, and the page falls

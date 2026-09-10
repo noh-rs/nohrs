@@ -33,6 +33,12 @@ export type Thread = {
   url: string
   /** Top-level comments on the discussion, as GitHub counts them. */
   total: number
+  /**
+   * False when a page of this thread was left behind — more comments than
+   * `COMMENT_PAGE`, or more replies than `REPLY_PAGE` under one of them. The
+   * section says so and points at GitHub rather than quietly ending early.
+   */
+  complete: boolean
   reactions: Reaction[]
   comments: Comment[]
 }
@@ -43,6 +49,20 @@ export type Thread = {
  * is what makes a quote or an operator impossible to smuggle into it.
  */
 export const THREAD_TERM = /^blog\/[a-z0-9][a-z0-9-]{0,80}$/
+
+/** The Discussions category giscus was pointed at, and articles still use. */
+const CATEGORY = 'blog'
+
+const COMMENT_PAGE = 50
+const REPLY_PAGE = 20
+
+/**
+ * Enough room that the exact title is on the page even when other discussions
+ * mention it. Only titles are searched, so the field is narrow to begin with;
+ * paginating a search whose realistic result count is one would be machinery
+ * with nothing to do.
+ */
+const SEARCH_PAGE = 25
 
 const COMMENT_FIELDS = `
   id
@@ -55,17 +75,19 @@ const COMMENT_FIELDS = `
 
 const THREAD_QUERY = `
   query Thread($search: String!) {
-    search(type: DISCUSSION, query: $search, first: 10) {
+    search(type: DISCUSSION, query: $search, first: ${SEARCH_PAGE}) {
       nodes {
         ... on Discussion {
           title
           url
+          createdAt
+          category { slug }
           reactionGroups { content reactors { totalCount } }
-          comments(first: 50) {
+          comments(first: ${COMMENT_PAGE}) {
             totalCount
             nodes {
               ${COMMENT_FIELDS}
-              replies(first: 20) { nodes { ${COMMENT_FIELDS} } }
+              replies(first: ${REPLY_PAGE}) { totalCount nodes { ${COMMENT_FIELDS} } }
             }
           }
         }
@@ -83,12 +105,14 @@ type RawComment = {
   bodyHTML?: string
   author?: { login?: string; url?: string } | null
   reactionGroups?: RawReactionGroup[]
-  replies?: { nodes?: (RawComment | null)[] }
+  replies?: { totalCount?: number; nodes?: (RawComment | null)[] }
 }
 
 type RawDiscussion = {
   title?: string
   url?: string
+  createdAt?: string
+  category?: { slug?: string } | null
   reactionGroups?: RawReactionGroup[]
   comments?: { totalCount?: number; nodes?: (RawComment | null)[] }
 }
@@ -129,6 +153,31 @@ function comment(raw: RawComment, depth: number): Comment | null {
 }
 
 /**
+ * Which of the search results is this article's thread.
+ *
+ * Search ranks rather than matches, so `blog/nohrs` also returns
+ * `blog/nohrs-and-gpui`: the title is the identity and is compared exactly.
+ * Two discussions can still carry the same title — anyone able to open one can
+ * make a second — so the choice is pinned rather than left to whatever GitHub
+ * ranked highest: the article's own category wins, and the oldest wins after
+ * that. The original thread is the one people replied to, and a page that
+ * changes which one it shows between two builds is worse than either.
+ *
+ * The category is a preference rather than a filter. If it is ever renamed,
+ * this should keep finding threads instead of offering to start a second one.
+ */
+function pick(nodes: (RawDiscussion | null)[], term: string): RawDiscussion | undefined {
+  const titled = nodes.filter((node): node is RawDiscussion => node?.title === term)
+  const inCategory = titled.filter((node) => node.category?.slug?.toLowerCase() === CATEGORY)
+  const candidates = inCategory.length > 0 ? inCategory : titled
+
+  return candidates.reduce<RawDiscussion | undefined>((oldest, node) => {
+    if (!oldest) return node
+    return (node.createdAt ?? '') < (oldest.createdAt ?? '') ? node : oldest
+  }, undefined)
+}
+
+/**
  * The thread for `term`, or `null` when nobody has commented yet — GitHub has
  * no discussion until the first comment creates one, and that is a normal
  * state rather than an error.
@@ -165,18 +214,24 @@ export async function loadThread(
   const failure = payload.errors?.[0]?.message
   if (failure) throw new Error(`github graphql: ${failure}`)
 
-  // Search ranks rather than matches: `blog/nohrs` also returns
-  // `blog/nohrs-and-gpui`. The title is the identity, so it is compared here
-  // instead of trusting the order.
-  const found = payload.data?.search?.nodes?.find((node) => node?.title === term)
+  const found = pick(payload.data?.search?.nodes ?? [], term)
   if (!found) return null
+
+  const raw = (found.comments?.nodes ?? []).flatMap((node) => (node ? [node] : []))
+  const total = found.comments?.totalCount ?? 0
 
   return {
     url: found.url ?? '',
-    total: found.comments?.totalCount ?? 0,
+    total,
+    // A dropped page is reported rather than hidden. Paginating instead would
+    // buy a thread nobody would read to the end of, at the cost of a second
+    // and third API call on every article.
+    complete:
+      total <= raw.length &&
+      raw.every((node) => (node.replies?.totalCount ?? 0) <= (node.replies?.nodes?.length ?? 0)),
     reactions: reactions(found.reactionGroups),
-    comments: (found.comments?.nodes ?? [])
-      .flatMap((node) => (node ? [comment(node, 1)] : []))
+    comments: raw
+      .flatMap((node) => [comment(node, 1)])
       .filter((node): node is Comment => node !== null),
   }
 }

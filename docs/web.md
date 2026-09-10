@@ -396,14 +396,18 @@ npm run build
 
 `DISCUSSIONS_TOKEN` だけは**ビルド時ではなくリクエスト時**に要る唯一の資格情報で、ブラウザには一切届かない。だから Repository ではなく Environment に置く (改訂 2026-09-10)。fine-grained PAT には期限があり、切れるとコメントがリンクに落ちる — 他は何も壊れない。
 
-Cloudflare の 2 つだけ Environment に置くのは、**`environment: production` を宣言したジョブ
-(= deploy ジョブのみ) からしか見えないため**。public リポジトリでは、repository secret は
-push できるブランチのワークフローから読み出せてしまうので、これは実質的な境界になる。
+Environment に置く 3 つ (Cloudflare の 2 つと `DISCUSSIONS_TOKEN`) は、**`environment: production`
+を宣言したジョブ (= deploy ジョブのみ) からしか見えない**。public リポジトリでは、repository
+secret は push できるブランチのワークフローから読み出せてしまうので、これは実質的な境界になる。
 
-残り 3 つは build ジョブが読み、build ジョブは `environment:` を持たないので Environment では
-届かない。そして**この 3 つはそもそも秘密ではない** — いずれもビルド後の HTML に入って全訪問者に
-配られる。`secrets` に置いているのは、fork でビルドしたときに本家の Discussions へ書き込んだり、
-本家の Analytics に計上したりしないためだけで、**secret が無い場合は機能ごと出さない**方に倒す。
+残る `CF_ANALYTICS_TOKEN` は build ジョブが読み、build ジョブは `environment:` を持たないので
+Environment では届かない。そして**これはそもそも秘密ではない** — ビルド後の HTML に入って全訪問者に
+配られる。`secrets` に置いているのは、fork でビルドしたときに本家の Analytics に計上しないため
+だけで、**secret が無い場合は機能ごと出さない**方に倒す。
+
+`DISCUSSIONS_TOKEN` を **repository secret から消したら Cloudflare 側からも消える** (改訂
+2026-09-10)。deploy ジョブは、値があれば `wrangler secret put`、無ければ `wrangler secret delete`
+する。put だけにすると、意図的に引き上げた資格情報が誰かが気づくまでエッジで生き続ける。
 
 > `production` Environment の **Deployment branches** 制限は、チェックアウト先ではなく
 > **ワークフロー実行の ref** で判定される。スケジュール実行の ref はデフォルトブランチ

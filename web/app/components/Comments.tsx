@@ -102,10 +102,18 @@ export function Comments({ lang, term }: { lang: Lang; term: string }) {
   const [thread, setThread] = useState<Thread | null>(null)
   const strings = t(lang).blog
 
-  // Nothing is fetched until the section is close to being read. An article is
-  // usually left before its comments are, and this is the whole of what the
-  // page costs a reader who never scrolls that far.
+  // Keyed on `term`, not run once. The router keeps this component mounted
+  // when only the slug changes, so a one-time effect would leave the previous
+  // article's thread on screen with the fetch below declining to run — the
+  // status it guards on is already `ready`.
+  //
+  // Past that: nothing is fetched until the section is close to being read. An
+  // article is usually left before its comments are, and this is the whole of
+  // what the page costs a reader who never scrolls that far.
   useEffect(() => {
+    setStatus('idle')
+    setThread(null)
+
     const element = anchor.current
     if (!element || typeof IntersectionObserver === 'undefined') {
       setStatus('loading')
@@ -123,7 +131,7 @@ export function Comments({ lang, term }: { lang: Lang; term: string }) {
     )
     observer.observe(element)
     return () => observer.disconnect()
-  }, [])
+  }, [term])
 
   useEffect(() => {
     if (status !== 'loading') return
@@ -195,11 +203,16 @@ export function Comments({ lang, term }: { lang: Lang; term: string }) {
 
       {status === 'ready' ? (
         thread && thread.comments.length > 0 ? (
-          <ul className="list-none p-0">
-            {thread.comments.map((comment) => (
-              <Entry key={comment.id} comment={comment} lang={lang} reply={false} />
-            ))}
-          </ul>
+          <>
+            <ul className="list-none p-0">
+              {thread.comments.map((comment) => (
+                <Entry key={comment.id} comment={comment} lang={lang} reply={false} />
+              ))}
+            </ul>
+            {thread.complete ? null : (
+              <p className="mt-7 text-sm text-muted">{strings.commentsTruncated}</p>
+            )}
+          </>
         ) : (
           <p className="max-w-[58ch] text-sm text-muted">{strings.commentsEmpty}</p>
         )

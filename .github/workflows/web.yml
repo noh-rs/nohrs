@@ -155,13 +155,19 @@ jobs:
       # other value here it cannot be built into the assets. Pushed after the
       # deploy because `wrangler secret put` needs the script to exist, and on
       # every deploy because that is also how a rotated token reaches the edge.
+      #
+      # Removing the repository secret removes the credential from Cloudflare
+      # too. Leaving it in place would mean a token someone deliberately
+      # withdrew kept working until a human noticed.
       - name: Publish the Discussions token
         run: |
-          if [ -z "$DISCUSSIONS_TOKEN" ]; then
-            echo "DISCUSSIONS_TOKEN is unset — the comment API will answer 503."
-            exit 0
+          if [ -n "$DISCUSSIONS_TOKEN" ]; then
+            printf '%s' "$DISCUSSIONS_TOKEN" | npx wrangler secret put GITHUB_TOKEN
+          else
+            echo "DISCUSSIONS_TOKEN is unset — withdrawing the Worker secret."
+            # Absent already is the state being asked for, not a failure.
+            npx wrangler secret delete GITHUB_TOKEN --force || true
           fi
-          printf '%s' "$DISCUSSIONS_TOKEN" | npx wrangler secret put GITHUB_TOKEN
         env:
           DISCUSSIONS_TOKEN: ${{ secrets.DISCUSSIONS_TOKEN }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

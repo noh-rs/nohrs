@@ -21,6 +21,8 @@ function discussion(overrides: Record<string, unknown> = {}) {
   return {
     title: 'blog/hello-nohrs',
     url: 'https://github.com/noh-rs/nohrs/discussions/12',
+    createdAt: '2026-09-01T09:00:00Z',
+    category: { slug: 'blog' },
     reactionGroups: [
       { content: 'HEART', reactors: { totalCount: 2 } },
       { content: 'ROCKET', reactors: { totalCount: 0 } },
@@ -36,6 +38,7 @@ function discussion(overrides: Record<string, unknown> = {}) {
           author: { login: 'someone', url: 'https://github.com/someone' },
           reactionGroups: [{ content: 'THUMBS_UP', reactors: { totalCount: 1 } }],
           replies: {
+            totalCount: 1,
             nodes: [
               {
                 id: 'DC_2',
@@ -71,6 +74,33 @@ test('the exactly titled discussion wins over a better-ranked prefix match', asy
   const near = discussion({ title: 'blog/hello-nohrs-and-gpui', url: 'https://example.invalid/no' })
   const thread = await load(payload(search([near, discussion()])))
   assert.equal(thread?.url, 'https://github.com/noh-rs/nohrs/discussions/12')
+})
+
+test('two discussions with the same title resolve to the same one every time', async () => {
+  // Anyone who can open a discussion can open a second with this title. Which
+  // one an article shows must not depend on how GitHub ranked them today.
+  const older = discussion({ createdAt: '2026-08-01T00:00:00Z', url: 'https://example.invalid/old' })
+  const newer = discussion({ createdAt: '2026-09-09T00:00:00Z', url: 'https://example.invalid/new' })
+
+  assert.equal((await load(payload(search([newer, older]))))?.url, 'https://example.invalid/old')
+  assert.equal((await load(payload(search([older, newer]))))?.url, 'https://example.invalid/old')
+})
+
+test('a same-titled discussion outside the blog category loses to one inside it', async () => {
+  const elsewhere = discussion({
+    category: { slug: 'general' },
+    createdAt: '2026-01-01T00:00:00Z',
+    url: 'https://example.invalid/general',
+  })
+  const thread = await load(payload(search([elsewhere, discussion()])))
+  assert.equal(thread?.url, 'https://github.com/noh-rs/nohrs/discussions/12')
+})
+
+test('a renamed category does not hide the thread', async () => {
+  // The category is a tiebreak, not a filter: renaming it must not make every
+  // article offer to start a thread that already exists.
+  const renamed = discussion({ category: { slug: 'articles' } })
+  assert.equal((await load(payload(search([renamed]))))?.url, renamed.url)
 })
 
 test('no discussion yet is null rather than an error', async () => {
@@ -125,6 +155,24 @@ test('a comment without a body is dropped rather than drawn empty', async () => 
   broken.comments.nodes.push({ id: 'DC_9' } as never)
   const thread = await load(payload(search([broken])))
   assert.equal(thread?.comments.length, 1)
+})
+
+test('a thread that fits is complete', async () => {
+  const thread = await load(payload(search([discussion()])))
+  assert.equal(thread?.complete, true)
+})
+
+test('a thread with more comments than one page reports itself incomplete', async () => {
+  // Otherwise the page ends early and reads as the whole conversation.
+  const long = discussion()
+  long.comments.totalCount = 120
+  assert.equal((await load(payload(search([long]))))?.complete, false)
+})
+
+test('a comment with more replies than one page reports the thread incomplete', async () => {
+  const deep = discussion()
+  deep.comments.nodes[0].replies.totalCount = 40
+  assert.equal((await load(payload(search([deep]))))?.complete, false)
 })
 
 test('a GraphQL error inside a 200 is still a failure', async () => {
