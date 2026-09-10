@@ -10,7 +10,10 @@ import redirect from './noh-rs-redirect.ts'
  * a Request, so they can be checked without deploying anything.
  */
 
-const env = {
+const env: {
+  ASSETS: { fetch: (request: Request) => Promise<Response> }
+  GITHUB_TOKEN?: string
+} = {
   ASSETS: {
     fetch: async (request: Request) =>
       new Response(`asset:${new URL(request.url).pathname}`, { status: 200 }),
@@ -98,6 +101,82 @@ test('/ sets the cookie only when there was none to read', async () => {
     env,
   )
   assert.equal(returning.headers.get('set-cookie'), null)
+})
+
+/**
+ * `/api/discussion` is the one route that is not a redirect. What matters at
+ * this level is that a request never reaches GitHub without a valid term and a
+ * token, and that a failure upstream is reported rather than served as an empty
+ * thread — the parsing itself is covered in `app/lib/discussion.test.ts`.
+ */
+async function api(path: string, over: Partial<typeof env> = {}, method = 'GET') {
+  const response = await site.fetch(
+    new Request(`https://nohrs.app${path}`, { method }),
+    { ...env, ...over },
+  )
+  return { status: response.status, body: await response.json() }
+}
+
+test('a thread request without a token reports itself unconfigured', async () => {
+  assert.deepEqual(await api('/api/discussion?term=blog/hello-nohrs'), {
+    status: 503,
+    body: { error: 'unconfigured' },
+  })
+})
+
+test('a term that is not an article is refused before the token is looked at', async () => {
+  for (const term of ['', 'docs/keyboard', 'blog/..%2Fsecret', 'blog/a" OR 1']) {
+    const { status } = await api(`/api/discussion?term=${encodeURIComponent(term)}`, {
+      GITHUB_TOKEN: 'x',
+    })
+    assert.equal(status, 400, term)
+  }
+})
+
+test('the thread route is GET only', async () => {
+  assert.deepEqual(await api('/api/discussion?term=blog/hello-nohrs', {}, 'POST'), {
+    status: 405,
+    body: { error: 'method' },
+  })
+})
+
+test('an unreachable GitHub is a 502, not an empty thread', async () => {
+  const real = globalThis.fetch
+  globalThis.fetch = (async () => {
+    throw new Error('offline')
+  }) as typeof fetch
+  try {
+    assert.deepEqual(await api('/api/discussion?term=blog/hello-nohrs', { GITHUB_TOKEN: 'x' }), {
+      status: 502,
+      body: { error: 'upstream' },
+    })
+  } finally {
+    globalThis.fetch = real
+  }
+})
+
+test('a thread that nobody has commented on is a cacheable null', async () => {
+  const real = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ data: { search: { nodes: [] } } }))) as typeof fetch
+  try {
+    const response = await site.fetch(
+      new Request('https://nohrs.app/api/discussion?term=blog/hello-nohrs'),
+      { ...env, GITHUB_TOKEN: 'x' },
+    )
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('cache-control'), 'public, max-age=60')
+    assert.deepEqual(await response.json(), { thread: null })
+  } finally {
+    globalThis.fetch = real
+  }
+})
+
+test('the API path never falls through to the assets binding', async () => {
+  // `run_worker_first` sends everything here, so a missed branch would serve
+  // the 404 page as JSON.
+  const { status } = await api('/api/discussion')
+  assert.notEqual(status, 200)
 })
 
 function short(url: string, headers: Record<string, string> = {}) {

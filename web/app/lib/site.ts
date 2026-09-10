@@ -13,12 +13,4 @@ export const SITE = {
   releasesUrl: 'https://github.com/noh-rs/nohrs/releases',
 } as const
 
-/** giscus is wired from the environment so a fork does not post into our repo. */
-export const GISCUS = {
-  repo: SITE.repo,
-  repoId: import.meta.env.VITE_GISCUS_REPO_ID ?? '',
-  category: 'Blog',
-  categoryId: import.meta.env.VITE_GISCUS_CATEGORY_ID ?? '',
-} as const
-
 export const CF_ANALYTICS_TOKEN = import.meta.env.VITE_CF_ANALYTICS_TOKEN ?? ''

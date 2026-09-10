@@ -10,7 +10,7 @@
 当初 P1 は「web MVP (landing + redirect + blog/docs skeleton)」だったが、**P1 から本格的・production-grade で立ち上げる**方針に変更した (issue #55 を re-scope)。
 
 - **見た目・構造はフル完成**: デザイン DNA は **zed.dev** を土台に、Vercel (タイポグラフィ規律) / Cursor (製品デモの見せ方) をアクセントとして借りる。詳細は [ADR 0008](./adr/0008-web-design-system.md) と §2.5。
-- **機能スコープもフル**: blog 本格機能 (giscus / RSS / OG 自動生成) を P2 から **P1 に前倒し**。Plugin Store / コマンド一覧など本体未実装に依存するページは、**シードデータ + "Coming soon / Preview" 状態**で器を作り込み、バックエンド (P3–P5) が揃い次第データを差し込む。
+- **機能スコープもフル**: blog 本格機能 (コメント / RSS / OG 自動生成) を P2 から **P1 に前倒し**。Plugin Store / コマンド一覧など本体未実装に依存するページは、**シードデータ + "Coming soon / Preview" 状態**で器を作り込み、バックエンド (P3–P5) が揃い次第データを差し込む。
 - **品質基準**: a11y (WCAG AA) / パフォーマンス予算 (Lighthouse 95+) / フル SEO (sitemap・hreflang・OG/Twitter meta・JSON-LD) をローンチ条件に含める。
 - **デリバリ**: M1 (顔) → M2 (知識) → M3 (動的) → M4 (インフラ) の段階的本番デプロイ。各 M で preview→本番が回る。マイルストーン詳細は issue #55 のサブイシュー (M1–M4) を参照。
 
@@ -52,7 +52,7 @@
 | ドキュメント検索 | **Pagefind** (ビルド時に静的インデックス生成、CJK セグメンテーション内蔵で和文 docs も対応) |
 | 分析 | **Cloudflare Web Analytics** (cookie 不要、cookie banner 不要) |
 | OG 画像 | Satori で自動生成。**Worker ではなくビルド時に生成する** (入力はビルド時に確定しており、エッジでラスタライザを動かして毎回同じ画像を作る理由がない)。**P1 から有効** |
-| コメント (blog) | giscus (GitHub Discussions backed)。**P1 から有効** |
+| コメント (blog) | GitHub Discussions を**保管場所として使い、描画は自前**。Worker が API で読み、サイトの組みで出す。**P1 から有効** |
 | RSS / Atom | 両方提供 (`/<lang>/blog/rss.xml`, `/<lang>/blog/atom.xml`)、言語別。**ルートではなくビルドスクリプトで出力する** (全ページ prerender のため、フィードのためだけにサーバを残す理由がない)。**P1 から有効** |
 
 ホスティングを Pages から Workers + assets binding に変えたのは、**成果物を 1 つにするため**。
@@ -138,10 +138,11 @@ web/
 │   │   ├── $lang/docs.tsx     # サイドバーのレイアウト
 │   │   ├── $lang/docs/{index,$slug}.tsx
 │   │   └── $lang/plugins/{index,$id}.tsx
-│   ├── components/            # Header / Footer / Section / Phases / HeroOrbit / FluidOrb / DocsSearch …
+│   ├── components/            # Header / Footer / Section / Phases / HeroOrbit / FluidOrb / DocsSearch / Comments …
 │   ├── data/github.json       # API が使えないときのフォールバック (コミット済)
 │   ├── lib/
 │   │   ├── content.ts         # mdx loader + plugin レジストリ
+│   │   ├── discussion.ts      # コメントスレッドの取得と整形。Worker からも import する
 │   │   ├── github.ts          # ビルド時に取得した GitHub のスナップショット
 │   │   ├── negotiate.ts       # 言語判定。Worker からも import する (依存ゼロ)
 │   │   ├── seo.ts             # canonical / hreflang / OG / JSON-LD
@@ -152,11 +153,12 @@ web/
 │   ├── ja/{blog,docs}/*.mdx
 │   └── plugins/<plugin-id>.toml
 ├── scripts/                   # fetch-fonts / fetch-github / build-og / build-feeds
+│                              # + vite-plugin-discussion (`/api/discussion` を dev でも出す)
 ├── public/
 │   └── shots/                 # Hero のリングに出す実在の画面 (demo.gif から抜いたフレーム)
 └── workers/
-    ├── site.ts                # 静的配信 + 正規ホスト + `/` の言語振り分け
-    ├── workers.test.ts        # 両 Worker のリダイレクトの単体テスト (`npm test`)
+    ├── site.ts                # 静的配信 + 正規ホスト + `/` の言語振り分け + `/api/discussion`
+    ├── workers.test.ts        # 両 Worker のリダイレクトと `/api/discussion` の単体テスト (`npm test`)
     ├── noh-rs-redirect.ts     # noh.rs リダイレクト Worker
     └── wrangler.noh-rs.jsonc
 ```
@@ -299,8 +301,22 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 - frontmatter: title / date / author / tags / canonical / og_image
 - カスタムコンポーネント: `<Callout>`, `<Screenshot>`, `<CodeTabs>`, `<YouTube>`
 - タグページ (`/blog/tags/<tag>`)、年別アーカイブ (`/blog/2026/`)
-- giscus コメント (GitHub Discussions)
+- コメント (GitHub Discussions を自前で描画。下記)
 - RSS / Atom feed (言語別)
+
+**コメントは「保管場所」と「見た目」を分ける** (改訂 2026-09-10)。当初は giscus を埋め込んでいたが、giscus は **iframe** であり、中身は giscus.app のドキュメントなので `--paper`・`--tan`・`--mono` が一切届かない。渡せるのはテーマ名 1 つだけで、結果としてページの中に GitHub のサイトが埋まっている状態になっていた。設定では直らないので iframe をやめた。
+
+- **保管は GitHub Discussions のまま**。モデレーション・通報・スパム処理・通知メールを GitHub 側に置いたままにでき、訪問者の名前もアドレスもこちらには保存されない。完全自前 (D1) にすると、これを全部自分で持つことになる
+- **スレッドの同定は giscus の `specific` マッピングを踏襲**し、記事 1 本につき `blog/<slug>` という**タイトルのディスカッション 1 つ**。giscus 時代に書かれたスレッドがそのまま読める
+- **読み取りは Worker の `/api/discussion?term=blog/<slug>`**。GraphQL の検索はランキングであって一致ではない (`blog/nohrs` は `blog/nohrs-and-gpui` も返す) ので、**タイトルの完全一致で選び直す**
+  - `term` は `THREAD_TERM` で検証してから検索文字列に埋める。ここが**インジェクション境界**であって、単なる入力チェックではない
+  - **エッジキャッシュ 60 秒**が事実上のレートリミッタ。人気記事でも GitHub への呼び出しは 1 分に 1 回
+  - トークンは **Worker シークレット** (`GITHUB_TOKEN`)。ビルド時に HTML へ焼かれる `VITE_*` 系とは種類が違う。CI が `DISCUSSIONS_TOKEN` (repo 単位・read-only・Discussions のみの fine-grained PAT) を deploy 後に押し込む
+  - 未設定なら 503。fork では giscus 時代と同じく**黙って GitHub へのリンクに落ちる**
+- **本文は GitHub が返す `bodyHTML` をそのまま入れる**。GitHub 側でサニタイズ済みで、giscus の iframe が出していたものと同一。ここで生 Markdown を描くと、パーサとサニタイザを自前で持つことになる
+- **リンクは全状態で描く**。prerender される静止状態 (`idle`) では読み込み中の文言を出さない — JavaScript が無い読者を、来ない fetch の前で待たせないため
+- 取得は `IntersectionObserver` で**セクションが近づいてから**。記事はコメントより手前で閉じられる方が多い
+- アバターは出さず、名前は mono。リアクションは絵文字を `aria-hidden` にせず、読み上げに任せる (文字自身の名前が読まれるので、こちらで書くラベルより正確)
 - OG 画像: Satori で frontmatter から自動生成
 
 ### 6.4 `/docs`
@@ -371,9 +387,11 @@ npm run build
 | 変数 | 置き場所 | 用途 | 無いとどうなるか |
 |------|---------|------|-----------------|
 | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | **Environment (`production`)** | デプロイ | デプロイできない |
-| `GISCUS_REPO_ID` / `GISCUS_CATEGORY_ID` | Repository | giscus コメント | コメント欄を出さない |
+| `DISCUSSIONS_TOKEN` | **Environment (`production`)** | コメント読み取り。deploy 後に Worker シークレット `GITHUB_TOKEN` として押し込む | コメントが GitHub へのリンクに落ちる |
 | `CF_ANALYTICS_TOKEN` | Repository | Cloudflare Web Analytics | ビーコンを埋め込まない |
 | `GITHUB_TOKEN` | (自動供給) | ビルド時の GitHub API rate limit 回避 | コミット済みスナップショットにフォールバック |
+
+`DISCUSSIONS_TOKEN` だけは**ビルド時ではなくリクエスト時**に要る唯一の資格情報で、ブラウザには一切届かない。だから Repository ではなく Environment に置く (改訂 2026-09-10)。fine-grained PAT には期限があり、切れるとコメントがリンクに落ちる — 他は何も壊れない。
 
 Cloudflare の 2 つだけ Environment に置くのは、**`environment: production` を宣言したジョブ
 (= deploy ジョブのみ) からしか見えないため**。public リポジトリでは、repository secret は
@@ -431,11 +449,11 @@ Worker が 1 回起きる代わりに、正規ホストの規則がダッシュ�
 
 ## 8. 後続フェーズの拡張
 
-> スコープ変更により blog 本格化 (RSS / giscus / OG 自動生成) は **P1 に前倒し済**。以下は P1 以降に *データ・コンテンツが充実する* ものを中心に記載。
+> スコープ変更により blog 本格化 (RSS / コメント / OG 自動生成) は **P1 に前倒し済**。以下は P1 以降に *データ・コンテンツが充実する* ものを中心に記載。
 
 | Phase | 追加内容 |
 |-------|---------|
-| P1 (前倒し済) | blog 本格化 (MDX components / RSS / giscus / OG 自動生成)。器・機能はローンチ時に完成、記事は順次追加 |
+| P1 (前倒し済) | blog 本格化 (MDX components / RSS / コメント / OG 自動生成)。器・機能はローンチ時に完成、記事は順次追加 |
 | P3 | コマンド一覧ページ (`/docs/commands`) を本体の inventory レジストリからビルド時生成 |
 | P4 | plugin authoring docs / WIT API reference 自動生成 |
 | P5 | Plugin Store の実データ投入 (器は P1 で Preview 済、P4–P5 で本物の plugin metadata を enrich)、release frontmatter リッチ化 |
