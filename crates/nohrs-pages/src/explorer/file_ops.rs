@@ -159,13 +159,32 @@ impl ExplorerPane {
     where
         F: FnOnce() -> Vec<String> + Send + 'static,
     {
+        self.run_fs_op_with(total, success_label, cx, move || (op(), ()), |_, (), _| {});
+    }
+
+    // [`run_fs_op`](Self::run_fs_op) for batches that need to report more than
+    // failure messages back to the UI thread: `op` also returns a value of its
+    // own, handed to `on_complete` once the listing has reloaded.
+    fn run_fs_op_with<T, F, G>(
+        &mut self,
+        total: usize,
+        success_label: String,
+        cx: &mut Context<Self>,
+        op: F,
+        on_complete: G,
+    ) where
+        T: Send + 'static,
+        F: FnOnce() -> (Vec<String>, T) + Send + 'static,
+        G: FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+    {
         let task = cx.background_spawn(async move { op() });
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
             async move {
-                let errors = task.await;
+                let (errors, outcome) = task.await;
                 this.update(&mut cx, |pane, cx| {
                     pane.reload();
+                    on_complete(pane, outcome, cx);
                     if errors.is_empty() {
                         pane.set_status(StatusLevel::Info, success_label);
                     } else {
@@ -298,7 +317,10 @@ impl ExplorerPane {
         let mut resolved = Vec::new();
         // Destination names already claimed by an earlier source in this same
         // batch, so two sources sharing a basename (possible via the system
-        // clipboard) don't silently overwrite each other.
+        // clipboard) don't silently overwrite each other. A name is claimed
+        // whether or not the destination is already occupied: a conflicting name
+        // resolved as Overwrite is still one destination, so a second source
+        // aiming at it has to be numbered too.
         let mut claimed = std::collections::HashSet::new();
         for src in sources {
             let Some(name) = src.file_name() else {
@@ -313,12 +335,13 @@ impl ExplorerPane {
                 }
                 continue;
             }
-            if ops::would_conflict(&dst) {
-                pending.push_back(src);
-            } else if !claimed.insert(dst) {
+            let occupied = ops::would_conflict(&dst);
+            if !claimed.insert(dst) {
                 // Another source already targets this name; number it instead of
                 // letting the later paste clobber the earlier one.
                 resolved.push((src, ConflictResolution::Rename));
+            } else if occupied {
+                pending.push_back(src);
             } else {
                 clear.push(src);
             }
@@ -394,8 +417,10 @@ impl ExplorerPane {
         if total == 0 {
             return;
         }
-        // A cut consumes the clipboard: clear it now so a second paste does not
-        // try to move the (already relocated) sources again.
+        // A cut consumes the clipboard: clear it now so a second paste, fired
+        // while this one is still running, does not try to move the sources a
+        // second time. Whatever fails to move is put back afterwards by
+        // `retain_failed_cut`.
         if mode == ClipMode::Cut {
             cx.set_global(ExplorerClipboard::default());
         }
@@ -407,36 +432,75 @@ impl ExplorerPane {
                 "pasted"
             }
         );
-        self.run_fs_op(total, label, cx, move || {
-            let mut errors = Vec::new();
-            for src in clear {
-                if let Some(name) = src.file_name() {
+        self.run_fs_op_with(
+            total,
+            label,
+            cx,
+            move || {
+                let mut errors = Vec::new();
+                let mut failed = Vec::new();
+                for src in clear {
+                    // Owned so the borrow of `src` ends before `src` is moved
+                    // into `failed`.
+                    let Some(name) = src.file_name().map(std::ffi::OsStr::to_os_string) else {
+                        continue;
+                    };
                     let dst = dest_dir.join(name);
                     if let Err(error) = apply_one(mode, &src, &dst) {
                         errors.push(format!("{}: {error}", src.display()));
+                        failed.push(src);
                     }
                 }
-            }
-            for (src, resolution) in resolved {
-                let Some(name) = file_name_of(&src) else {
-                    continue;
-                };
-                let result = match resolution {
-                    // Filtered out above; kept for exhaustiveness without panicking.
-                    ConflictResolution::Skip => continue,
-                    ConflictResolution::Rename => {
-                        let unique = ops::unique_name(&dest_dir, &name);
-                        apply_one(mode, &src, &dest_dir.join(unique))
+                for (src, resolution) in resolved {
+                    let Some(name) = file_name_of(&src) else {
+                        continue;
+                    };
+                    let result = match resolution {
+                        // Filtered out above; kept for exhaustiveness without panicking.
+                        ConflictResolution::Skip => continue,
+                        ConflictResolution::Rename => {
+                            let unique = ops::unique_name(&dest_dir, &name);
+                            apply_one(mode, &src, &dest_dir.join(unique))
+                        }
+                        ConflictResolution::Overwrite => {
+                            overwrite_apply(mode, &src, &dest_dir.join(&name))
+                        }
+                    };
+                    if let Err(error) = result {
+                        errors.push(format!("{}: {error}", src.display()));
+                        failed.push(src);
                     }
-                    ConflictResolution::Overwrite => {
-                        overwrite_apply(mode, &src, &dest_dir.join(&name))
-                    }
-                };
-                if let Err(error) = result {
-                    errors.push(format!("{}: {error}", src.display()));
                 }
-            }
-            errors
+                (errors, failed)
+            },
+            move |pane, failed, cx| {
+                if mode == ClipMode::Cut {
+                    pane.retain_failed_cut(failed, cx);
+                }
+            },
+        );
+    }
+
+    // Puts the sources a cut-paste could not move back on the clipboard, so the
+    // user can retry them as a move. Without this the cleared clipboard falls
+    // through to the system clipboard's path text, which carries no cut/copy
+    // distinction and so retries a failed *move* as a *copy*.
+    //
+    // Only restores when nothing has claimed the clipboard since the paste
+    // started: a copy or cut the user made while it ran is theirs, and silently
+    // replacing it would be worse than losing the retry.
+    fn retain_failed_cut(&mut self, failed: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if failed.is_empty() {
+            return;
+        }
+        let claimed = cx
+            .try_global::<ExplorerClipboard>()
+            .is_some_and(|clip| clip.entry.is_some());
+        if claimed {
+            return;
+        }
+        cx.set_global(ExplorerClipboard {
+            entry: Some((ClipMode::Cut, failed)),
         });
     }
 
