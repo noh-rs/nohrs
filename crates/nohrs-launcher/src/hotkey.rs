@@ -289,11 +289,33 @@ mod tests {
         assert!(chord.hotkey.mods.contains(Modifiers::SHIFT));
 
         if cfg!(target_os = "macos") {
-            assert!(chord.hotkey.mods.contains(Modifiers::META));
+            // Asserted the way `describe` reads it, not as the chord was built:
+            // see `the_command_modifier_is_normalised_on_the_way_in`.
+            assert!(
+                chord
+                    .hotkey
+                    .mods
+                    .intersects(Modifiers::SUPER | Modifiers::META)
+            );
             assert!(!chord.hotkey.mods.contains(Modifiers::CONTROL));
         } else {
             assert!(chord.hotkey.mods.contains(Modifiers::CONTROL));
         }
+    }
+
+    #[test]
+    fn the_command_modifier_is_normalised_on_the_way_in() {
+        // `HotKey::new` rewrites META into SUPER, so a chord built from META does
+        // not `contain(META)` afterwards. Anything reading the stored modifiers
+        // has to accept either, which is why `describe` uses `intersects`.
+        //
+        // Pinned here rather than left implicit because the mistake is invisible
+        // on Linux — nothing normalises CONTROL — and only surfaces on the one
+        // platform that uses the command key.
+        let built = HotKey::new(Some(Modifiers::META | Modifiers::SHIFT), Code::Space);
+        assert!(!built.mods.contains(Modifiers::META));
+        assert!(built.mods.contains(Modifiers::SUPER));
+        assert!(built.mods.contains(Modifiers::SHIFT));
     }
 
     #[test]
