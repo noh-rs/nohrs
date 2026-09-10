@@ -8,7 +8,6 @@ use gpui::{
     App, AppContext, Bounds, Global, Pixels, Point, WindowBounds, WindowHandle, WindowKind,
     WindowOptions, point, px, size,
 };
-use gpui_component::Root;
 use nohrs_core::telemetry::LogErr;
 use nohrs_services::search::file_index::FileNameIndex;
 
@@ -30,7 +29,7 @@ const TOP_FRACTION: f32 = 0.25;
 /// Tracks the open launcher window so that summoning it again toggles it closed
 /// (docs/launcher.md §1) rather than stacking a second window.
 #[derive(Default)]
-struct OpenLauncher(Option<WindowHandle<Root>>);
+struct OpenLauncher(Option<WindowHandle<LauncherView>>);
 
 impl Global for OpenLauncher {}
 
@@ -56,10 +55,15 @@ pub fn launcher_bounds(cx: &mut App) -> Bounds<Pixels> {
 
 /// Window options for the launcher: borderless, floating, and fixed-size.
 ///
-/// The background stays opaque. The rounded, blurred panel of docs/launcher.md
-/// §1 needs a transparent window whose every layer opts out of painting a
-/// square background — including `gpui_component::Root`, which the search field
-/// requires — so it is left to the platform work that adds the global hotkey.
+/// The background is transparent so the panel can be a rounded rectangle rather
+/// than fill a square window (docs/launcher.md §1). Nothing between the window
+/// and [`LauncherView`] paints, which is why the launcher owns its search field
+/// instead of taking one that requires `gpui_component::Root` at the first layer
+/// — `Root` paints an opaque background over the whole window, corners included.
+///
+/// Where there is no compositor to blend against, a transparent window falls
+/// back to whatever is behind it; the panel itself is opaque either way, so the
+/// worst case is square corners rather than an unreadable window.
 pub fn launcher_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -73,7 +77,7 @@ pub fn launcher_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
         is_resizable: false,
         is_minimizable: false,
         display_id: None,
-        window_background: gpui::WindowBackgroundAppearance::Opaque,
+        window_background: gpui::WindowBackgroundAppearance::Transparent,
         app_id: None,
         window_min_size: None,
         window_decorations: None,
@@ -89,11 +93,10 @@ pub fn open_launcher(
     index: Arc<FileNameIndex>,
     home: Option<PathBuf>,
     cx: &mut App,
-) -> Result<WindowHandle<Root>> {
+) -> Result<WindowHandle<LauncherView>> {
     let bounds = launcher_bounds(cx);
     let handle = cx.open_window(launcher_window_options(bounds), move |window, cx| {
-        let view = cx.new(|cx| LauncherView::new(index, home, window, cx));
-        cx.new(|cx| Root::new(view, window, cx))
+        cx.new(|cx| LauncherView::new(index, home, window, cx))
     })?;
     Ok(handle)
 }
@@ -188,7 +191,7 @@ pub fn open_keep_alive_window(cx: &mut App) -> Result<()> {
 /// result both close the window without going through [`toggle_launcher`] — so
 /// it is checked against the live window list rather than trusted. Treating a
 /// stale handle as an open window would make the next summon do nothing.
-fn open_window(cx: &App) -> Option<WindowHandle<Root>> {
+fn open_window(cx: &App) -> Option<WindowHandle<LauncherView>> {
     let handle = cx.try_global::<OpenLauncher>().and_then(|open| open.0)?;
     cx.windows()
         .iter()

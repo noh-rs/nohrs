@@ -19,11 +19,11 @@ use gpui::{
     ScrollStrategy, SharedString, StyledText, Subscription, Task, UniformListScrollHandle,
     WeakEntity, Window, div, px, uniform_list,
 };
-use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme, Icon, IconName};
 use nohrs_core::telemetry::LogErr;
 use nohrs_services::search::file_index::FileNameIndex;
 
+use crate::field::{FieldChanged, FieldStyle, SearchField};
 use crate::ranking::{self, LauncherItem};
 
 /// Placeholder shown in the empty field. It doubles as the only onboarding the
@@ -67,10 +67,20 @@ const SECONDARY_MODIFIER: &str = if cfg!(target_os = "macos") {
     "Ctrl "
 };
 
+/// Colours for the search field, taken from the active theme.
+fn field_style(cx: &App) -> FieldStyle {
+    FieldStyle {
+        text: cx.theme().foreground,
+        placeholder: cx.theme().muted_foreground,
+        cursor: cx.theme().caret,
+        selection: cx.theme().selection,
+    }
+}
+
 /// The launcher's root view.
 pub struct LauncherView {
     focus_handle: FocusHandle,
-    query_input: Entity<InputState>,
+    query_input: Entity<SearchField>,
     query: SharedString,
     // `Arc` rather than `Vec` because the list closure clones this on every
     // frame; an atomic bump is cheaper than copying up to `MAX_RESULTS` rows.
@@ -97,15 +107,13 @@ impl LauncherView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let query_input = cx.new(|cx| InputState::new(window, cx).placeholder(PLACEHOLDER));
+        let query_input = cx.new(|cx| SearchField::new(PLACEHOLDER, field_style(cx), cx));
 
-        let subscription = cx.subscribe(&query_input, |this, _input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.on_query_changed(cx);
-            }
+        let subscription = cx.subscribe(&query_input, |this, _field, _event: &FieldChanged, cx| {
+            this.on_query_changed(cx);
         });
 
-        query_input.update(cx, |input, cx| input.focus(window, cx));
+        window.focus(&query_input.read(cx).focus_handle(cx));
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -137,7 +145,7 @@ impl LauncherView {
     }
 
     fn on_query_changed(&mut self, cx: &mut Context<Self>) {
-        let query = self.query_input.read(cx).value();
+        let query = self.query_input.read(cx).text().clone();
         if query == self.query {
             return;
         }
@@ -356,12 +364,12 @@ impl LauncherView {
                     .text_color(cx.theme().muted_foreground),
             )
             .child(
-                div().flex_1().child(
-                    Input::new(&self.query_input)
-                        .appearance(false)
-                        .px_0()
-                        .text_size(px(18.0)),
-                ),
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .text_size(px(18.0))
+                    .line_height(px(26.0))
+                    .child(self.query_input.clone()),
             )
     }
 
@@ -644,8 +652,7 @@ fn highlight_ranges(text: &str, matches: &[u32]) -> Vec<Range<usize>> {
 mod tests {
     use std::path::PathBuf;
 
-    use gpui::{Entity, TestAppContext, WindowHandle};
-    use gpui_component::Root;
+    use gpui::{TestAppContext, WindowHandle};
     use nohrs_services::search::file_index::IndexedEntry;
 
     use super::*;
@@ -653,24 +660,22 @@ mod tests {
     /// Home the fixture paths hang from, so subtitles abbreviate to `~`.
     const TEST_HOME: &str = "/home/u";
 
-    /// A launcher in a test window, held together with the view entity: the
-    /// window's root has to be `gpui_component::Root` — the search field reaches
-    /// for it while painting — so the view itself is not the window's root and
-    /// has to be kept alongside it.
+    /// A launcher in a test window. The view is the window's root, exactly as
+    /// in the real launcher — nothing sits between it and the window.
     struct Launcher {
-        window: WindowHandle<Root>,
-        view: Entity<LauncherView>,
+        window: WindowHandle<LauncherView>,
     }
 
     impl Launcher {
         /// Build a launcher over a pre-filled index. The index is populated
         /// directly rather than scanned, so the tests need no filesystem, and
-        /// the view is built inside `add_window` because its `InputState` is
+        /// the view is built inside `add_window` because its search field is
         /// window-bound (the pattern in docs/testing.md).
         fn new(cx: &mut TestAppContext, paths: &[&str]) -> Self {
-            // gpui-component installs the `Theme` global and the input subsystem
-            // the search field relies on; initialize it before any window.
+            // The launcher reads its colours from gpui-component's `Theme`
+            // global, which this installs; it does not need anything else of it.
             cx.update(gpui_component::init);
+            cx.update(crate::field::init);
             let index = Arc::new(FileNameIndex::new());
             index.replace(
                 paths
@@ -679,28 +684,20 @@ mod tests {
                     .collect(),
             );
 
-            let mut built = None;
             let window = cx.add_window(|window, cx| {
-                let view = cx
-                    .new(|cx| LauncherView::new(index, Some(PathBuf::from(TEST_HOME)), window, cx));
-                built = Some(view.clone());
-                Root::new(view, window, cx)
+                LauncherView::new(index, Some(PathBuf::from(TEST_HOME)), window, cx)
             });
-            let view = built.expect("add_window runs its build closure");
-            Self { window, view }
+            Self { window }
         }
 
         /// Put text in the search field without waiting for the search: the
         /// change reaches the view, but its debounce timer is still pending.
         fn enter_text(&self, cx: &mut TestAppContext, query: &str) {
             let query = query.to_string();
-            let view = self.view.clone();
             self.window
-                .update(cx, move |_root, window, cx| {
-                    view.update(cx, |view, cx| {
-                        view.query_input
-                            .update(cx, |input, cx| input.set_value(query, window, cx));
-                    });
+                .update(cx, move |view, _window, cx| {
+                    view.query_input
+                        .update(cx, |field, cx| field.set_text(query, cx));
                 })
                 .expect("the launcher window should be open");
         }
@@ -715,27 +712,28 @@ mod tests {
         }
 
         fn titles(&self, cx: &mut TestAppContext) -> Vec<String> {
-            cx.update(|cx| {
-                self.view
-                    .read(cx)
-                    .items()
-                    .iter()
-                    .map(|item| item.title.to_string())
-                    .collect()
-            })
+            self.window
+                .read_with(cx, |view, _cx| {
+                    view.items()
+                        .iter()
+                        .map(|item| item.title.to_string())
+                        .collect()
+                })
+                .expect("the launcher window should be open")
         }
 
         fn selected(&self, cx: &mut TestAppContext) -> Option<String> {
-            cx.update(|cx| {
-                self.view
-                    .read(cx)
-                    .selected_item()
-                    .map(|item| item.title.to_string())
-            })
+            self.window
+                .read_with(cx, |view, _cx| {
+                    view.selected_item().map(|item| item.title.to_string())
+                })
+                .expect("the launcher window should be open")
         }
 
         fn selected_index(&self, cx: &mut TestAppContext) -> Option<usize> {
-            cx.update(|cx| self.view.read(cx).selected_index())
+            self.window
+                .read_with(cx, |view, _cx| view.selected_index())
+                .expect("the launcher window should be open")
         }
 
         /// Run a navigation method against the view.
@@ -744,7 +742,9 @@ mod tests {
             cx: &mut TestAppContext,
             act: impl FnOnce(&mut LauncherView, &mut Context<LauncherView>),
         ) {
-            cx.update(|cx| self.view.update(cx, |view, cx| act(view, cx)));
+            self.window
+                .update(cx, |view, _window, cx| act(view, cx))
+                .expect("the launcher window should be open");
         }
     }
 

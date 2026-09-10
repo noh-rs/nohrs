@@ -20,6 +20,8 @@
 //!           → Vec<LauncherItem> → cx.notify    (foreground)
 //! ```
 
+/// The launcher's own single-line search field.
+pub mod field;
 /// The OS-global summon key.
 pub mod hotkey;
 /// Fuzzy matching and ranking of index entries into result rows.
@@ -69,7 +71,11 @@ impl LauncherIndex {
     ///
     /// A missing home directory is not fatal — the launcher opens and reports
     /// that it has nothing indexed.
-    pub fn start(cx: &App) -> Self {
+    pub fn start(cx: &mut App) -> Self {
+        // The search field's editing keys are bound once for the process, not
+        // per window, so a launcher summoned later is already typable.
+        field::init(cx);
+
         let index = Arc::new(FileNameIndex::new());
         let config = match FileIndexConfig::for_home() {
             Ok(config) => config,
@@ -109,7 +115,15 @@ impl LauncherIndex {
                 tracing::error!("failed to toggle the launcher from the global hotkey: {error}");
             }
         }) {
-            Ok(chord) => tracing::info!("launcher listening on {}", hotkey::describe(&chord)),
+            Ok(hotkey::Backend::Grab) => tracing::info!(
+                "launcher listening on {}",
+                hotkey::describe(&hotkey::default_chord())
+            ),
+            // The portal confirms the binding asynchronously — and may ask the
+            // user first — so its own task reports the chord that was granted.
+            Ok(hotkey::Backend::Portal) => {
+                tracing::info!("requesting a global shortcut from the desktop portal")
+            }
             Err(error) => tracing::warn!(
                 "global hotkey unavailable, launcher can only be summoned from nohrs: {error:#}"
             ),

@@ -27,13 +27,32 @@ gpui-component = "0.5"
 nucleo-matcher = "0.3"
 anyhow.workspace  = true
 tracing.workspace = true
+# The passive-grab backend for the global summon key: Carbon on macOS, XGrabKey
+# on X11, a hook on Windows. Wayland has no grab, so see the ashpd dependency.
 global-hotkey = "0.8"
+unicode-segmentation = "1"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+# Wayland's sanctioned replacement for a passive grab, via
+# `org.freedesktop.portal.GlobalShortcuts`. Pinned to the same version and
+# feature set gpui already depends on, so the app links one zbus/async-io stack
+# and no tokio enters the tree (ADR 0004).
+ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
+async-channel = "2"
+futures-util = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 # `test-support` gates `TestAppContext` and the `#[gpui::test]` macro. It is a
 # dev-dependency so the gpui test backend only links into the test build.
 gpui = { version = "0.2", features = ["test-support"] }
 tempfile = "3"
+
+# For `tests/wayland_portal.rs`, which stands a mock GlobalShortcuts portal up on
+# a private bus. `async-io` matches the reactor ashpd runs on.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dev-dependencies]
+zbus = { version = "5", default-features = false, features = ["async-io"] }
+async-io = "2"
+futures-lite = "2"
 
 [lints]
 workspace = true
