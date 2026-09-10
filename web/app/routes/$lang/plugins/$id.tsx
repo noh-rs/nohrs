@@ -61,11 +61,12 @@ function PluginDetail() {
           <DefinitionRow label={strings.install}>
             <span className="text-muted">{strings.installHint}</span>
             <br />
-            {/* The copy calls it a link, so it has to be one: a scheme the
-                browser hands to whatever registered it, which is Nohrs. */}
-            <a href={`nohrs://install?source=${entry.repo}`} className="font-mono text-[0.8125rem]">
+            {/* Shown as an address rather than an anchor: nothing registers
+                the scheme until the plugin host ships, and a link that does
+                nothing when clicked is worse than text you can read. */}
+            <span className="font-mono text-[0.8125rem]">
               nohrs://install?source={entry.repo}
-            </a>
+            </span>
           </DefinitionRow>
         </DefinitionRows>
       </Section>

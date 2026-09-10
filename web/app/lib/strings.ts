@@ -311,7 +311,8 @@ const en = {
     author: 'Author',
     permissions: 'Permissions',
     install: 'Install',
-    installHint: 'Open this link in Nohrs. The permissions above are asked for before anything is installed.',
+    installHint:
+      'Nohrs installs from this address once the plugin host arrives in P4. The permissions above are asked for before anything is installed.',
     source: 'Source',
     submitTitle: 'Adding a plugin',
     submitBody:
@@ -648,7 +649,8 @@ const ja: Dict = {
     author: '作者',
     permissions: '権限',
     install: 'インストール',
-    installHint: 'このリンクを Nohrs で開いてください。上に並ぶ権限は、インストールの前に確認を求めます。',
+    installHint:
+      'プラグインホストが P4 で入ると、Nohrs はこのアドレスからインストールします。上に並ぶ権限は、その前に確認を求めます。',
     source: 'ソース',
     submitTitle: 'プラグインを追加する',
     submitBody:
