@@ -408,26 +408,23 @@
   height: 0;
 }
 
-/* The peek answers a pointer that is able to leave again, and a focus the
-   keyboard moved. A tap leaves `:hover` behind on a touch screen, and closing
-   the panel puts focus back on the card it came from — so between them, every
-   tap used to strand one panel 56px inside the ring, across the copy, until
-   something else was tapped. */
-.orbit-item:has(.orbit-card:focus-visible) {
-  --peek: 56px;
-}
-
-.orbit-item:has(.orbit-card:focus-visible),
-.orbit-item:focus-within {
-  z-index: 2;
-}
-
+/* The peek answers a pointer that is able to leave again. A tap leaves
+   `:hover` behind on a touch screen, and closing the panel returns focus to the
+   card it came from — between them, every tap used to strand one panel 56px
+   inside the ring, across the copy, until something else was tapped. Focus is
+   answered by the card's border and the outline the page already gives it,
+   neither of which moves anything if it lingers; only the peek is gated on a
+   pointer, and on nothing an engine has to guess at.  */
 @media (hover: hover) and (pointer: fine) {
   .orbit-item:hover {
     --peek: 56px;
 
     z-index: 2;
   }
+}
+
+.orbit-item:focus-within {
+  z-index: 2;
 }
 
 .orbit-card {
@@ -456,7 +453,7 @@
     box-shadow var(--dur) var(--ease);
 }
 
-.orbit-item:has(.orbit-card:focus-visible) .orbit-card {
+.orbit-item:focus-within .orbit-card {
   border-color: var(--tan);
   box-shadow: 0 28px 56px -32px rgb(25 21 16 / 0.6);
 }
@@ -469,14 +466,14 @@
 }
 
 .orbit-card img {
-  display: block;
-  width: 100%;
-  height: auto;
   filter: brightness(var(--shot-dim));
 }
 
 .orbit-card img,
 .orbit-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
   /* The panel shows a detail, not the whole window. The origin is the point the
      detail is framed on, so it is also the point the opened shot unzooms from. */
   transform: scale(var(--zoom, 1));
@@ -517,7 +514,7 @@
   transition: fill var(--dur) var(--ease);
 }
 
-.orbit-item:has(.orbit-card:focus-visible) .orbit-tag text {
+.orbit-item:focus-within .orbit-tag text {
   fill: var(--tan-ink);
 }
 
@@ -570,15 +567,8 @@
    Sized as it will end up and scaled *down* onto the card it came from, not
    the other way round: the state the reader looks at is then the one whose
    border and corners are authored, rather than a 1px hairline multiplied by
-   four. `--from-*` is measured in JS at the moment of the click. */
+   four. The card is measured in JS at the moment of the click. */
 .orbit-view {
-  /* Not the site's ease: it spends its distance in the first fifth of the
-     duration, which is over before the eye has found the panel. The turn is
-     the point of the gesture, so this curve keeps some of it in the middle. */
-  --lift: 620ms cubic-bezier(0.42, 0.04, 0.18, 1);
-  /* Named because the frame's own height is derived from it below. */
-  --panel-w: min(1180px, 92vw, 130vh);
-
   position: fixed;
   inset: 0;
   z-index: 90;
@@ -591,47 +581,25 @@
   inset: 0;
   background: color-mix(in srgb, var(--paper) 86%, transparent);
   backdrop-filter: blur(7px);
-  opacity: 0;
-  transition: opacity 380ms var(--ease);
 }
 
+/* Every rule below states the panel as the reader ends up seeing it. The flight
+   is keyframes in `HeroOrbit.tsx`, not transitions from here: a transition
+   starts from whatever the engine had resolved when the end value changed, and
+   engines disagree about when that is — driven that way this panel broke once
+   in each. Nothing here is a starting state, so a page whose JS never runs
+   shows the opened panel rather than an invisible one. */
 .orbit-panel {
   position: relative;
-  width: var(--panel-w);
+  width: min(1180px, 92vw, 130vh);
   margin: 0;
-  transform: translate(var(--from-x, 0px), var(--from-y, 0px)) rotate(var(--from-a, 0deg))
-    scale(var(--from-k, 1));
-  transition: transform var(--lift);
 }
 
 .orbit-shot {
-  /* The shot's own proportions (900 × 549), until a portrait window asks for a
-     frame that stands up. The frame carries the shape rather than the image,
-     because the two are not always the same. */
-  aspect-ratio: 900 / 549;
   overflow: hidden;
   border: 1px solid var(--line);
-  /* Divided by the same factor the panel is scaled by, so the corners read at
-     the card's radius while it is still the size of a card. */
-  border-radius: calc(10px / var(--from-k, 1));
+  border-radius: 12px;
   box-shadow: 0 40px 90px -50px rgb(25 21 16 / 0.6);
-  transition: border-radius var(--lift);
-}
-
-.orbit-shot img {
-  --zoom: var(--from-zoom, 1);
-  --focus: var(--from-focus, 50% 50%);
-
-  display: block;
-  width: 100%;
-  height: 100%;
-  /* Where the frame is not the shot's shape, the shot fills it and the slice is
-     placed rather than the image squashed. `--crop` is measured with the rest
-     at the moment of the click; a frame that is the shot's shape takes all of
-     it and the value does not matter. */
-  object-fit: cover;
-  object-position: var(--crop, 50% 50%);
-  transition: transform var(--lift);
 }
 
 .orbit-caption {
@@ -642,14 +610,6 @@
   margin-top: 18px;
   color: var(--muted);
   font-size: 0.9375rem;
-  opacity: 0;
-  transform: translateY(6px);
-  /* Fast and undelayed on the way out: the delay below is there to let the
-     panel arrive first, and holding a caption over a panel that is already
-     shrinking back into the ring reads as a stutter. */
-  transition:
-    opacity 150ms var(--ease),
-    transform 150ms var(--ease);
 }
 
 .orbit-caption-label {
@@ -675,9 +635,7 @@
   letter-spacing: 0.12em;
   text-transform: uppercase;
   cursor: pointer;
-  opacity: 0;
   transition:
-    opacity 150ms var(--ease),
     color var(--dur) var(--ease),
     border-color var(--dur) var(--ease);
 }
@@ -685,48 +643,6 @@
 .orbit-close:hover {
   color: var(--ink);
   border-color: var(--tan);
-}
-
-/* The panel is inserted with no transform, given the mapped one, and only then
-   opened. The middle step must not animate: a transition declared for it fires
-   on the way *into* the card's position, and the opening one then starts from
-   where that left off — which is where it already was, so nothing moved. */
-.orbit-view[data-phase="measuring"] .orbit-panel {
-  visibility: hidden;
-}
-
-.orbit-view[data-phase="measuring"] .orbit-panel,
-.orbit-view[data-phase="measuring"] .orbit-shot,
-.orbit-view[data-phase="measuring"] .orbit-shot img {
-  transition: none;
-}
-
-.orbit-view[data-phase="open"] .orbit-scrim {
-  opacity: 1;
-}
-
-.orbit-view[data-phase="open"] .orbit-caption,
-.orbit-view[data-phase="open"] .orbit-close {
-  opacity: 1;
-  transition:
-    opacity 300ms 380ms var(--ease),
-    transform 300ms 380ms var(--ease);
-}
-
-.orbit-view[data-phase="open"] .orbit-caption {
-  transform: none;
-}
-
-.orbit-view[data-phase="open"] .orbit-panel {
-  transform: translate(0px, 0px) rotate(0deg) scale(1);
-}
-
-.orbit-view[data-phase="open"] .orbit-shot {
-  border-radius: 12px;
-}
-
-.orbit-view[data-phase="open"] .orbit-shot img {
-  transform: scale(1);
 }
 
 /* Standing up, for a window that is taller than it is wide. The ring above is
@@ -778,26 +694,6 @@
 
   .orbit-core .orbit-cta {
     margin-top: 24px;
-  }
-
-  /* At this width the whole window laid out across the panel is the white
-     rectangle with grey lines in it that the zoom exists to avoid — 900px of
-     screenshot in 370px of panel — and a frame of its shape covers a third of a
-     tall screen, so opening one was not worth the tap. The frame stands up
-     instead and takes what the caption and the close button leave; the shot
-     fills it, cropped to the band around the point the panel frames. That band
-     is the part there was a reason to open, and it is the same point the ring
-     is already framed on, so the two agree.
-
-     The floor is the shot's own shape: a window only a little taller than it is
-     wide (a phone on its side) keeps all of it rather than cropping for no
-     gain. The ceiling is the shot's own height, which is also what keeps the
-     slice from narrowing — the two together land the shot at about one image
-     pixel per CSS pixel, which is what makes it legible at all. A recording
-     wider than 900px is what would let this show more of the window. */
-  .orbit-shot {
-    aspect-ratio: auto;
-    height: max(calc(var(--panel-w) * 549 / 900), min(calc(100svh - 220px), 549px));
   }
 }
 
