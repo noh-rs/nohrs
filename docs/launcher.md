@@ -228,3 +228,74 @@ struct Action {
 - グローバルホットキーから launcher window 表示: **<100ms**
 - キー入力から結果リスト更新: **<50ms** (debounced)
 - 検索結果取得 (全文検索含む): **<500ms** 中央値
+
+---
+
+## 13. 実装状況
+
+`crates/nohrs-launcher` に「検索」部分を実装済み。本書の残りは未実装。
+
+### 実装済み
+
+| 項目 | 実体 |
+|------|------|
+| グローバルホットキー (§2) | `hotkey.rs`。既定 `Cmd+Shift+Space` (macOS) / `Ctrl+Shift+Space` (他)。セッションに応じて 2 経路を使い分ける (下記) |
+| アプリ内ショートカット (§2) | `Cmd+K` / `Ctrl+K`。binary 側で `ToggleLauncher` action に bind |
+| ホーム画面 (§3) | 入力前は結果ゼロ、placeholder のみ |
+| 検索欄 | `field.rs`。gpui 直書きの 1 行入力。IME (preedit の下線表示・確定まで検索しない・変換中は ↑↓/Enter を IME に譲る)、grapheme 単位のカーソル、選択・クリップボード対応 |
+| ウィンドウ (§1) | borderless + 角丸 + 透過。`gpui_component::Root` を使わないことで実現 (下記) |
+| 結果リスト (§5) | icon / title / subtitle / kind badge、マッチ文字のハイライト |
+| ランキング (§6) | `nucleo-matcher` + exact / prefix / 深さ boost |
+| ファイル名インデックス | `nohrs-services::search::file_index`。起動時に home を走査して常駐。`Scanning` / `Ready` / `Failed` を UI に出し分ける |
+| アクション (§10) | `Enter` = Open、`Cmd/Ctrl+Enter` = Reveal |
+
+#### グローバルホットキーの 2 経路
+
+Wayland には X11 の passive grab に相当するものが**意図的に**ない (それはキーロガーが欲しがる能力そのもの)。
+そのため OS ではなくセッションで分岐する:
+
+| セッション | 経路 | 実体 |
+|-----------|------|------|
+| macOS / X11 / Windows | passive grab | `global-hotkey` crate (Carbon / `XGrabKey` / hook) |
+| Wayland | desktop portal | `org.freedesktop.portal.GlobalShortcuts` を `ashpd` 経由。コンポジタが binding を所有し、ユーザーが承認する |
+
+Wayland では grab へフォールバック**しない**。XWayland クライアントからの grab は
+「登録は成功するが X11 ウィンドウ上でしか発火しない」という、動いているように見えて動かない
+最悪の状態になるため。portal が無い環境では警告を出してアプリ内 `Cmd+K` に委ねる。
+
+portal 側は Wayland コンポジタ無しでは実機確認できないため、
+`tests/wayland_portal.rs` がプライベート D-Bus 上にモックポータルを立て、
+`CreateSession` → `BindShortcuts` → `Activated` が summon まで届くことを検証している。
+
+### 未実装
+
+`Command` trait とコマンド (§4、§9)、詳細ペイン (§7)、push-pop ナビ (§8)、
+セクション分け (§5 の Recent / Commands / Calculations)、使用履歴 boost の永続化 (§6)、
+ウィンドウ位置の記憶 (§1)、フォーカス喪失時の自動 close (§1)、ホットキーの設定による上書き (§2)。
+
+### 既知の制約
+
+- **blur (mica / vibrancy) は未対応** (§1)。ウィンドウは透過 + 角丸だが、背面のぼかしはまだ。
+  コンポジタが無い環境では透過部分が背面の内容そのままになる (パネル自体は不透明なので、
+  最悪でも角が丸く見えないだけ)。
+- **Wayland の portal は実機未検証。** プロトコル上のやり取りはモックポータルで検証済みだが、
+  GNOME / KDE 実機での承認ダイアログ周りは未確認。
+- **IME は実機未検証。** gpui の `EntityInputHandler` に沿って実装し、
+  preedit の保持・確定・UTF-16 オフセット変換は単体テストで確認しているが、
+  headless 環境では実際の IME を駆動できないため、日本語入力の通し確認は未実施。
+- **Linux 常駐には 1px の keep-alive ウィンドウが必要。** gpui の Linux バックエンドは
+  最後のウィンドウが閉じた時点でイベントループを止める (`x11/client.rs`) ため、
+  `nohrs launcher` は不可視ウィンドウを 1 つ保持してプロセスを生かしている。macOS では不要。
+- **インデックスは起動時の 1 回きりで、ファイルシステムを追従しない。**
+  起動後に作られたファイルは次回起動まで検索に出ず、消えたファイルは残る。
+  content index 側の watcher に繋ぐのは今後の作業。
+- **ホーム画面はフッターを出したまま。** §3 は「検索バーのみ」だが、ウィンドウは 750×500 固定なので
+  入力前も同じ高さのパネルが出る (結果リストは空)。フッターだけ隠しても §3 にはならず、
+  `Enter` / `Cmd+Enter` の唯一の導線が消えるだけなので、今は常時表示に倒している。
+  §3 に本当に寄せるには Spotlight / Raycast のように入力に応じてウィンドウを伸縮させる必要があり、
+  それは今後の作業。
+- **Windows のパス区切りは未対応。** `src/main` のようなパスクエリは `/` を前提にしており、
+  `\` 区切りのパスとは一致しない。ADR 0002 のとおり当面 Windows は対象外。
+- **Wayland の activation token を渡していない。** `Activated` シグナルが持つトークンを
+  ウィンドウ生成に引き渡せば確実にフォーカスを得られるが、gpui 0.2 に
+  そのための公開 API がない (トークンは gpui 内部で管理されている)。
