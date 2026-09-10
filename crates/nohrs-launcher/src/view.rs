@@ -97,6 +97,10 @@ pub struct LauncherView {
     // keystroke is therefore both the debounce and the guarantee that a slow
     // search can never land on top of a newer one.
     search_task: Option<Task<()>>,
+    // Held rather than detached so a launcher dismissed mid-scan stops polling
+    // with it. Detached, every summon during the first scan would leave its own
+    // timer ticking until a scan it is no longer waiting for finished.
+    _index_watch: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -119,7 +123,7 @@ impl LauncherView {
 
         window.focus(&query_input.read(cx).focus_handle(cx));
 
-        Self::watch_for_index(&index, cx);
+        let index_watch = Self::watch_for_index(&index, cx);
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -131,6 +135,7 @@ impl LauncherView {
             home,
             scroll_handle: UniformListScrollHandle::new(),
             search_task: None,
+            _index_watch: index_watch,
             _subscriptions: vec![subscription],
         }
     }
@@ -140,12 +145,16 @@ impl LauncherView {
     /// Someone who summons the launcher and types immediately would otherwise be
     /// left looking at "Indexing your files…" for a query that is never asked
     /// again — the index has no way to tell the view it filled up.
-    fn watch_for_index(index: &Arc<FileNameIndex>, cx: &mut Context<Self>) {
+    ///
+    /// Returns the poll for the caller to hold, so that closing the launcher
+    /// stops it; `None` when the scan has already landed and there is nothing
+    /// to wait for.
+    fn watch_for_index(index: &Arc<FileNameIndex>, cx: &mut Context<Self>) -> Option<Task<()>> {
         if index.state() != IndexState::Scanning {
-            return;
+            return None;
         }
         let index = index.clone();
-        cx.spawn(async move |this, cx| {
+        Some(cx.spawn(async move |this, cx| {
             while index.state() == IndexState::Scanning {
                 cx.background_executor().timer(INDEX_POLL).await;
             }
@@ -158,8 +167,7 @@ impl LauncherView {
                 cx.notify();
             })
             .log_err();
-        })
-        .detach();
+        }))
     }
 
     /// The rows currently on screen, in rank order.

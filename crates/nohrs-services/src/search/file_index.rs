@@ -141,6 +141,12 @@ pub fn scan(config: &FileIndexConfig) -> Result<Vec<IndexedEntry>> {
     if !metadata.is_dir() {
         anyhow::bail!("{} is not a directory", config.root.display());
     }
+    // Existing and being a directory is not the same as being listable. Without
+    // this the walker reports the refusal as an entry error, which is skipped
+    // like any unreadable subdirectory, and the scan succeeds with nothing in
+    // it — the empty index this function exists to prevent.
+    std::fs::read_dir(&config.root)
+        .with_context(|| format!("cannot list {}", config.root.display()))?;
 
     let mut entries = Vec::new();
     let walker = ignore::WalkBuilder::new(&config.root)
@@ -452,6 +458,36 @@ mod tests {
         assert!(index.rebuild(&missing).is_err());
         // Not "Ready and empty", which would read to the user as "no results".
         assert_eq!(index.state(), IndexState::Failed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_that_exists_but_cannot_be_listed_is_an_error_too() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("locked");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("findme.txt"), "x").unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Root ignores the mode bits, so where the suite runs as root there is
+        // no refusal to test. Checked rather than assumed, because whether the
+        // read is actually denied is what the test needs — not who we are.
+        let denied = std::fs::read_dir(&root).is_err();
+        let result = scan(&FileIndexConfig::for_root(root.clone()));
+        // Restored before the assertions so a failure still leaves a removable
+        // directory behind.
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        if !denied {
+            return;
+        }
+        // `metadata` succeeds here — the directory exists and is a directory —
+        // so only the listing probe catches it. Skipping the refusal the way an
+        // unreadable subdirectory is skipped would report "no results" for a
+        // home the user simply cannot read.
+        assert!(result.is_err(), "an unlistable root should not scan clean");
     }
 
     #[test]
