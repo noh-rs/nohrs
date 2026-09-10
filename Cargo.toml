@@ -9,9 +9,9 @@ members = [
   "crates/nohrs-store",
   "crates/nohrs-ui",
   "crates/nohrs-pages",
+  "crates/nohrs-launcher",
 ]
-# P2 以降に追加:
-#   "crates/nohrs-launcher",
+# P4 以降に追加:
 #   "crates/nohrs-plugin-host",
 #   "crates/plugins/*"
 exclude = ["web"]
@@ -19,8 +19,9 @@ exclude = ["web"]
 # gpui renders with Metal/Blade and the GUI stack is only exercised on macOS, so
 # Linux CI builds headless. `default-members` keeps bare `cargo build`/`test`/
 # `clippy` to the toolkit-free crates; the GUI crates (nohrs-ui / nohrs-pages /
-# nohrs) are still workspace members and build with `--workspace`, `-p`, or on
-# macOS. This mirrors the previous single-crate `default = []` / `gui` feature.
+# nohrs-launcher / nohrs) are still workspace members and build with
+# `--workspace`, `-p`, or on macOS. This mirrors the previous single-crate
+# `default = []` / `gui` feature.
 default-members = [
   "crates/nohrs-cli",
   "crates/nohrs-core",

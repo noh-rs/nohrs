@@ -228,3 +228,38 @@ struct Action {
 - グローバルホットキーから launcher window 表示: **<100ms**
 - キー入力から結果リスト更新: **<50ms** (debounced)
 - 検索結果取得 (全文検索含む): **<500ms** 中央値
+
+---
+
+## 13. 実装状況
+
+`crates/nohrs-launcher` に「検索」部分を実装済み。本書の残りは未実装。
+
+### 実装済み
+
+| 項目 | 実体 |
+|------|------|
+| グローバルホットキー (§2) | `hotkey.rs`。`global-hotkey` crate、既定 `Cmd+Shift+Space` (macOS) / `Ctrl+Shift+Space` (他) |
+| アプリ内ショートカット (§2) | `Cmd+K` / `Ctrl+K`。binary 側で `ToggleLauncher` action に bind |
+| ホーム画面 (§3) | 入力前は結果ゼロ、placeholder のみ |
+| 結果リスト (§5) | icon / title / subtitle / kind badge、マッチ文字のハイライト |
+| ランキング (§6) | `nucleo-matcher` + exact / prefix / 深さ boost |
+| ファイル名インデックス | `nohrs-services::search::file_index`。起動時に home を走査して常駐 |
+| アクション (§10) | `Enter` = Open、`Cmd/Ctrl+Enter` = Reveal |
+
+### 未実装
+
+`Command` trait とコマンド (§4、§9)、詳細ペイン (§7)、push-pop ナビ (§8)、
+セクション分け (§5 の Recent / Commands / Calculations)、使用履歴 boost の永続化 (§6)、
+ウィンドウ位置の記憶 (§1)、フォーカス喪失時の自動 close (§1)、ホットキーの設定による上書き (§2)。
+
+### 既知の制約
+
+- **ウィンドウは角丸・blur ではなく不透明な矩形** (§1)。透過ウィンドウには、検索欄が要求する
+  `gpui_component::Root` を含めた全レイヤーが背景を塗らないことが必要で、そこは未対応。
+- **Wayland ではグローバルホットキーが効かない。** `global-hotkey` は X11 の passive grab と
+  macOS の Carbon API のみを使い、Wayland が要求する desktop portal を話さない。
+  登録に失敗した場合は warning を出して起動は続行し、アプリ内 `Cmd+K` は動く。
+- **Linux 常駐には 1px の keep-alive ウィンドウが必要。** gpui の Linux バックエンドは
+  最後のウィンドウが閉じた時点でイベントループを止める (`x11/client.rs`) ため、
+  `nohrs launcher` は不可視ウィンドウを 1 つ保持してプロセスを生かしている。macOS では不要。
