@@ -59,7 +59,7 @@ function PluginDetail() {
             </span>
           </DefinitionRow>
           <DefinitionRow label={strings.install}>
-            <span className="text-muted">{strings.installUnavailable}</span>
+            <span className="text-muted">{strings.installHint}</span>
             <br />
             <code className="font-mono text-[0.8125rem]">nohrs://install?source={entry.repo}</code>
           </DefinitionRow>

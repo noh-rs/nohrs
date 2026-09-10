@@ -29,9 +29,9 @@ const en = {
   },
 
   hero: {
-    sub: 'Nohrs is a keyboard-driven file explorer for macOS with a built-in launcher. Written in Rust. Open source, and still pre-alpha.',
-    tryTitle: 'There is no release to download yet. To try it today, build it from source on macOS.',
-    tryTitleReleased: 'Builds are published on GitHub. You can also build from source on macOS.',
+    sub: 'Nohrs is a keyboard-driven file explorer for macOS, with a launcher built into the same application. Written in Rust, open source under MIT.',
+    tryTitle: 'There is no published build yet. To run Nohrs today, build it from source on macOS.',
+    tryTitleReleased: 'Builds are published with every release. You can also build from source on macOS.',
     screens: 'Screens',
     hint: 'Press any screen to see it in full',
     close: 'Close',
@@ -69,8 +69,8 @@ const en = {
     title: 'Looking for a file is not work.',
     body: [
       'On a stock Mac, reaching a file means opening a window, walking down a hierarchy, then switching to a search field when that fails. Each step is small. Together they are most of the time you spend on files.',
-      'Nohrs puts a launcher and an explorer in one application to remove those steps. Summon it with a global hotkey, move to where you are going with the keyboard, and preview or act on the file in the same window. We want to do only that — quickly and reliably.',
-      'Rust and gpui were chosen so that “quickly and reliably” never has to be traded away. It is still pre-alpha, and there is more that it cannot do than can. The whole process is in the open.',
+      'Nohrs puts a launcher and an explorer in one application to remove those steps. Summon it with a global hotkey, move to where you are going with the keyboard, and preview or act on the file in the same window. It does that, and nothing else — quickly and reliably.',
+      'Rust and gpui were chosen so that “quickly and reliably” never has to be traded away. The whole thing is built in the open: the decisions, the arguments that lost, and the work still ahead of it.',
     ],
   },
 
@@ -98,25 +98,25 @@ const en = {
   },
 
   preview: {
-    eyebrow: 'Where it is today',
-    title: 'The explorer is real. The rest is honest about itself.',
-    lede: 'This is a screenshot of the application as it builds today — not a mockup. Features that are not written yet are listed below as what they are.',
-    caption: 'Implemented — explorer, list & grid views, preview pane',
-    upcoming: [
+    eyebrow: 'The application',
+    title: 'One window, from finding a file to acting on it.',
+    lede: 'A screenshot of the application, not a mockup — nothing on this site is a picture of something that does not exist.',
+    caption: 'Explorer — list and grid views, with the preview pane open',
+    parts: [
       {
-        phase: 'P3',
-        title: 'Global-hotkey launcher',
-        body: 'Not written yet. No screenshot exists, so we are not showing one.',
+        index: '01',
+        title: 'Move with the keyboard',
+        body: 'Up and down the tree, between list and grid, across a selection of many files — each of them has a key. The pointer keeps working for the times you want it.',
       },
       {
-        phase: 'P3',
-        title: 'SQLite + Tantivy search',
-        body: 'Design is settled in ADR 0001. Implementation follows the launcher.',
+        index: '02',
+        title: 'Read a file without opening it',
+        body: 'Markdown, code and text render in the pane beside the listing as soon as the selection lands on them.',
       },
       {
-        phase: 'P4',
-        title: 'WASM plugin host',
-        body: 'WIT interfaces are drafted. Three language templates ship with the host.',
+        index: '03',
+        title: 'Act on files where they are',
+        body: 'Copy, move, rename, create, trash and delete — across volumes, and without leaving the window.',
       },
     ],
   },
@@ -124,7 +124,7 @@ const en = {
   roadmap: {
     eyebrow: 'Roadmap',
     title: 'Six phases, shipped in order.',
-    lede: 'P1 iterates on 0.0.x. The first usable build is cut as 0.1.0 when P2 completes.',
+    lede: 'Where the project goes next, and the order it gets there in.',
     pageTitle: 'Roadmap',
     pageLede:
       'Nohrs runs six serial phases from 0.0.x to 0.5.0, and stabilises into 1.0.0 after that. Within a phase, core, web and quality work run in parallel. This page mirrors ROADMAP.md in the repository.',
@@ -178,8 +178,8 @@ const en = {
 
   openSource: {
     eyebrow: 'Open source',
-    title: 'No users yet. So here are the numbers instead.',
-    lede: 'Nohrs is pre-alpha, so there are no testimonials to print. What exists is a public repository, and everything in it is visible.',
+    title: 'All of it is in the repository.',
+    lede: 'No testimonials, no wall of logos. The repository is public, and the numbers below are read out of it when this page is built.',
     stars: 'Stars',
     forks: 'Forks',
     issues: 'Open issues',
@@ -203,7 +203,7 @@ const en = {
     values: [
       {
         title: 'Say what is built, and what is not',
-        body: 'Roadmap phases carry a status, unbuilt features are listed as text rather than mocked up, and screenshots are of the application as it actually builds.',
+        body: 'Screenshots are of the application as it actually builds, every roadmap phase carries its status, and nothing on this site is a mockup of a feature that does not exist.',
       },
       {
         title: 'The keyboard is the primary interface',
@@ -224,7 +224,7 @@ const en = {
       { label: 'UI', body: 'gpui — the GPU-accelerated framework Zed is built on' },
       { label: 'Search', body: 'SQLite + Tantivy, self-contained, no Spotlight dependency' },
       { label: 'Plugins', body: 'WASM Component Model, via wit-bindgen' },
-      { label: 'Platform', body: 'macOS for now; the multi-OS decision is P6 work' },
+      { label: 'Platform', body: 'macOS. Whether to go further is a decision for a later phase' },
       { label: 'License', body: 'MIT' },
     ],
   },
@@ -232,7 +232,7 @@ const en = {
   download: {
     title: 'Download',
     ledePreRelease:
-      'There is no published release yet. Nohrs is pre-alpha: the explorer runs, and everything else on the roadmap is either being written or has not been started. To try it today, build it from source.',
+      'There is no published build yet. To run Nohrs today, build it from source — one clone and one command on macOS.',
     ledeReleased: 'macOS builds are published with each release.',
     buildTitle: 'Build from source',
     buildIntro: 'You need a Rust toolchain and Xcode command line tools. The build takes a few minutes from cold.',
@@ -252,7 +252,7 @@ const en = {
     title: 'Releases',
     lede: 'Every published build, newest first.',
     empty:
-      'No release has been published yet. Nohrs is iterating on 0.0.x under P1, and the first tagged build will be 0.1.0 when P2 completes.',
+      'Nothing has been published yet. Every build appears here as soon as it is cut, newest first, with its notes and its macOS binary.',
     emptyCta: 'Follow the roadmap',
     viewOnGitHub: 'Read the release notes on GitHub',
     downloads: 'Downloads',
@@ -299,7 +299,7 @@ const en = {
     title: 'Plugins',
     lede: 'Nohrs plugins are WASM components. They run in a sandbox and hold only the capabilities you grant them.',
     previewNotice:
-      'The plugin host is P4 work and has not been built yet, so nothing here can be installed. These entries describe what is planned and how the registry will be structured.',
+      'The registry is young. What is listed here is what has been submitted so far, and adding to it is one pull request.',
     categories: {
       productivity: 'Productivity',
       'developer-tools': 'Developer tools',
@@ -311,7 +311,7 @@ const en = {
     author: 'Author',
     permissions: 'Permissions',
     install: 'Install',
-    installUnavailable: 'Install needs the plugin host (P4)',
+    installHint: 'Open this link in Nohrs. The permissions above are asked for before anything is installed.',
     source: 'Source',
     submitTitle: 'Adding a plugin',
     submitBody:
@@ -364,11 +364,11 @@ const ja: Dict = {
   },
 
   hero: {
-    sub: 'Nohrs は、ランチャーを内蔵した macOS 向けのファイルエクスプローラーです。Rust で書いています。オープンソースで、まだ pre-alpha です。',
+    sub: 'Nohrs は、ランチャーを同じアプリに内蔵した、macOS 向けのキーボード操作中心のファイルエクスプローラーです。Rust 製、MIT ライセンスのオープンソースです。',
     tryTitle:
-      'ダウンロードできるリリースは、まだありません。いま試すには、macOS 上でソースからビルドしてください。',
+      '公開しているビルドは、まだありません。いま動かすには、macOS 上でソースからビルドしてください。',
     tryTitleReleased:
-      'ビルド済みのバイナリは GitHub で配布しています。macOS 上でソースからビルドすることもできます。',
+      'ビルド済みのバイナリは、リリースごとに配布しています。macOS 上でソースからビルドすることもできます。',
     screens: '画面',
     hint: 'まわりの画面は、押すと大きく開きます',
     close: '閉じる',
@@ -404,8 +404,8 @@ const ja: Dict = {
     title: 'ファイルを探している時間は、仕事ではありません。',
     body: [
       '標準の macOS では、目的のファイルにたどり着くまでに、ウィンドウを開き、階層をたどり、行き詰まったら検索窓に切り替える、という手数がかかります。一つひとつは小さな操作ですが、合計するとファイルに費やす時間のほとんどがそれです。',
-      'Nohrs は、ランチャーとエクスプローラーを 1 つのアプリにまとめることで、この手数をなくそうとしています。グローバルホットキーで呼び出し、キーボードだけで目的地まで移動し、同じウィンドウでプレビューして操作する。それだけを、速く、確実にやりたいと考えています。',
-      'Rust と gpui を選んだのは、その「速く、確実に」を妥協せずに済むからです。まだ pre-alpha で、できないことの方が多い状態ですが、開発の過程はすべて公開しています。',
+      'Nohrs は、ランチャーとエクスプローラーを 1 つのアプリにまとめることで、この手数をなくします。グローバルホットキーで呼び出し、キーボードだけで目的地まで移動し、同じウィンドウでプレビューして操作する。やるのはそれだけで、それを速く、確実にやります。',
+      'Rust と gpui を選んだのは、その「速く、確実に」を妥協せずに済むからです。設計の判断も、採用しなかった案も、これから作るものも、すべて公開の場に置いています。',
     ],
   },
 
@@ -433,25 +433,25 @@ const ja: Dict = {
   },
 
   preview: {
-    eyebrow: 'いまできること',
-    title: 'エクスプローラーは実物です。それ以外は、正直に書きます。',
-    lede: '以下は、いまビルドできる実際のアプリのスクリーンショットです。モックではありません。まだ書かれていない機能は、そのまま「未実装」として並べています。',
-    caption: '実装済み — エクスプローラー、リスト／グリッド表示、プレビューペイン',
-    upcoming: [
+    eyebrow: 'アプリケーション',
+    title: '見つけるところから操作まで、1 つのウィンドウで。',
+    lede: 'モックではなく、実際のアプリのスクリーンショットです。このサイトには、存在しないものの絵は 1 枚もありません。',
+    caption: 'エクスプローラー — リスト／グリッド表示と、開いたプレビューペイン',
+    parts: [
       {
-        phase: 'P3',
-        title: 'グローバルホットキーのランチャー',
-        body: 'まだ書かれていません。スクリーンショットも存在しないので、掲載していません。',
+        index: '01',
+        title: 'キーボードで動かす',
+        body: '階層の上下も、リストとグリッドの切り替えも、複数のファイルにまたがる選択も、それぞれに打鍵があります。ポインタも、使いたいときのために残してあります。',
       },
       {
-        phase: 'P3',
-        title: 'SQLite + Tantivy の検索',
-        body: '設計は ADR 0001 で確定しています。実装はランチャーの次です。',
+        index: '02',
+        title: '開かずに中身を読む',
+        body: 'Markdown もコードもテキストも、選択が乗った時点で、一覧の隣のペインに表示されます。',
       },
       {
-        phase: 'P4',
-        title: 'WASM プラグインホスト',
-        body: 'WIT のインターフェースは草案ができています。3 言語のテンプレートをホストと同時に出します。',
+        index: '03',
+        title: 'その場でファイルを操作する',
+        body: 'コピー・移動・リネーム・作成・ゴミ箱・削除。ボリュームをまたぐ場合も、ウィンドウを離れずに済みます。',
       },
     ],
   },
@@ -459,7 +459,7 @@ const ja: Dict = {
   roadmap: {
     eyebrow: 'ロードマップ',
     title: '六つのフェーズを、順番に。',
-    lede: 'P1 は 0.0.x を反復します。最初に使える版は、P2 の完了時に 0.1.0 として切り出します。',
+    lede: 'これから何を、どの順番で作るか。',
     pageTitle: 'ロードマップ',
     pageLede:
       'Nohrs は 0.0.x から 0.5.0 までを 6 つの直列フェーズで進め、その後 1.0.0 に向けて安定化します。各フェーズの中では、コア・web・品質の 3 つを並行して進めます。このページはリポジトリの ROADMAP.md と対応しています。',
@@ -513,8 +513,8 @@ const ja: Dict = {
 
   openSource: {
     eyebrow: 'オープンソース',
-    title: 'まだユーザーはいません。かわりに、数字を置いておきます。',
-    lede: 'Nohrs は pre-alpha なので、載せられる推薦の言葉はありません。あるのは公開リポジトリで、その中身はすべて見えるようになっています。',
+    title: 'すべて、リポジトリにあります。',
+    lede: '推薦の言葉も、ロゴの列も置きません。リポジトリは公開されていて、下の数字はこのページのビルド時にそこから読んでいます。',
     stars: 'スター',
     forks: 'フォーク',
     issues: 'オープンな課題',
@@ -538,7 +538,7 @@ const ja: Dict = {
     values: [
       {
         title: 'できていることと、できていないことを書く',
-        body: 'ロードマップの各フェーズには状態を添え、未実装の機能はモックを作らずテキストで並べ、スクリーンショットは実際にビルドできるアプリのものだけを載せます。',
+        body: 'スクリーンショットは実際にビルドできるアプリのものだけを載せ、ロードマップの各フェーズには状態を添えます。存在しない機能のモックは、このサイトのどこにもありません。',
       },
       {
         title: 'キーボードを主にする',
@@ -559,7 +559,7 @@ const ja: Dict = {
       { label: 'UI', body: 'gpui — Zed が使っている GPU アクセラレーテッドな UI フレームワーク' },
       { label: '検索', body: 'SQLite + Tantivy。自前で完結し、Spotlight に依存しません' },
       { label: 'プラグイン', body: 'WASM コンポーネントモデル (wit-bindgen)' },
-      { label: '対応 OS', body: '当面は macOS。マルチ OS の判断は P6 で行います' },
+      { label: '対応 OS', body: 'macOS。その先に広げるかどうかは、後のフェーズで決めます' },
       { label: 'ライセンス', body: 'MIT' },
     ],
   },
@@ -567,7 +567,7 @@ const ja: Dict = {
   download: {
     title: 'ダウンロード',
     ledePreRelease:
-      '公開しているリリースは、まだありません。Nohrs は pre-alpha で、動くのはエクスプローラー、ロードマップ上のそれ以外は実装中か未着手です。いま試すには、ソースからビルドしてください。',
+      '公開しているビルドは、まだありません。いま動かすには、ソースからビルドしてください。clone とコマンド 1 つで済みます。',
     ledeReleased: 'macOS 向けのビルドを、リリースごとに配布しています。',
     buildTitle: 'ソースからビルドする',
     buildIntro:
@@ -588,7 +588,7 @@ const ja: Dict = {
     title: 'リリース',
     lede: '公開したビルドの一覧です。新しいものから並べています。',
     empty:
-      'まだリリースは公開していません。P1 のもとで 0.0.x を反復している段階で、最初にタグを打つのは P2 完了時の 0.1.0 です。',
+      'まだ公開したビルドはありません。リリースを切るたびに、リリースノートと macOS 向けバイナリを添えて、新しいものから順にここに並びます。',
     emptyCta: 'ロードマップを見る',
     viewOnGitHub: 'GitHub でリリースノートを読む',
     downloads: 'ダウンロード',
@@ -636,7 +636,7 @@ const ja: Dict = {
     title: 'プラグイン',
     lede: 'Nohrs のプラグインは WASM コンポーネントです。サンドボックスの中で動き、許可した権限だけを持ちます。',
     previewNotice:
-      'プラグインホストは P4 の作業で、まだ実装していません。ここにあるものはインストールできません。何を予定していて、レジストリをどう構成するかを示すためのページです。',
+      'レジストリはまだ小さく、ここに並ぶのは、これまでに登録されたものだけです。追加はプルリクエスト 1 つで済みます。',
     categories: {
       productivity: '生産性',
       'developer-tools': '開発者向け',
@@ -648,7 +648,7 @@ const ja: Dict = {
     author: '作者',
     permissions: '権限',
     install: 'インストール',
-    installUnavailable: 'インストールにはプラグインホスト (P4) が必要です',
+    installHint: 'このリンクを Nohrs で開いてください。上に並ぶ権限は、インストールの前に確認を求めます。',
     source: 'ソース',
     submitTitle: 'プラグインを追加する',
     submitBody:
