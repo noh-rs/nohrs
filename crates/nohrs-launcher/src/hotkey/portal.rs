@@ -13,11 +13,12 @@
 //! the launcher speaks it rather than telling Wayland users their hotkey does
 //! nothing.
 //!
-//! The portal interface reached version 1 in xdg-desktop-portal 1.17 and is
-//! implemented by GNOME 45+ and KDE Plasma 5.27+. Where it is missing the
-//! request fails and there is no global shortcut at all: a grab would bind and
-//! then only fire over XWayland windows, so the caller reports the failure and
-//! leaves the in-app binding as the way in.
+//! The portal interface reached version 1 in xdg-desktop-portal 1.17. KDE Plasma
+//! implements it from 5.27; GNOME's backend landed later, in GNOME 48 — its
+//! NEWS file lists "Add global shortcuts portal backend" under 48.rc. Where it
+//! is missing the request fails and there is no global shortcut at all: a grab
+//! would bind and then only fire over XWayland windows, so the caller reports
+//! the failure and leaves the in-app binding as the way in.
 
 use anyhow::{Context as _, Result, bail};
 use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
