@@ -1351,6 +1351,91 @@ async fn a_failed_cut_does_not_clobber_a_clipboard_claimed_while_it_ran(cx: &mut
     );
 }
 
+// Randomized scheduling: the two batches below complete in an order the
+// dispatcher picks, and the whole point of the generation stamp is that the
+// outcome no longer depends on it. Varying the seed exercises both orders.
+#[gpui::test(iterations = 25)]
+async fn overlapping_cut_pastes_restore_only_the_live_clipboard(cx: &mut TestAppContext) {
+    // Two failed cut pastes in flight at once. Both left the clipboard empty, so
+    // ownership cannot be read off "is the clipboard empty" — whichever finished
+    // first would claim the restore, and with A first that strands B's sources
+    // as non-retryable. Keyed on the generation each paste left behind, only B
+    // (whose clear is the clipboard's current state) restores, whichever order
+    // they finish in.
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::create_dir(&dst).unwrap();
+    std::fs::write(src.join("x.txt"), "X").unwrap();
+    std::fs::write(src.join("y.txt"), "Y").unwrap();
+
+    let window = new_explorer(cx);
+    // Batch A: cut x.txt, delete it so the move fails, start the paste.
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_single(0); // x.txt
+            pane.cut_selection(cx);
+        })
+        .unwrap();
+    std::fs::remove_file(src.join("x.txt")).unwrap();
+    window
+        .update(cx, |pane, window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.paste_into_cwd(window, cx);
+        })
+        .unwrap();
+
+    // Batch B: same again for y.txt, without parking — so A is still in flight.
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_all(); // only y.txt remains
+            pane.cut_selection(cx);
+        })
+        .unwrap();
+    std::fs::remove_file(src.join("y.txt")).unwrap();
+    window
+        .update(cx, |pane, window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.paste_into_cwd(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    // Restore both sources and retry whatever the clipboard kept.
+    std::fs::write(src.join("x.txt"), "X").unwrap();
+    std::fs::write(src.join("y.txt"), "Y").unwrap();
+    window
+        .update(cx, |pane, window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.paste_into_cwd(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        std::fs::read_to_string(dst.join("y.txt")).unwrap(),
+        "Y",
+        "the later batch's failed source is the one retained"
+    );
+    assert!(
+        !src.join("y.txt").exists(),
+        "and it retries as a move, not a copy"
+    );
+    assert!(
+        !dst.join("x.txt").exists(),
+        "the earlier batch did not claim the restore"
+    );
+    assert!(src.join("x.txt").exists());
+}
+
 #[gpui::test]
 async fn cut_paste_keeps_failed_sources_on_the_clipboard_as_a_cut(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
