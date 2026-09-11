@@ -27,7 +27,16 @@ const REACTION_EMOJI: Record<string, string> = {
   EYES: '👀',
 }
 
-type Status = 'idle' | 'loading' | 'ready' | 'error'
+/**
+ * `unconfigured` is not a failure. It is what a fork gets, and what this site
+ * gets until the Worker holds a Discussions token — nothing is broken, the
+ * comments are simply not wired up here, and saying "could not be loaded"
+ * would report a fault that does not exist.
+ */
+type Status = 'idle' | 'loading' | 'ready' | 'unconfigured' | 'error'
+
+/** The Worker's answer when it has no token to read the thread with. */
+const UNCONFIGURED = 503
 
 function Reactions({ items, label }: { items: Reaction[]; label?: string }) {
   if (items.length === 0) return null
@@ -139,10 +148,15 @@ export function Comments({ lang, term }: { lang: Lang; term: string }) {
     const aborter = new AbortController()
     fetch(`/api/discussion?term=${encodeURIComponent(term)}`, { signal: aborter.signal })
       .then(async (response) => {
+        if (response.status === UNCONFIGURED) return null
         if (!response.ok) throw new Error(String(response.status))
         return (await response.json()) as { thread: Thread | null }
       })
       .then((payload) => {
+        if (!payload) {
+          setStatus('unconfigured')
+          return
+        }
         setThread(payload.thread)
         setStatus('ready')
       })
