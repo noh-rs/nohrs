@@ -148,7 +148,14 @@ export function Comments({ lang, term }: { lang: Lang; term: string }) {
     const aborter = new AbortController()
     fetch(`/api/discussion?term=${encodeURIComponent(term)}`, { signal: aborter.signal })
       .then(async (response) => {
-        if (response.status === UNCONFIGURED) return null
+        if (response.status === UNCONFIGURED) {
+          // The status alone is not the answer. Our own handler says so in the
+          // body; a 503 from the edge — an overloaded Worker, a bad gateway —
+          // does not, and that is a fault worth reporting rather than a site
+          // without a token.
+          const body = (await response.json().catch(() => null)) as { error?: string } | null
+          if (body?.error === 'unconfigured') return null
+        }
         if (!response.ok) throw new Error(String(response.status))
         return (await response.json()) as { thread: Thread | null }
       })
