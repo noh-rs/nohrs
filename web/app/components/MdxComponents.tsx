@@ -91,10 +91,18 @@ function CodeTabs({ tabs }: { tabs: { label: string; children: ReactNode }[] }) 
  * Cells are usually inline code, and a token like `cx.background_executor()`
  * has no wrap point in it — so a narrow screen cannot shrink a column by
  * reflowing it, and the table pushes the whole document sideways instead.
+ *
+ * `tabIndex` for the same reason `CodeTabs` sets it on its panel: a box that
+ * scrolls sideways and holds nothing focusable can only be scrolled with a
+ * pointer otherwise, which hides the right-hand columns from a keyboard
+ * reader entirely. No `role="region"` to go with it — that role needs an
+ * accessible name, these tables carry no caption, and one component serves
+ * both locales, so any name hardcoded here would be the wrong language on
+ * half the site. The page's own `:focus-visible` rule draws the outline.
  */
 function Table({ children }: { children: ReactNode }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto" tabIndex={0}>
       <table>{children}</table>
     </div>
   )

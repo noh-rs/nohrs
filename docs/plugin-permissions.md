@@ -140,7 +140,8 @@ manifest に未知 key があれば:
 wasmtime-wasi は tokio 依存 ([ADR 0004](./adr/0004-remove-tokio.md) §6)。これを **プロセス共有のグローバル runtime にせず、`nohrs-plugin-host` 内の専用 `current_thread` runtime に閉じる** のは依存衛生だけが理由ではなく、**可用性の隔離** でもある:
 
 - **ブラスト半径**: tokio スケジューラは協調的で、yield しないタスクはワーカースレッドを占有する。グローバル runtime だと暴走プラグインが他プラグインや host 側タスクを巻き添えに stall させる (noisy neighbor)。専用 runtime に閉じれば、暴走はその runtime を駆動する単一の `cx.background_spawn` ワーカーに封じ込まる。
-- **強制停止**: 専用 `Runtime` を drop すればそのプラグインのタスク群をまとめて破棄でき、「1 プラグインだけ落とす」が成立する。グローバル runtime では特定プラグインのタスクだけを安全に剥がせない。
+- **ライフサイクル制御**: 専用 `Runtime` を drop すればそのプラグインの**非同期タスク**をまとめて破棄でき、「1 プラグインだけ落とす」が成立する。グローバル runtime では特定プラグインのタスクだけを安全に剥がせない。
+  > 注意 (drop は強制停止ではない): **既に開始した `spawn_blocking` の処理は中断できない**。tokio の `Runtime::drop` はそれが返るまで無期限に待ち、`shutdown_timeout` は**待つのをやめるだけ**で、処理とそのスレッドはリークしたまま走り続ける ([tokio `Runtime` docs](https://docs.rs/tokio/latest/tokio/runtime/struct.Runtime.html))。したがって runtime の drop が担うのは**ライフサイクル**であって、暴走の**停止**ではない。止めるのは上記の epoch interruption (ゲストを実行中に trap させる) 側の役割で、この 2 つは片方だけでは足りない。
 - **`block_on` ネスト事故の回避**: 公開 `Plugin` trait は内部で `rt.block_on(...)` する ([async-runtime.md](./async-runtime.md) §6)。専用 runtime を別スレッドで駆動する構造は「runtime 内 runtime」panic (`Cannot start a runtime from within a runtime`) を構造的に防ぐ。
 
 > 注意: runtime の共有は **機密性・完全性の脆弱性にはならない**。メモリ隔離 (層 1) と capability (層 2) は executor と直交し、「同じ runtime に乗る＝host メモリや他プラグインを覗ける」は成立しない。runtime 隔離が守るのは **可用性とライフサイクル制御** である。

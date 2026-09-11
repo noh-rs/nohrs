@@ -120,9 +120,17 @@ That last row is where the two articles meet. tokio's scheduler is cooperative: 
 never yields keeps its worker thread. On a process-wide runtime, one plugin that forgets to
 yield is a noisy neighbour to every other plugin and to the host's own tasks. Confined to
 `nohrs-plugin-host`'s own `current_thread` runtime, the same runaway occupies the single
-background worker driving that runtime and nothing else. Dropping the `Runtime` discards that
-plugin's tasks as a set, so "disable this one plugin" becomes an operation the host can
-actually perform rather than a menu item that hopes.
+background worker driving that runtime and nothing else. Dropping the `Runtime` then discards
+that plugin's async tasks as a set, which is what turns "disable this one plugin" into a
+lifecycle operation rather than a menu item that hopes.
+
+There is a limit there, and it is worth naming rather than discovering. A blocking call that
+has already started does not stop. Tokio is explicit about this: work spawned through
+`spawn_blocking` keeps running until it returns, `Drop` waits for it indefinitely, and
+`shutdown_timeout` only stops *waiting* — the thread carrying that work is leaked, still
+going. So the runtime boundary governs a plugin's lifecycle; what handles a plugin that will
+not stop is the row above it, the epoch deadline that traps the guest mid-execution. Neither
+one is sufficient by itself, which is the same shape as the two layers above it.
 
 One clarification, because it is the kind of thing that gets repeated wrongly: sharing a
 runtime is **not** a confidentiality vulnerability. Memory isolation and capability checks
