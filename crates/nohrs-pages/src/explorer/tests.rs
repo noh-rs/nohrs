@@ -1293,6 +1293,65 @@ async fn closing_the_conflict_dialog_leaves_the_plan_for_the_resolving_button(
 }
 
 #[gpui::test]
+async fn a_failed_cut_does_not_clobber_a_clipboard_claimed_while_it_ran(cx: &mut TestAppContext) {
+    // Restoring failed cut sources must not overwrite whatever the user (or an
+    // overlapping paste) put on the clipboard while the batch was in flight —
+    // that newer state is the one they can see.
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::create_dir(&dst).unwrap();
+    std::fs::write(src.join("x.txt"), "X").unwrap();
+    std::fs::write(src.join("y.txt"), "Y").unwrap();
+
+    let window = new_explorer(cx);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_single(0); // x.txt
+            pane.cut_selection(cx);
+        })
+        .unwrap();
+
+    // Remove the source so the cut fails, then start the paste without parking.
+    std::fs::remove_file(src.join("x.txt")).unwrap();
+    window
+        .update(cx, |pane, window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.paste_into_cwd(window, cx);
+            // Still in flight: the user copies something else.
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_all(); // only y.txt remains
+            pane.copy_selection(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    window
+        .update(cx, |pane, window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.paste_into_cwd(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        std::fs::read_to_string(dst.join("y.txt")).unwrap(),
+        "Y",
+        "the copy the user made during the paste is what pastes"
+    );
+    assert!(
+        src.join("y.txt").exists(),
+        "and it stays a copy — the failed cut did not replace it"
+    );
+}
+
+#[gpui::test]
 async fn cut_paste_keeps_failed_sources_on_the_clipboard_as_a_cut(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("src");
