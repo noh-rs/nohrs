@@ -319,6 +319,8 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
   - **エッジキャッシュ 60 秒**が事実上のレートリミッタ。人気記事でも GitHub への呼び出しは 1 分に 1 回
   - トークンは **Worker シークレット** (`GITHUB_TOKEN`)。ビルド時に HTML へ焼かれる `VITE_*` 系とは種類が違う。CI が `DISCUSSIONS_TOKEN` (repo 単位・read-only・Discussions のみの fine-grained PAT) を deploy 後に押し込む
   - 未設定なら 503。fork では giscus 時代と同じく**黙って GitHub へのリンクに落ちる**
+    - **503 と 502 の区別は UI まで運ぶ** (改訂 2026-09-11)。Worker 側で分けても、クライアントが `if (!response.ok) throw` で潰すと未設定が「読み込みに失敗しました」と出る。実際にそれを本番で出した。**未設定は障害ではない**ので、見出し・導入文・リンクだけを出して何も言わない
+    - **GitHub の environment secret は、deploy を 1 回走らせるまで Worker に届かない**。secret を足しただけでは何も変わらない (`wrangler secret put` は deploy ジョブの中にある)
 - **本文は GitHub が返す `bodyHTML` をそのまま入れる**。GitHub 側でサニタイズ済みで、giscus の iframe が出していたものと同一。ここで生 Markdown を描くと、パーサとサニタイザを自前で持つことになる
 - **リンクは全状態で描く**。prerender される静止状態 (`idle`) では読み込み中の文言を出さない — JavaScript が無い読者を、来ない fetch の前で待たせないため
 - 取得は `IntersectionObserver` で**セクションが近づいてから**。記事はコメントより手前で閉じられる方が多い
