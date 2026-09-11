@@ -1,0 +1,183 @@
+---
+title: Removing tokio from the app core
+date: '2026-09-11'
+description: Nothing got faster. The question "where does this code run?" went from having three answers to having one.
+author: shuya goto
+tags: ['architecture', 'rust']
+canonical: en
+---
+
+For a while, nohrs started like this:
+
+```rust
+let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    Ok(runtime) => runtime,
+    Err(error) => {
+        tracing::error!("failed to start async runtime: {error}");
+        return;
+    }
+};
+let _runtime_guard = runtime.enter();
+
+Application::new().with_assets(Assets).run(move |app: &mut App| {
+```
+
+Nothing in that program was a tokio program. GPUI drove the application; `#[tokio::main]` had
+already gone. The runtime was built, entered, and then never deliberately used. It was there
+because a constructor several layers down — `SearchService::new` — called `tokio::spawn` and
+made a `tokio::sync::watch` channel, and those panic without an ambient runtime to find.
+
+An incantation. Twelve lines that existed so that a function whose signature mentioned none
+of this would not blow up at startup.
+
+## Three answers to one question
+
+GPUI already has two executors, and the split between them is load-bearing. The foreground
+executor runs on the UI thread and is the only place entities can be touched at all. The
+background executor is a thread pool for work that must not sit on that thread. Every piece
+of async code in a GPUI application belongs to one or the other, and which one it is tends to
+be obvious from what the code does.
+
+The tokio runtime made a third, and the third had no such rule attached. Work went there
+because whoever wrote it reached for `tokio::spawn` out of habit, which is a fine reason to
+write a line of code and a poor one to have a scheduler.
+
+The cost was not performance. It showed up in two less visible places.
+
+**Tests could not see it.** `cx.run_until_parked()` is the primary tool a GPUI test has —
+run everything that is ready, then let me assert. It knows about GPUI's tasks. A tokio task
+is invisible to it. So a test could park, assert, and pass while the work it was actually
+testing had not started, and the same test would fail on a loaded CI machine. That is not a
+flaky test; it is a test that was never asking the right question.
+
+**And the contract was invisible.** `SearchService::new()` required a tokio runtime to be
+entered on the calling thread, and said so nowhere. You found out by calling it from the
+wrong place and reading a panic message.
+
+## What replaced what
+
+Most of the substitutions are boring, which is the recommendation:
+
+| tokio | replacement |
+|---|---|
+| `#[tokio::main]` | `Application::new().run(...)` |
+| `tokio::task::spawn_blocking` | `cx.background_spawn` |
+| `tokio::spawn` (the watcher consumer) | a dedicated `std::thread` |
+| `tokio::sync::mpsc` | `async-channel` |
+| `tokio::sync::watch` | `postage::watch` |
+| `tokio::time::sleep` | `cx.background_executor().timer(..)` |
+
+The channels are the interesting column. `async-channel` and `postage` are
+runtime-agnostic — they are not waiting for a particular reactor to wake them, so they work
+across a GPUI task, a plain `std::thread`, and the `notify` watcher's own threads without any
+of those three needing to agree on a scheduler. Which is the actual goal: the boundaries
+between threads should be describable without naming a runtime.
+
+## Four places, each with a job
+
+What it settled into is four execution contexts, and now each one is chosen for a reason you
+can state:
+
+The **foreground** orchestrates. It starts work, waits for it, applies the result to
+entities. The **background pool** runs heavy synchronous work. A **dedicated `std::thread`**
+takes loops that block forever, because parking a pool thread on `recv_blocking` for the
+lifetime of the process is not what a pool is for. And `notify` keeps its own threads, as the
+event source.
+
+The explorer's search is the round trip in its plainest form:
+
+```rust
+let processed = cx
+    .background_spawn(async move {
+        match service.search(query, scope) {
+            Ok(res) => {
+                let grouped = group_results(res);
+                let entries = results_to_entries(&grouped);
+                Ok((grouped, entries))
+            }
+            Err(error) => Err(error),
+        }
+    })
+    .await;
+
+this.update(&mut cx, |this, cx| {
+    if this.search_generation != generation {
+        return;
+    }
+    // ... apply the results
+})
+```
+
+`SearchService::search` is synchronous and the grouping does a `stat` per file, so all of it
+goes to the pool. Then `this.update` comes back to the UI thread to touch the entity.
+
+The shape is worth staring at for a second, because the thread boundaries are *visible*.
+`.await` is where you leave the UI thread. `this.update` is where you return to it. There is
+no third possibility hiding in the middle, and there is no version of this code where you are
+unsure which thread a line runs on.
+
+The watcher is the other half — a loop that blocks, on a thread it owns:
+
+```rust
+let watcher_task = std::thread::spawn(move || {
+    while let Ok(paths) = rx.recv_blocking() {
+        if let Err(e) = manager_clone.process_changes(&paths) {
+            tracing::warn!("Failed to process batch changes: {}", e);
+        }
+    }
+});
+```
+
+`recv_blocking` returns `Err` once every sender has dropped, which happens when the watcher
+is dropped, which is how the thread exits. Shutdown falls out of ownership rather than out of
+a cancellation token, and there is nothing to remember to call.
+
+## tokio is still in the lock file
+
+Here is the part that a summary would leave out. Run `cargo tree -i tokio` today and it comes
+back with results.
+
+GPUI depends on an HTTP client that is not optional, and that client brings the whole async
+stack with it: `gpui` → `gpui_http_client` → `zed-reqwest` → `hyper` → `h2` → `tokio`. Every
+one of those roots in gpui. None of them roots in a first-party crate.
+
+So `deny.toml` cannot carry a hard `{ name = "tokio" }` ban. cargo-deny's `wrappers`
+allowlist names a crate's direct parents, and tokio's direct parents in that chain are half a
+dozen transport crates that have no business being on an allowlist about application
+architecture. The ban is written down as a comment explaining why it is not enforced, which
+is less satisfying than a green check and more honest than a rule that does not say what it
+means.
+
+What actually changed is narrower than "we removed tokio", and it is the part worth having:
+**no `nohrs-*` crate depends on tokio**. The core's execution model is now something we
+decided rather than something a dependency decided for us. Somebody else's transport library
+having its own runtime is their business. It stops being ours the moment none of our code
+calls into it.
+
+## The runtime comes back on purpose
+
+P4 adds the plugin host, and it will use `wasmtime-wasi`, which requires tokio — upstream
+says so plainly. So tokio returns.
+
+It returns to one crate. `nohrs-plugin-host` gets a dedicated `current_thread` runtime, the
+public `Plugin` trait stays synchronous, and `block_on` bridges the two so that tokio never
+appears in the trait's signature or anywhere above it. The host calls the trait inside
+`cx.background_spawn` like any other blocking work.
+
+That this is possible at all is what the cleanup bought. Isolating a runtime into one crate
+is only meaningful if the rest of the tree has no opinion about runtimes — otherwise you have
+not isolated anything, you have added a second one.
+
+<Callout title="Two kinds of isolation">
+The isolation here is dependency hygiene and blast radius: keeping a runaway plugin from
+stalling the host's own tasks, and making "stop this one plugin" a thing you can do by
+dropping its runtime. That is a different layer from the WASM sandbox, which is about
+confidentiality and integrity — what a plugin can *read* and *reach*. That one is
+[its own article](/en/blog/designing-for-a-hostile-plugin).
+</Callout>
+
+None of this made the application faster and none of it was supposed to. The startup
+incantation is gone, the tests measure what they claim to measure, and a contributor reading
+`crates/nohrs-services` can answer "which thread does this run on" without checking whether
+someone entered a runtime four frames up the stack. That is the whole return, and it was
+worth the migration.

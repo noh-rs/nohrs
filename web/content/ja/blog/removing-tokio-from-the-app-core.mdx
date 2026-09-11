@@ -1,0 +1,126 @@
+---
+title: アプリコアから tokio を外す
+date: '2026-09-11'
+description: 何も速くなっていません。「このコードはどこで動くのか」への答えが、3 つから 1 つになりました。
+author: shuya goto
+tags: ['architecture', 'rust']
+canonical: en
+---
+
+しばらくの間、nohrs の起動はこうでした。
+
+```rust
+let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    Ok(runtime) => runtime,
+    Err(error) => {
+        tracing::error!("failed to start async runtime: {error}");
+        return;
+    }
+};
+let _runtime_guard = runtime.enter();
+
+Application::new().with_assets(Assets).run(move |app: &mut App| {
+```
+
+このプログラムのどこにも tokio のプログラムはありません。アプリを駆動しているのは GPUI で、`#[tokio::main]` は既に外してありました。ランタイムは作られ、`enter` され、そのあと意図的には一度も使われません。ここにあるのは、何層か下のコンストラクタ — `SearchService::new` — が `tokio::spawn` を呼び、`tokio::sync::watch` のチャンネルを作っていたからです。周囲にランタイムが無ければ、あれらは panic します。
+
+おまじないです。**シグネチャに何も書いていない関数が起動時に落ちないようにするためだけの 12 行**でした。
+
+## 1 つの問いに、3 つの答え
+
+GPUI には最初から executor が 2 つあり、その区別が仕事をしています。foreground executor は UI スレッドで動き、entity に触れる唯一の場所です。background executor は、UI スレッドに居座らせてはいけない仕事のためのスレッドプールです。GPUI アプリの非同期コードはどちらかに属していて、どちらなのかはコードが何をしているかを見ればだいたい分かります。
+
+tokio ランタイムは 3 つめでした。そして 3 つめには、そういう規則が付いていませんでした。そこに仕事が流れていったのは、書いた人が習慣で `tokio::spawn` に手が伸びたからです。1 行のコードを書く理由としては十分ですが、スケジューラを 1 つ持つ理由としては弱い。
+
+代償は性能ではありませんでした。もっと見えにくい 2 箇所に出ます。
+
+**テストから見えない。** `cx.run_until_parked()` は GPUI のテストが持つ主要な道具です。動かせるものを全部動かしてから assert させてくれる。これが知っているのは GPUI のタスクだけで、tokio のタスクは見えません。つまり、テストしているはずの仕事がまだ始まってもいないのに park して assert して通り、同じテストが負荷の高い CI では落ちる。これは flaky なテストではなく、**最初から違う問いを聞いているテスト**です。
+
+**契約が見えない。** `SearchService::new()` は呼び出しスレッドで tokio ランタイムが `enter` されていることを要求していて、そのことをどこにも書いていませんでした。間違った場所から呼んで panic メッセージを読んで、初めて知る。
+
+## 何を何に置き換えたか
+
+置換のほとんどは退屈で、それが推薦の言葉です。
+
+| tokio | 置換先 |
+|---|---|
+| `#[tokio::main]` | `Application::new().run(...)` |
+| `tokio::task::spawn_blocking` | `cx.background_spawn` |
+| `tokio::spawn` (watcher の消費側) | 専用の `std::thread` |
+| `tokio::sync::mpsc` | `async-channel` |
+| `tokio::sync::watch` | `postage::watch` |
+| `tokio::time::sleep` | `cx.background_executor().timer(..)` |
+
+面白いのはチャンネルの列です。`async-channel` と `postage` はランタイム非依存で、特定のリアクタに起こしてもらうのを待っていません。だから GPUI のタスク、素の `std::thread`、`notify` が持っている自前のスレッドのあいだを、**その 3 つがスケジューラについて合意しなくても**繋げます。狙いはまさにそこでした。スレッドの境界を、ランタイムの名前を出さずに説明できること。
+
+## 4 つの置き場所と、それぞれの役目
+
+落ち着いた形は実行コンテキスト 4 つで、今はそれぞれを選ぶ理由を言葉にできます。
+
+**foreground** は指揮をとります。仕事を始め、待ち、結果を entity に適用する。**background プール**は重い同期処理を回します。**専用の `std::thread`** は永遠にブロックするループを引き受けます。プロセスが生きている間ずっと `recv_blocking` でプールのスレッドを止めておくのは、プールの用途ではないからです。そして `notify` はイベント源として自前のスレッドを持ち続けます。
+
+エクスプローラーの検索が、この往復のいちばん素直な形です。
+
+```rust
+let processed = cx
+    .background_spawn(async move {
+        match service.search(query, scope) {
+            Ok(res) => {
+                let grouped = group_results(res);
+                let entries = results_to_entries(&grouped);
+                Ok((grouped, entries))
+            }
+            Err(error) => Err(error),
+        }
+    })
+    .await;
+
+this.update(&mut cx, |this, cx| {
+    if this.search_generation != generation {
+        return;
+    }
+    // ... apply the results
+})
+```
+
+`SearchService::search` は同期で、グルーピングはファイルごとに `stat` を呼びます。だから全部プールに出す。そのあと `this.update` で UI スレッドに戻り、entity に触ります。
+
+この形は少し眺める価値があります。**スレッドの境界が目に見えている**からです。`.await` が UI スレッドを離れる場所、`this.update` が戻ってくる場所。その途中に第三の可能性は隠れていませんし、この行がどのスレッドで動くのか分からない、という版のこのコードは存在しません。
+
+watcher はもう半分です。ブロックし続けるループを、自分が所有するスレッドの上で回します。
+
+```rust
+let watcher_task = std::thread::spawn(move || {
+    while let Ok(paths) = rx.recv_blocking() {
+        if let Err(e) = manager_clone.process_changes(&paths) {
+            tracing::warn!("Failed to process batch changes: {}", e);
+        }
+    }
+});
+```
+
+`recv_blocking` は送信側が全部 drop された時点で `Err` を返します。それは watcher が drop されたときで、そこでスレッドが終わります。**終了を決めているのはキャンセルトークンではなく所有権**なので、呼び忘れる対象がそもそもありません。
+
+## tokio は今も lock ファイルにいる
+
+要約なら省かれる部分を書いておきます。今日 `cargo tree -i tokio` を走らせると、結果が返ってきます。
+
+GPUI が依存している HTTP クライアントは optional ではなく、それが非同期スタックを丸ごと連れてきます。`gpui` → `gpui_http_client` → `zed-reqwest` → `hyper` → `h2` → `tokio`。この連鎖はすべて gpui に根を持ちます。first-party の crate に根を持つものは 1 つもありません。
+
+なので `deny.toml` に `{ name = "tokio" }` のハード ban は置けません。cargo-deny の `wrappers` 許可リストが名指しするのは crate の直接の親で、この連鎖における tokio の直接の親は、アプリのアーキテクチャを語る許可リストに載るいわれのないトランスポート crate が半ダースです。ban は「なぜ有効にできないか」を説明するコメントとして書いてあります。緑のチェックより満足度は低く、意味と一致しないルールよりは正直です。
+
+実際に変わったことは「tokio を消した」より狭く、そして持つ価値があるのはそちらです。**`nohrs-*` のどの crate も tokio に依存していない**。コアの実行モデルは、依存が決めたものではなく、こちらが決めたものになりました。他人のトランスポートライブラリが自前のランタイムを持っているのは向こうの都合で、こちらのコードがそこを呼ばなくなった時点で、こちらの都合ではなくなります。
+
+## ランタイムは意図的に戻ってくる
+
+P4 でプラグインホストが入ります。使うのは `wasmtime-wasi` で、これは tokio を必要とします — 上流がはっきりそう書いています。つまり tokio は戻ってきます。
+
+戻ってくる先は crate 1 つです。`nohrs-plugin-host` が専用の `current_thread` ランタイムを持ち、公開する `Plugin` trait は同期のまま、あいだを `block_on` で橋渡しして、tokio が trait のシグネチャにもその上のどこにも現れないようにします。ホスト側は他のブロッキング処理と同じように `cx.background_spawn` の中からその trait を呼びます。
+
+これが**そもそも可能である**ことが、今回の片付けで得たものです。ランタイムを 1 つの crate に隔離することに意味があるのは、木の残りがランタイムについて何の意見も持っていないときだけです。そうでなければ隔離したことにはならず、2 つめを足しただけになります。
+
+<Callout title="2 種類の隔離">
+ここで言う隔離は、依存衛生とブラスト半径の話です。暴走したプラグインにホスト側のタスクを巻き添えにさせないこと、そして「このプラグインだけ止める」をランタイムの drop で成立させること。これは WASM サンドボックスとは別のレイヤーで、あちらは機密性と完全性 — プラグインが何を**読めて**何に**届くか** — の話です。それは[別の記事](/ja/blog/designing-for-a-hostile-plugin)で扱います。
+</Callout>
+
+これでアプリが速くなったことは一度もないし、速くする話でもありませんでした。起動時のおまじないが消え、テストが主張どおりのものを測るようになり、`crates/nohrs-services` を読んだ人が「これはどのスレッドで動くのか」に、4 フレーム上で誰かがランタイムを `enter` していないか確認せずに答えられるようになった。得たものはそれで全部で、移行の手間に見合っていました。

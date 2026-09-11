@@ -306,6 +306,13 @@ zed.dev の IA から商用要素 (Pricing / Business / Sign up / Jobs / Team / 
 - MDX (`web/content/<lang>/blog/<slug>.mdx`)
 - frontmatter: title / date / author / tags / canonical / og_image
 - カスタムコンポーネント: `<Callout>`, `<Screenshot>`, `<CodeTabs>`, `<YouTube>`
+  - **記事中のコードは fenced code block で書く。`<CodeTabs>` は使わない** (追記 2026-09-11)。
+    rehype-shiki がハイライトするのは fence であって JSX ではないので、`tabs` prop に
+    `<pre>` を直接渡すと**そのタブだけ色が付かない**。タブが要るほど対置したいなら、
+    見出しを分けて fence を 2 つ並べるほうが読める
+  - **表は `mdxComponents` の `table` が `overflow-x` のラッパで包む**。セルは行内コードが多く、
+    `cx.background_executor()` のようなトークンには折り返し点が無いので、
+    包まないと狭い画面でページごと横に伸びる
 - タグページ (`/blog/tags/<tag>`)、年別アーカイブ (`/blog/2026/`)
 - コメント (GitHub Discussions を自前で描画。下記)
 - RSS / Atom feed (言語別)

@@ -1,0 +1,200 @@
+---
+title: Wayland has no global hotkey
+date: '2026-09-11'
+description: The capability was removed deliberately, and the obvious fallback is worse than having none.
+author: shuya goto
+tags: ['launcher', 'linux']
+canonical: en
+---
+
+A global hotkey is one specific thing: a key your application receives while some other
+window has focus. Not an ordinary keyboard shortcut — those are easy, and the window manager
+hands them to whoever is in front. This is the other kind, the one that has to fire while you
+are in a terminal, or a browser, or looking at nothing at all. It is the entire premise of a
+launcher.
+
+Every desktop platform has a call for it. macOS has Carbon hot keys, X11 has `XGrabKey`,
+Windows has a low-level hook. One function, synchronous, and the chord is yours.
+
+Wayland has none of them.
+
+## The capability, not the API
+
+It is tempting to read that as an unfinished protocol. It is not. The compositor owns every
+input event on a Wayland session and does not deliver keys to clients that are not focused,
+and that is the design rather than an omission. "Receive keystrokes while another
+application has focus" is precisely the capability a keylogger is after. There is no way to
+offer it to a launcher and withhold it from everything else, so it is offered to nobody.
+
+Once you read it that way, the question stops being *how do I get my grab back* and becomes
+*what is the sanctioned way to ask*.
+
+## Asking instead of taking
+
+The answer is `org.freedesktop.portal.GlobalShortcuts`. The application describes a shortcut
+it would like, the desktop puts that in front of the user, and the compositor sends an
+`Activated` signal over D-Bus when the key fires. We talk to it through
+[ashpd](https://github.com/bilelmoussaoui/ashpd):
+
+```rust
+let shortcut = NewShortcut::new(SHORTCUT_ID, DESCRIPTION).preferred_trigger(Some(trigger));
+let request = shortcuts.bind_shortcuts(&session, &[shortcut], None).await?;
+let bound = request.response()?;
+```
+
+Three things about this are worse than a grab, and all three are the point.
+
+It is asynchronous, and it can sit there for as long as the user takes to answer the dialog.
+It can fail — a refusal comes back as a failed response, not a transport error, and a
+launcher has to survive being told no. And the chord is a *preference*: the method is called
+`preferred_trigger` because the desktop decides the final binding. If the user already has
+`Ctrl+Shift+Space` bound to something they care about, they keep it, and we get told what we
+were given instead.
+
+An application no longer chooses its own global key. That is the correct outcome and it takes
+some getting used to.
+
+<Callout title="Availability">
+The `GlobalShortcuts` interface reached version 1 in xdg-desktop-portal 1.17. GNOME 45 and
+later and KDE Plasma 5.27 and later implement it.
+</Callout>
+
+## The fallback that binds and then lies
+
+This is the part that decided the design. On a Wayland session there is usually an XWayland
+server running, and from an XWayland client, `XGrabKey` **succeeds**. No error, no warning.
+The grab is real.
+
+It just only ever fires over X11 windows.
+
+So the shortcut would work when the user is in an old GTK2 app and do nothing when they are
+in their editor, with no signal anywhere explaining the difference. That is the worst failure
+mode available: not broken, not working, *intermittently correct in a pattern nobody can see*.
+A user would conclude the launcher is flaky and stop reaching for it.
+
+We do not fall back. On Wayland it is the portal or nothing:
+
+```rust
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+if portal::is_wayland_session() {
+    install_portal(cx, chord, Rc::new(on_summon), Box::new(on_outcome));
+    return Ok(Backend::Portal);
+}
+
+install_grab(cx, chord, on_summon)?;
+```
+
+If the portal is missing, the call fails, the failure is reported to the user, and the in-app
+`Cmd+K` keeps working. Someone who is told their global shortcut is unavailable can go and
+fix it. Someone whose shortcut silently covers a third of their screen cannot.
+
+## The branch is on the session, not the OS
+
+Note what that condition tests. Not `target_os`, not a desktop name — one environment
+variable:
+
+```rust
+/// `WAYLAND_DISPLAY` is what the Wayland client libraries themselves look for,
+/// so it agrees with the session GPUI ends up in. Under XWayland it is also set,
+/// which is the answer we want: an X11 grab made by an XWayland client only sees
+/// keys pressed over X11 windows, so such a session needs the portal too.
+pub fn is_wayland_session() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+```
+
+One Linux binary does both. It takes a grab on an X11 session and speaks the portal on a
+Wayland one, and the thing being asked is "what am I connected to", not "what am I compiled
+for". `WAYLAND_DISPLAY` is the right question because it is the same question the Wayland
+client libraries ask — so whatever answer they arrive at, we arrive at too.
+
+XWayland setting it as well looks at first like a false positive. It is the answer we want,
+for the reason above: an XWayland session is exactly the one where a grab lies.
+
+## Testing a protocol with no compositor
+
+CI has no compositor, no desktop, and no user to approve anything. The portal is nevertheless
+the only thing standing between the launcher and the keyboard on a modern Linux desktop, so
+it needed a test with teeth.
+
+So the test brings its own portal. It starts a private `dbus-daemon`, claims
+`org.freedesktop.portal.Desktop` on it, serves an object implementing `GlobalShortcuts`, and
+drives the real conversation — `CreateSession`, `BindShortcuts`, then an `Activated` signal —
+through the actual `portal::listen` until a summon comes out the other end.
+
+Writing the mock is where the protocol got interesting. A portal does not choose the object
+paths for its requests and sessions. The *client* computes them, from its own bus name and a
+token it generated, subscribes there, and only then makes the call:
+
+```rust
+fn portal_path(kind: &str, sender: &str, token: &str) -> OwnedObjectPath {
+    let unique = sender.trim_start_matches(':').replace('.', "_");
+    ObjectPath::try_from(format!(
+        "/org/freedesktop/portal/desktop/{kind}/{unique}/{token}"
+    ))
+    .unwrap()
+    .into()
+}
+```
+
+A mock that returns a path of its own invention is never heard from again. Every call
+succeeds, every response goes somewhere nobody is listening, and the test hangs. Reproducing
+the client's arithmetic is not a detail of the mock; it is the protocol.
+
+## The race it caught
+
+Then the test found a real bug, which is the only reason to write one.
+
+The first version bound the shortcut and then subscribed to `Activated`. That reads fine and
+is wrong: the compositor may deliver an activation the moment the binding exists, and a key
+pressed in the gap travels over a stream that has not been opened yet. Rare, unreproducible
+by hand, and permanent in the sense that it would have stayed there.
+
+The fix is two statements in the other order:
+
+```rust
+// Subscribed before binding, not after: the compositor may deliver an
+// activation as soon as the binding exists, and a stream opened afterwards
+// would miss anything pressed in the gap.
+let mut activated = shortcuts.receive_activated().await?;
+
+let shortcut = NewShortcut::new(SHORTCUT_ID, DESCRIPTION).preferred_trigger(Some(trigger));
+let request = shortcuts.bind_shortcuts(&session, &[shortcut], None).await?;
+```
+
+The test got shorter as well as more truthful. It had been firing the shortcut in a retry
+loop, which is what you write when a single signal sometimes gets lost — papering over the
+exact race the ordering closes. With the subscription first, one signal is always enough:
+0.14s down to 0.02s, and a comment in the test now says why a retry loop must not come back.
+
+A test that passes tells you nothing on its own, so it is worth confirming it is not simply
+agreeing with the code it was written beside. Invert the shortcut-id comparison in
+`portal.rs` and it fails. Good.
+
+## Two smaller things on the way
+
+Auto-repeat. A held chord does not deliver one `Pressed` — it delivers them for as long as
+the key is down, and one poll can collect several at once. Summoning on each of those toggles
+the launcher open and shut every 40 milliseconds while the user holds the key. The state
+machine takes the edge into "pressed" and nothing else.
+
+And a Linux binary that wants to stay resident needs a window it never shows. GPUI's X11
+backend stops the event loop when the last window closes, so `nohrs launcher` holds a 1×1
+invisible one open. Without it, the global hotkey works exactly once.
+
+## What is not proven
+
+The portal path is verified against a mock, not against a desktop. The protocol exchange is
+real and tested end to end; what GNOME and KDE actually put in front of a user when a request
+arrives, and how their approval dialogs behave, has not been checked on hardware. That gap is
+recorded in `docs/launcher.md` as a known limitation rather than closed by assertion.
+
+There is also no activation token. The `Activated` signal carries one, and handing it to
+window creation is how a Wayland client is guaranteed the focus it is about to ask for. GPUI
+0.2 manages tokens internally and exposes no way to pass one in, so the launcher summons
+without it.
+
+One decision underpins all of this, and it is not a Wayland decision: prefer a failure that
+says so. A grab that binds and then quietly covers a third of the screen is not a working
+feature with an asterisk. It is a bug report from a confused user, six months later, that
+nobody can reproduce.

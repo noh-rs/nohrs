@@ -85,6 +85,21 @@ function CodeTabs({ tabs }: { tabs: { label: string; children: ReactNode }[] }) 
   )
 }
 
+/**
+ * Tables scroll inside their own box rather than widening the page.
+ *
+ * Cells are usually inline code, and a token like `cx.background_executor()`
+ * has no wrap point in it — so a narrow screen cannot shrink a column by
+ * reflowing it, and the table pushes the whole document sideways instead.
+ */
+function Table({ children }: { children: ReactNode }) {
+  return (
+    <div className="overflow-x-auto">
+      <table>{children}</table>
+    </div>
+  )
+}
+
 function YouTube({ id, title }: { id: string; title: string }) {
   return (
     <div className="my-9 aspect-video w-full overflow-hidden rounded border border-line-soft">
@@ -100,4 +115,4 @@ function YouTube({ id, title }: { id: string; title: string }) {
   )
 }
 
-export const mdxComponents = { Callout, Screenshot, CodeTabs, YouTube }
+export const mdxComponents = { Callout, Screenshot, CodeTabs, YouTube, table: Table }

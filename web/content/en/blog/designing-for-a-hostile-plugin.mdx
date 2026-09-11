@@ -1,0 +1,200 @@
+---
+title: Designing for a hostile plugin
+date: '2026-09-11'
+description: A sandbox that only isolates memory has secured the least interesting thing. The permission model is the design.
+author: shuya goto
+tags: ['plugins', 'security']
+canonical: en
+---
+
+A plugin is a program written by somebody you have never met, running inside a file manager,
+with every file you own on the other side of it. Design from there and most of the questions
+answer themselves.
+
+This is a different layer from [removing tokio from the app
+core](/en/blog/removing-tokio-from-the-app-core). That was about which runtime drives what —
+dependency hygiene, and keeping one plugin's bad afternoon from stalling the host. This is
+the security boundary: what a plugin can read, reach and change, and what stops it.
+
+<Callout title="Status">
+The plugin host lands in P4. This is the design it is being built to, drawn from
+`docs/plugin-permissions.md` and `docs/plugin-overview.md`, not a description of code that is
+running today.
+</Callout>
+
+## Memory isolation is the easy half
+
+"WASM is sandboxed" usually means the module cannot read the host's memory. True, useful, and
+not where the risk is. A plugin that can call `read-file` with any path it likes does not
+need to read host memory — it can read your SSH key through the front door and ask politely.
+
+The actual question is what the module is *allowed to ask for*, which is a capability
+question, and capabilities are something you hand over one at a time or not at all.
+
+## Layer 1: hand over nothing
+
+Plugins run as WASI Preview 2 components under `wasmtime`. The host builds each one a
+`WasiCtx`, and the default is empty:
+
+```rust
+// Nothing inherited: no stdio, no environment, no preopened directories.
+let wasi = WasiCtxBuilder::new().build();
+```
+
+It is worth being concrete about what the convenient alternative buys an attacker. A context
+built with everything inherited hands the module the host process's own view of the world.
+`wasi:filesystem` with the root preopened is `open` on any path the nohrs process can reach.
+The environment carries whatever the user's shell exported into it, which on a developer
+machine is an unhappy number of tokens. None of that requires a bug. It is the API working.
+
+So directories arrive through `wasi:filesystem/preopens`, one per granted path, and nothing
+else arrives at all. Network is not `wasi:sockets` — that interface is never wired up. The
+only way out is a host import, `network.http-fetch`, which exists so that there is one place
+to check.
+
+## Layer 2: check again at the door
+
+Every host function begins by asking the plugin's own manifest whether this is allowed:
+
+```rust
+fn http_fetch(ctx: &PluginContext, req: HttpRequest) -> Result<HttpResponse> {
+    ctx.permissions.check_network(&req.url)?;
+    // ...
+}
+```
+
+`check_network` matches against a host allowlist the user agreed to — `api.github.com`,
+`*.example.com`. CIDR blocks are not accepted as a manifest format, and neither are IP
+literals, for a reason that has nothing to do with implementation: a consent dialog reading
+`10.0.0.0/8` is not consent. Nobody can evaluate that in the two seconds they spend on an
+install prompt.
+
+The path checks have a sharper edge. `check_read_path` and `check_write_path` **canonicalize
+first, resolving symlinks, and match the glob against the result**. Matching the string as
+given is the classic hole: `$HOME/Documents/../.ssh/id_ed25519` is inside
+`$HOME/Documents/**` if you squint at it as text, and so is any symlink a plugin planted
+earlier pointing where it wants to go.
+
+Two details matter more than the rule itself.
+
+If canonicalization fails — the path does not exist, or an intermediate directory is not
+readable — the answer is `NotPermitted`. There is no fallback to string matching. A failed
+security check that degrades into a weaker check is not a check.
+
+And canonicalization does not close the time-of-check-to-time-of-use race. Between resolving
+the path and touching the file, the path can be swapped. Glob matching cannot fix that, and
+pretending otherwise would be the most dangerous sentence in the design document. The real
+guarantee is layer 1: a WASI preopen resolves relative to an already-canonical directory
+handle, so the kernel is enforcing the boundary rather than a string comparison. Layer 2 is
+additional defence, not the boundary.
+
+## Why check twice
+
+Both layers make the same decision independently. WASI may have preopened a directory, and
+the host function will still refuse a path outside the manifest. The manifest may permit
+something the preopens never granted, and the plugin still cannot reach it.
+
+Defence in depth is easy to write down and easy to hollow out, so the test for it is
+specific: pick a layer, assume it has a bug, and see what the attacker gets. Assume the
+permission guard has an off-by-one in its glob matching — the preopens still mean there is no
+file descriptor for the rest of the disk. Assume a preopen is granted too broadly — the guard
+still refuses. Neither layer is load-bearing alone. That is the whole property.
+
+## Layer 0: the one WASM does not give you
+
+A sandbox isolates memory. It does not isolate CPU, wall clock, or how much memory the module
+asks for. `while (1) {}` compiles fine, and so does allocating until the host dies. Nothing
+has been read and nothing has leaked, and the user's file manager has still stopped
+responding.
+
+Availability gets its own layer:
+
+| resource | limit |
+|---|---|
+| CPU, infinite loops | wasmtime **epoch interruption** — a deadline on host calls, trap on overrun |
+| linear memory | `StoreLimitsBuilder`, a ceiling per plugin |
+| host call wall clock | host-side timeout, then stop the instance |
+| runtime starvation | plugin execution confined to its own tokio runtime |
+
+That last row is where the two articles meet. tokio's scheduler is cooperative: a task that
+never yields keeps its worker thread. On a process-wide runtime, one plugin that forgets to
+yield is a noisy neighbour to every other plugin and to the host's own tasks. Confined to
+`nohrs-plugin-host`'s own `current_thread` runtime, the same runaway occupies the single
+background worker driving that runtime and nothing else. Dropping the `Runtime` discards that
+plugin's tasks as a set, so "disable this one plugin" becomes an operation the host can
+actually perform rather than a menu item that hopes.
+
+One clarification, because it is the kind of thing that gets repeated wrongly: sharing a
+runtime is **not** a confidentiality vulnerability. Memory isolation and capability checks
+are orthogonal to which executor polls a future. "Same runtime, therefore can see host
+memory" does not follow. Runtime isolation buys availability and lifecycle control, and
+claiming more for it would make the rest of the model harder to trust.
+
+## Consent is not competence
+
+Some operations are refused even when the manifest asks for them and the user said yes.
+
+Reading `~/.ssh`, `~/.aws`, `~/.gnupg` and `~/.config/gh` and then sending it over the
+network. Requesting `sh`, `bash`, `zsh`, `cmd.exe` or `powershell` as a process name —
+granting `process` is already a strong permission, and a shell turns a command allowlist into
+no allowlist, since every other binary is reachable through it. Passing a command as a string
+for a shell to split, rather than as a list. Writing to `/etc`, `/usr`, `/bin`, or to nohrs's
+own SQLite and redb files, where one plugin could corrupt another's data. Reaching
+`localhost`, `127.0.0.1` or `::1`; reaching `169.254.0.0/16`, `192.168.0.0/16`, `10.0.0.0/8`,
+`172.16.0.0/12` — the link-local address in that list is the cloud metadata endpoint, and the
+rest of it is everything on the user's home network with a default password.
+
+These are hardcoded in the host and cannot be overridden by the user.
+
+That last clause looks paternalistic until you read the prompt the user actually saw. They
+approved *read files in my home directory* and *talk to `api.github.com`*. Those are two
+reasonable permissions. Their combination is credential exfiltration, and no install dialog
+has ever made that visible in the moment. The user agreed to two things they understood; they
+did not agree to the third thing that falls out of having both.
+
+## Refuse, do not crash
+
+A denied permission returns an error to the plugin. It does not trap.
+
+```wit
+read-file: func(path: string) -> result<list<u8>, fs-error>;
+
+variant fs-error {
+    not-permitted,
+    not-found,
+    io-error(string),
+}
+```
+
+A trap is the host killing the plugin over something the plugin should be able to handle.
+`not-permitted` is a condition — a well-written plugin catches it and does without the
+optional feature, or tells the user which permission it is missing, and carries on. Traps are
+kept for what they mean — a plugin that has genuinely gone wrong — and a trap is logged and
+disables the plugin for 24 hours.
+
+## Asking once
+
+Permissions are prompted once, at install. Never at runtime — a dialog that appears while
+someone is working gets dismissed, and a model that trains users to dismiss it is worse than
+no model.
+
+Updates re-prompt only on the difference. A plugin that asked for less than before, or the
+same, continues without interrupting anyone. A plugin that has quietly acquired `network` in
+version 1.4 gets a prompt that says so. Nowhere else is that change ever visible.
+
+Defaults are asymmetric on purpose: `read_paths` and clipboard read start checked,
+`write_paths`, `process` and `network` start unchecked. Most plugins do not need the second
+group, and the ones that do should have to say why in their description, where the user can
+read it.
+
+## What this does not do
+
+Signatures are not part of it yet. Integrity today is a SHA-256 in the manifest checked
+against the store's cached hash; minisign and sigstore are under consideration for P9 and
+later. There is no anomaly detection — a plugin acting within its granted permissions but
+behaving strangely is not something the host currently notices, and the permission event log
+in settings is there so a person can. Timing side channels between plugins are out of scope,
+and saying so is more useful than an unverified claim in either direction.
+
+What the model does promise is narrow and checkable. A plugin cannot promise not to read your
+home directory. It can only be unable to.

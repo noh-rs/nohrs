@@ -1,0 +1,137 @@
+---
+title: Wayland にグローバルホットキーは無い
+date: '2026-09-11'
+description: 能力そのものが意図的に外されています。そして一番ありがちなフォールバックは、無いより悪いものでした。
+author: shuya goto
+tags: ['launcher', 'linux']
+canonical: en
+---
+
+グローバルホットキーというのは、はっきりした一つのものを指します。**他のウィンドウにフォーカスがある間に、自分のアプリがキーを受け取る**こと。ふつうのキーボードショートカットではありません。あれは簡単で、ウィンドウマネージャが前面のアプリに配ってくれます。こちらは別種で、ターミナルにいても、ブラウザにいても、何も見ていなくても発火しなければいけない。ランチャーの前提そのものです。
+
+どのデスクトッププラットフォームにも、そのための呼び出しがあります。macOS なら Carbon hot key、X11 なら `XGrabKey`、Windows なら低レベルフック。関数 1 つ、同期、それで chord は自分のものになります。
+
+Wayland にはどれもありません。
+
+## 足りないのは API ではなく能力
+
+未完成のプロトコルだと読みたくなりますが、違います。Wayland セッションではコンポジタがすべての入力イベントを所有していて、フォーカスの無いクライアントにキーを配りません。これは抜け落ちではなく設計です。「他のアプリにフォーカスがある間にキー入力を受け取る」は、キーロガーが欲しがっている能力そのものでした。ランチャーにだけ渡して他には渡さない方法が無いので、誰にも渡さないことになっています。
+
+そう読めた時点で、問いが変わります。**どうやって grab を取り戻すか**ではなく、**正規の頼み方は何か**になる。
+
+## 奪うのではなく、頼む
+
+答えは `org.freedesktop.portal.GlobalShortcuts` です。アプリが「こういうショートカットが欲しい」と説明し、デスクトップがそれをユーザーに見せ、キーが押されたらコンポジタが D-Bus で `Activated` シグナルを送ってくる。nohrs は [ashpd](https://github.com/bilelmoussaoui/ashpd) 経由で話します。
+
+```rust
+let shortcut = NewShortcut::new(SHORTCUT_ID, DESCRIPTION).preferred_trigger(Some(trigger));
+let request = shortcuts.bind_shortcuts(&session, &[shortcut], None).await?;
+let bound = request.response()?;
+```
+
+これは grab より 3 点で劣っていて、その 3 点がそのまま主旨です。
+
+非同期で、ユーザーがダイアログに答えるまで、いくらでも待たされます。失敗しうる — 拒否は転送エラーではなく「失敗したレスポンス」として返ってくるので、ランチャーは「断られた」状態を生き延びる必要があります。そして chord は**希望**でしかない。メソッド名が `preferred_trigger` なのは、最終的な binding をデスクトップが決めるからです。ユーザーが既に `Ctrl+Shift+Space` を大事な用途に割り当てていれば、そちらが優先され、こちらは「何が与えられたか」を後から知らされます。
+
+アプリが自分のグローバルキーを決められなくなった。これは正しい結果で、慣れるのに少し時間がかかります。
+
+<Callout title="実装状況">
+`GlobalShortcuts` インターフェースは xdg-desktop-portal 1.17 で version 1 になりました。GNOME 45 以降と KDE Plasma 5.27 以降が実装しています。
+</Callout>
+
+## 「登録に成功してから嘘をつく」フォールバック
+
+設計を決めたのはここです。Wayland セッションではたいてい XWayland サーバーが動いていて、XWayland クライアントからの `XGrabKey` は**成功します**。エラーも警告も出ません。grab は本物です。
+
+ただし、X11 ウィンドウの上でしか発火しません。
+
+つまりユーザーが古い GTK2 アプリにいるときは効き、エディタにいるときは何も起きない。しかもその違いを説明するものがどこにも出ません。これは選べる中で最悪の壊れ方です。壊れてもいないし動いてもいない、**誰にも見えない規則で、ときどき正しい**。ユーザーは「このランチャーは不安定だ」と結論して、手を伸ばすのをやめます。
+
+なのでフォールバックはしません。Wayland では portal か、さもなくば無しです。
+
+```rust
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+if portal::is_wayland_session() {
+    install_portal(cx, chord, Rc::new(on_summon), Box::new(on_outcome));
+    return Ok(Backend::Portal);
+}
+
+install_grab(cx, chord, on_summon)?;
+```
+
+portal が無ければ呼び出しは失敗し、失敗はユーザーに報告され、アプリ内の `Cmd+K` は動き続けます。「グローバルショートカットが使えません」と言われた人は、直しに行けます。ショートカットが黙って画面の 3 分の 1 だけをカバーしている人には、直しようがありません。
+
+## 分岐するのは OS ではなくセッション
+
+上の条件が何を見ているかに注目してください。`target_os` でもデスクトップ名でもなく、環境変数 1 つです。
+
+```rust
+/// `WAYLAND_DISPLAY` is what the Wayland client libraries themselves look for,
+/// so it agrees with the session GPUI ends up in. Under XWayland it is also set,
+/// which is the answer we want: an X11 grab made by an XWayland client only sees
+/// keys pressed over X11 windows, so such a session needs the portal too.
+pub fn is_wayland_session() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+```
+
+Linux バイナリ 1 つが両方をやります。X11 セッションなら grab を取り、Wayland セッションなら portal を話す。聞いているのは「何にコンパイルされたか」ではなく「今どこに繋がっているか」です。`WAYLAND_DISPLAY` が正しい問いなのは、それが Wayland クライアントライブラリ自身の問いだからで、向こうが出す答えと必ず一致します。
+
+XWayland でもこの変数が立つのは、一見すると誤検出に見えます。実際には欲しい答えのほうです。理由は上のとおりで、**XWayland セッションこそが grab の嘘をつくセッション**だからです。
+
+## コンポジタの無い場所でプロトコルを試す
+
+CI にはコンポジタもデスクトップも、承認する人もいません。それでも portal は、現代的な Linux デスクトップにおいてランチャーとキーボードの間に立つ唯一のものです。壊れたらちゃんと落ちるテストが要りました。
+
+そこでテストは portal を自分で持ち込みます。プライベートな `dbus-daemon` を起動し、その上で `org.freedesktop.portal.Desktop` を名乗り、`GlobalShortcuts` を実装したオブジェクトを配信し、本物の会話 — `CreateSession`、`BindShortcuts`、そして `Activated` シグナル — を実際の `portal::listen` に通して、反対側から summon が出てくることを確かめます。
+
+プロトコルが面白くなったのはモックを書いている最中でした。**portal は request や session のオブジェクトパスを選べません。**クライアントが自分の bus name と自分で作ったトークンからパスを計算し、そこを購読してから呼びます。
+
+```rust
+fn portal_path(kind: &str, sender: &str, token: &str) -> OwnedObjectPath {
+    let unique = sender.trim_start_matches(':').replace('.', "_");
+    ObjectPath::try_from(format!(
+        "/org/freedesktop/portal/desktop/{kind}/{unique}/{token}"
+    ))
+    .unwrap()
+    .into()
+}
+```
+
+自分で考えたパスを返すモックは、二度と応答を届けられません。呼び出しは全部成功し、レスポンスは誰も聞いていない場所へ飛び、テストはハングします。クライアント側の計算を再現することはモックの実装詳細ではなく、プロトコルそのものでした。
+
+## 捕まえたレース
+
+そしてテストは本物のバグを見つけました。テストを書く理由はそれしかありません。
+
+最初の版は、ショートカットを bind してから `Activated` を購読していました。読む分には自然で、間違っています。コンポジタは binding が存在した瞬間に activation を届けてよく、その隙間で押されたキーは**まだ開いていないストリームの上を通り過ぎます**。めったに起きず、手では再現できず、そのまま残り続ける種類のバグです。
+
+修正は 2 文の順番だけです。
+
+```rust
+// Subscribed before binding, not after: the compositor may deliver an
+// activation as soon as the binding exists, and a stream opened afterwards
+// would miss anything pressed in the gap.
+let mut activated = shortcuts.receive_activated().await?;
+
+let shortcut = NewShortcut::new(SHORTCUT_ID, DESCRIPTION).preferred_trigger(Some(trigger));
+let request = shortcuts.bind_shortcuts(&session, &[shortcut], None).await?;
+```
+
+テストは正直になっただけでなく、短くなりました。それまではショートカットをリトライループの中で発火させていました。1 つのシグナルがときどき失われるときに書いてしまうやつで、順序が閉じたレースをちょうど覆い隠していたわけです。購読を先にすれば、シグナル 1 つで必ず足ります。0.14s が 0.02s になり、テストには「リトライループを戻してはいけない理由」のコメントが入りました。
+
+通るテストはそれだけでは何も証明しないので、隣に書かれたコードにただ同意しているだけではないことを確認しておく価値があります。`portal.rs` のショートカット id 比較を反転させると落ちます。よし。
+
+## 途中で出てきた小さいもの 2 つ
+
+オートリピート。押しっぱなしの chord は `Pressed` を 1 回では届けません。キーが下りている間ずっと出し続け、1 回のポーリングで複数まとめて拾えます。それぞれで summon すると、押している間 40 ミリ秒ごとにランチャーが開いたり閉じたりします。状態機械は「押下エッジ」だけを取り、他は捨てます。
+
+もう 1 つ。常駐したい Linux バイナリには、決して見せないウィンドウが要ります。GPUI の X11 バックエンドは最後のウィンドウが閉じた時点でイベントループを止めるので、`nohrs launcher` は 1×1 の不可視ウィンドウを 1 つ開いたままにしています。これが無いと、グローバルホットキーは**ちょうど 1 回だけ**動きます。
+
+## 確かめていないこと
+
+portal 経路の検証相手はモックであって、デスクトップではありません。プロトコルのやり取りは本物で端から端まで通していますが、リクエストが届いたときに GNOME や KDE が実際にユーザーへ何を出すのか、承認ダイアログがどう振る舞うのかは実機で確認していません。この穴は主張で埋めずに、`docs/launcher.md` に既知の制約として書いてあります。
+
+activation token も渡していません。`Activated` シグナルはトークンを持っていて、それをウィンドウ生成に引き渡すのが、Wayland クライアントがこれから要求するフォーカスを確実に得る方法です。GPUI 0.2 はトークンを内部で管理していて外から渡す口が無いので、ランチャーはそれ無しで呼び出されています。
+
+全体を貫いている判断が 1 つあって、それは Wayland の話ではありません。**失敗するときは、失敗したと言うほうを選ぶ**。登録に成功してから画面の 3 分の 1 を静かにカバーする grab は、注釈付きで動いている機能ではありません。半年後に、混乱したユーザーから届く、誰にも再現できないバグ報告です。
