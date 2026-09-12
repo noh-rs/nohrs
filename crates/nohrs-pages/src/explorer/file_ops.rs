@@ -36,9 +36,47 @@ pub(crate) enum ClipMode {
 #[derive(Clone, Default)]
 pub(crate) struct ExplorerClipboard {
     entry: Option<(ClipMode, Vec<PathBuf>)>,
+    // Bumped on every write. A paste records the generation it leaves behind so
+    // that, finishing later, it can tell its own clipboard state apart from one
+    // the user — or an overlapping paste — has claimed since. Comparing against
+    // "is the clipboard empty" cannot: two cut pastes in flight both leave it
+    // empty, and whichever finishes first would look like the owner of both.
+    generation: u64,
 }
 
 impl Global for ExplorerClipboard {}
+
+impl ExplorerClipboard {
+    // Replaces the clipboard contents, returning the generation stamped on this
+    // write.
+    fn write(entry: Option<(ClipMode, Vec<PathBuf>)>, cx: &mut App) -> u64 {
+        let generation = Self::generation(cx).wrapping_add(1);
+        cx.set_global(ExplorerClipboard { entry, generation });
+        generation
+    }
+
+    fn generation(cx: &App) -> u64 {
+        cx.try_global::<ExplorerClipboard>()
+            .map_or(0, |clip| clip.generation)
+    }
+}
+
+// Puts the sources a cut-paste could not move back on the clipboard, so the user
+// can retry them as a move. Without this the cleared clipboard falls through to
+// the system clipboard's path text, which carries no cut/copy distinction and so
+// retries a failed *move* as a *copy*.
+//
+// Only restores when the clipboard is still the one this paste left behind:
+// anything else means newer state the user can see, which is the live one.
+// Takes `&mut App` rather than the pane so a batch outliving the pane that
+// started it still restores — the clipboard is process-wide, and the retry
+// matters to whatever pane the user is looking at now.
+fn retain_failed_cut(failed: Vec<PathBuf>, generation: u64, cx: &mut App) {
+    if failed.is_empty() || ExplorerClipboard::generation(cx) != generation {
+        return;
+    }
+    ExplorerClipboard::write(Some((ClipMode::Cut, failed)), cx);
+}
 
 /// State of an in-progress inline rename of the listing row at `index` (an index
 /// into `filtered_entries`).
@@ -159,11 +197,33 @@ impl ExplorerPane {
     where
         F: FnOnce() -> Vec<String> + Send + 'static,
     {
+        self.run_fs_op_with(total, success_label, cx, move || (op(), ()), |(), _| {});
+    }
+
+    // [`run_fs_op`](Self::run_fs_op) for batches that carry an outcome of their
+    // own beyond the failure messages. `on_complete` takes `&mut App` rather
+    // than the pane, and runs whether or not the pane outlived the batch, so an
+    // outcome owning process-wide state is not dropped along with the pane that
+    // started the work.
+    fn run_fs_op_with<T, F, G>(
+        &mut self,
+        total: usize,
+        success_label: String,
+        cx: &mut Context<Self>,
+        op: F,
+        on_complete: G,
+    ) where
+        T: Send + 'static,
+        F: FnOnce() -> (Vec<String>, T) + Send + 'static,
+        G: FnOnce(T, &mut App) + 'static,
+    {
+        use nohrs_core::telemetry::LogErr as _;
         let task = cx.background_spawn(async move { op() });
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
             async move {
-                let errors = task.await;
+                let (errors, outcome) = task.await;
+                cx.update(|cx| on_complete(outcome, cx)).log_err();
                 this.update(&mut cx, |pane, cx| {
                     pane.reload();
                     if errors.is_empty() {
@@ -238,9 +298,7 @@ impl ExplorerPane {
             return;
         }
         let buffers = paths.iter().map(PathBuf::from).collect();
-        cx.set_global(ExplorerClipboard {
-            entry: Some((mode, buffers)),
-        });
+        ExplorerClipboard::write(Some((mode, buffers)), cx);
         cx.write_to_clipboard(ClipboardItem::new_string(paths.join("\n")));
         let verb = match mode {
             ClipMode::Copy => "copied",
@@ -298,7 +356,10 @@ impl ExplorerPane {
         let mut resolved = Vec::new();
         // Destination names already claimed by an earlier source in this same
         // batch, so two sources sharing a basename (possible via the system
-        // clipboard) don't silently overwrite each other.
+        // clipboard) don't silently overwrite each other. A name is claimed
+        // whether or not the destination is already occupied: a conflicting name
+        // resolved as Overwrite is still one destination, so a second source
+        // aiming at it has to be numbered too.
         let mut claimed = std::collections::HashSet::new();
         for src in sources {
             let Some(name) = src.file_name() else {
@@ -313,12 +374,13 @@ impl ExplorerPane {
                 }
                 continue;
             }
-            if ops::would_conflict(&dst) {
-                pending.push_back(src);
-            } else if !claimed.insert(dst) {
+            let occupied = ops::would_conflict(&dst);
+            if !claimed.insert(dst) {
                 // Another source already targets this name; number it instead of
                 // letting the later paste clobber the earlier one.
                 resolved.push((src, ConflictResolution::Rename));
+            } else if occupied {
+                pending.push_back(src);
             } else {
                 clear.push(src);
             }
@@ -394,11 +456,12 @@ impl ExplorerPane {
         if total == 0 {
             return;
         }
-        // A cut consumes the clipboard: clear it now so a second paste does not
-        // try to move the (already relocated) sources again.
-        if mode == ClipMode::Cut {
-            cx.set_global(ExplorerClipboard::default());
-        }
+        // A cut consumes the clipboard: clear it now so a second paste, fired
+        // while this one is still running, does not try to move the sources a
+        // second time. Whatever fails to move is put back afterwards by
+        // `retain_failed_cut`, which uses this generation to recognize the
+        // clipboard state it left behind.
+        let cut_generation = (mode == ClipMode::Cut).then(|| ExplorerClipboard::write(None, cx));
         let label = format!(
             "{total} item(s) {}",
             if mode == ClipMode::Cut {
@@ -407,37 +470,53 @@ impl ExplorerPane {
                 "pasted"
             }
         );
-        self.run_fs_op(total, label, cx, move || {
-            let mut errors = Vec::new();
-            for src in clear {
-                if let Some(name) = src.file_name() {
+        self.run_fs_op_with(
+            total,
+            label,
+            cx,
+            move || {
+                let mut errors = Vec::new();
+                let mut failed = Vec::new();
+                for src in clear {
+                    // Owned so the borrow of `src` ends before `src` is moved
+                    // into `failed`.
+                    let Some(name) = src.file_name().map(std::ffi::OsStr::to_os_string) else {
+                        continue;
+                    };
                     let dst = dest_dir.join(name);
                     if let Err(error) = apply_one(mode, &src, &dst) {
                         errors.push(format!("{}: {error}", src.display()));
+                        failed.push(src);
                     }
                 }
-            }
-            for (src, resolution) in resolved {
-                let Some(name) = file_name_of(&src) else {
-                    continue;
-                };
-                let result = match resolution {
-                    // Filtered out above; kept for exhaustiveness without panicking.
-                    ConflictResolution::Skip => continue,
-                    ConflictResolution::Rename => {
-                        let unique = ops::unique_name(&dest_dir, &name);
-                        apply_one(mode, &src, &dest_dir.join(unique))
+                for (src, resolution) in resolved {
+                    let Some(name) = file_name_of(&src) else {
+                        continue;
+                    };
+                    let result = match resolution {
+                        // Filtered out above; kept for exhaustiveness without panicking.
+                        ConflictResolution::Skip => continue,
+                        ConflictResolution::Rename => {
+                            let unique = ops::unique_name(&dest_dir, &name);
+                            apply_one(mode, &src, &dest_dir.join(unique))
+                        }
+                        ConflictResolution::Overwrite => {
+                            overwrite_apply(mode, &src, &dest_dir.join(&name))
+                        }
+                    };
+                    if let Err(error) = result {
+                        errors.push(format!("{}: {error}", src.display()));
+                        failed.push(src);
                     }
-                    ConflictResolution::Overwrite => {
-                        overwrite_apply(mode, &src, &dest_dir.join(&name))
-                    }
-                };
-                if let Err(error) = result {
-                    errors.push(format!("{}: {error}", src.display()));
                 }
-            }
-            errors
-        });
+                (errors, failed)
+            },
+            move |failed, cx| {
+                if let Some(generation) = cut_generation {
+                    retain_failed_cut(failed, generation, cx);
+                }
+            },
+        );
     }
 
     // ---- Rename + new folder (§1, §6) ----

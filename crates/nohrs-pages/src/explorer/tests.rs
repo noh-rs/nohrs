@@ -1183,6 +1183,313 @@ async fn cut_paste_without_conflict_moves_the_source(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn paste_numbers_a_second_source_sharing_an_existing_name(cx: &mut TestAppContext) {
+    // Two clipboard sources named `foo.txt`, and `foo.txt` already exists at the
+    // destination. Both collide with the same single destination, so resolving
+    // the collision as Overwrite must not point both at it — the second would
+    // silently replace the first.
+    let dir = tempfile::tempdir().unwrap();
+    let (first, second, dst) = (
+        dir.path().join("a"),
+        dir.path().join("b"),
+        dir.path().join("dst"),
+    );
+    for sub in [&first, &second, &dst] {
+        std::fs::create_dir(sub).unwrap();
+    }
+    std::fs::write(first.join("foo.txt"), "A").unwrap();
+    std::fs::write(second.join("foo.txt"), "B").unwrap();
+    std::fs::write(dst.join("foo.txt"), "D").unwrap();
+
+    let window = new_explorer(cx);
+    // Two files in different directories can't be selected in one listing, so
+    // seed them through the system-clipboard path text, which `read_clipboard`
+    // accepts as a copy.
+    cx.update(|cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(format!(
+            "{}\n{}",
+            first.join("foo.txt").display(),
+            second.join("foo.txt").display()
+        )));
+    });
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            assert!(pane.prepare_paste(cx), "the existing name collides");
+            pane.set_apply_to_all(true, cx);
+            pane.resolve_current_conflict(ConflictResolution::Overwrite, cx);
+            pane.execute_paste_plan(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        std::fs::read_to_string(dst.join("foo.txt")).unwrap(),
+        "A",
+        "the conflicting source overwrites the destination"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dst.join("foo (2).txt")).unwrap(),
+        "B",
+        "the second source sharing that name is numbered, not dropped"
+    );
+}
+
+#[gpui::test]
+async fn closing_the_conflict_dialog_leaves_the_plan_for_the_resolving_button(
+    cx: &mut TestAppContext,
+) {
+    // Each conflict button resolves, then calls `window.close_dialog(cx)`, then
+    // `execute_paste_plan`. That order is only safe because gpui-component's
+    // `WindowExt::close_dialog` pops the dialog stack without running the
+    // dialog's own `on_close` — which cancels the paste, and would otherwise
+    // take the plan out from under the very paste the button just resolved.
+    // Pin it, so an upgrade that starts firing `on_close` from `close_dialog`
+    // fails here rather than silently pasting nothing.
+    use gpui_component::WindowExt as _;
+
+    let (_dir, src, dst) = paste_fixture();
+    let (window, pane) = new_explorer_in_root(cx);
+    // Opening the dialog updates the `Root` entity, so the window's own
+    // `update` (which already holds it) would panic on the second lease.
+    // `VisualTestContext` hands out the `Window` without taking that lease.
+    let mut cx = gpui::VisualTestContext::from_window(window.into(), cx);
+
+    pane.update_in(&mut cx, |pane, window, cx| {
+        pane.cwd = src.to_string_lossy().to_string();
+        pane.reload();
+        pane.select_all();
+        pane.copy_selection(cx);
+        pane.cwd = dst.to_string_lossy().to_string();
+        pane.reload();
+        pane.paste_into_cwd(window, cx);
+    });
+
+    let done = pane.update(&mut cx, |pane, cx| {
+        assert!(
+            pane.paste_plan.is_some(),
+            "the collision opens the dialog with a plan pending"
+        );
+        pane.resolve_current_conflict(ConflictResolution::Overwrite, cx)
+    });
+    assert!(done, "the only conflict is resolved");
+
+    cx.update(|window, cx| window.close_dialog(cx));
+    pane.update(&mut cx, |pane, cx| {
+        assert!(
+            pane.paste_plan.is_some(),
+            "close_dialog must not cancel the paste it is closing over"
+        );
+        pane.execute_paste_plan(cx);
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        std::fs::read_to_string(dst.join("foo.txt")).unwrap(),
+        "SRC",
+        "the resolved overwrite actually ran"
+    );
+}
+
+#[gpui::test]
+async fn a_failed_cut_does_not_clobber_a_clipboard_claimed_while_it_ran(cx: &mut TestAppContext) {
+    // Restoring failed cut sources must not overwrite whatever the user (or an
+    // overlapping paste) put on the clipboard while the batch was in flight —
+    // that newer state is the one they can see.
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::create_dir(&dst).unwrap();
+    std::fs::write(src.join("x.txt"), "X").unwrap();
+    std::fs::write(src.join("y.txt"), "Y").unwrap();
+
+    let window = new_explorer(cx);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_single(0); // x.txt
+            pane.cut_selection(cx);
+        })
+        .unwrap();
+
+    // Remove the source so the cut fails, then start the paste without parking.
+    std::fs::remove_file(src.join("x.txt")).unwrap();
+    window
+        .update(cx, |pane, window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.paste_into_cwd(window, cx);
+            // Still in flight: the user copies something else.
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_all(); // only y.txt remains
+            pane.copy_selection(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    window
+        .update(cx, |pane, window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.paste_into_cwd(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        std::fs::read_to_string(dst.join("y.txt")).unwrap(),
+        "Y",
+        "the copy the user made during the paste is what pastes"
+    );
+    assert!(
+        src.join("y.txt").exists(),
+        "and it stays a copy — the failed cut did not replace it"
+    );
+}
+
+// Randomized scheduling: the two batches below complete in an order the
+// dispatcher picks, and the whole point of the generation stamp is that the
+// outcome no longer depends on it. Varying the seed exercises both orders.
+#[gpui::test(iterations = 25)]
+async fn overlapping_cut_pastes_restore_only_the_live_clipboard(cx: &mut TestAppContext) {
+    // Two failed cut pastes in flight at once. Both left the clipboard empty, so
+    // ownership cannot be read off "is the clipboard empty" — whichever finished
+    // first would claim the restore, and with A first that strands B's sources
+    // as non-retryable. Keyed on the generation each paste left behind, only B
+    // (whose clear is the clipboard's current state) restores, whichever order
+    // they finish in.
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::create_dir(&dst).unwrap();
+    std::fs::write(src.join("x.txt"), "X").unwrap();
+    std::fs::write(src.join("y.txt"), "Y").unwrap();
+
+    let window = new_explorer(cx);
+    // Batch A: cut x.txt, delete it so the move fails, start the paste.
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_single(0); // x.txt
+            pane.cut_selection(cx);
+        })
+        .unwrap();
+    std::fs::remove_file(src.join("x.txt")).unwrap();
+    window
+        .update(cx, |pane, window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.paste_into_cwd(window, cx);
+        })
+        .unwrap();
+
+    // Batch B: same again for y.txt, without parking — so A is still in flight.
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_all(); // only y.txt remains
+            pane.cut_selection(cx);
+        })
+        .unwrap();
+    std::fs::remove_file(src.join("y.txt")).unwrap();
+    window
+        .update(cx, |pane, window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.paste_into_cwd(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    // Restore both sources and retry whatever the clipboard kept.
+    std::fs::write(src.join("x.txt"), "X").unwrap();
+    std::fs::write(src.join("y.txt"), "Y").unwrap();
+    window
+        .update(cx, |pane, window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.paste_into_cwd(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        std::fs::read_to_string(dst.join("y.txt")).unwrap(),
+        "Y",
+        "the later batch's failed source is the one retained"
+    );
+    assert!(
+        !src.join("y.txt").exists(),
+        "and it retries as a move, not a copy"
+    );
+    assert!(
+        !dst.join("x.txt").exists(),
+        "the earlier batch did not claim the restore"
+    );
+    assert!(src.join("x.txt").exists());
+}
+
+#[gpui::test]
+async fn cut_paste_keeps_failed_sources_on_the_clipboard_as_a_cut(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    std::fs::create_dir(&src).unwrap();
+    std::fs::create_dir(&dst).unwrap();
+    std::fs::write(src.join("x.txt"), "X").unwrap();
+
+    let window = new_explorer(cx);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_all();
+            pane.cut_selection(cx);
+        })
+        .unwrap();
+
+    // Make the move fail by removing the source out from under the paste.
+    std::fs::remove_file(src.join("x.txt")).unwrap();
+    window
+        .update(cx, |pane, window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.paste_into_cwd(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .read_with(cx, |pane, _cx| {
+            let (_, is_error) = pane.status_for_footer().expect("the failure is reported");
+            assert!(is_error, "the move failed");
+        })
+        .unwrap();
+    assert!(!dst.join("x.txt").exists());
+
+    // Retrying must still be a *move*. Were the failed source dropped from the
+    // clipboard, this would fall back to the system clipboard's path text, which
+    // carries no cut/copy distinction and so would copy instead.
+    std::fs::write(src.join("x.txt"), "X").unwrap();
+    window
+        .update(cx, |pane, window, cx| pane.paste_into_cwd(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(std::fs::read_to_string(dst.join("x.txt")).unwrap(), "X");
+    assert!(
+        !src.join("x.txt").exists(),
+        "the retry moves the source rather than copying it"
+    );
+}
+
+#[gpui::test]
 async fn rename_collision_falls_back_to_numbering(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
