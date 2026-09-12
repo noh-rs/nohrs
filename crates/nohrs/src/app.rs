@@ -3,15 +3,17 @@
 //! The binary is the only layer allowed to depend on every crate, so it wires
 //! the pillars together: it builds the shared window chrome from `nohrs-ui`,
 //! initializes services that need the async runtime, and opens the Explorer
-//! window hosting `nohrs_pages::RootView`. The launcher window (`nohrs-launcher`,
-//! P3) will be opened from here too, as a symmetric second pillar.
+//! window hosting `nohrs_pages::RootView` and the launcher window hosting
+//! `nohrs_launcher::LauncherView`. Neither pillar references the other; the
+//! binary owns the keybinding that summons the launcher from anywhere.
 
-use crate::cli::Cli;
-use gpui::{App, AppContext, Application, Bounds, px, size};
+use crate::cli::{Cli, Command};
+use gpui::{App, AppContext, Application, Bounds, KeyBinding, px, size};
 use gpui_component::Root;
 use gpui_component::resizable::ResizableState;
 use nohrs_core::config::{self, ConfigOverride};
-use nohrs_core::telemetry::logging::init_logging;
+use nohrs_core::telemetry::logging::{FileLogConfig, init_logging_with_file};
+use nohrs_launcher::{LauncherIndex, ToggleLauncher};
 use nohrs_pages::RootView;
 use nohrs_services::search::SearchService;
 use nohrs_store::{KvStore, RedbKvStore, StoreLogConfig};
@@ -24,7 +26,11 @@ pub struct NohrsApp;
 
 impl NohrsApp {
     pub fn run(cli: &Cli) {
-        init_logging();
+        // Held for the whole run: dropping it stops the log file being written.
+        // Installed before the config is read so a failure to load the config is
+        // itself recorded, which means the file sink uses its defaults rather
+        // than anything the user set — see `docs/logging.md` §4.
+        let _log_guard = init_logging_with_file(&FileLogConfig::default());
 
         // Load configuration before opening the window: defaults < file < env <
         // CLI (config.md §3). A missing file is created with defaults so users
@@ -45,8 +51,32 @@ impl NohrsApp {
         // §7). The search service is now tokio-free — its file watcher and progress
         // channels run on std threads and runtime-agnostic channels — so no async
         // runtime needs to be entered here.
+        let launcher_only = matches!(cli.command, Some(Command::Launcher));
+
         Application::new().with_assets(Assets).run(move |app: &mut App| {
             gpui_component::init(app);
+
+            // The name index is built once for the whole run and shared by every
+            // launcher window, so summoning the launcher never waits on a scan.
+            let launcher = LauncherIndex::start(app);
+            // Two ways in (docs/launcher.md §2): a chord the OS routes to nohrs
+            // from any application, and one GPUI handles while nohrs is in front.
+            launcher.install_global_hotkey(app);
+            install_in_app_launcher_key(launcher.clone(), app);
+
+            if launcher_only {
+                // Resident mode: nohrs is a background process whose only job is
+                // to answer the global hotkey, so it must outlive each dismissal
+                // of the launcher window.
+                if let Err(error) = nohrs_launcher::open_keep_alive_window(app) {
+                    tracing::error!("failed to open the keep-alive window: {error}");
+                }
+                if let Err(error) = launcher.toggle(app) {
+                    tracing::error!("failed to open launcher window: {error}");
+                }
+                return;
+            }
+
             let resizable = app.new(|_| ResizableState::default());
             let bounds = Bounds::centered(
                 None,
@@ -111,6 +141,31 @@ impl NohrsApp {
             }
         });
     }
+}
+
+/// Binds the launcher's in-app summon key and handles it at application level.
+///
+/// This is the half of docs/launcher.md §2 that GPUI can serve: it only fires
+/// while a nohrs window has focus. Summoning the launcher over *other*
+/// applications is the OS-level registration in `nohrs_launcher::hotkey`.
+///
+/// The handler is global rather than attached to a window so the same key works
+/// from the explorer, from a launcher window (where it toggles the launcher
+/// closed), and from any window added later — without either pillar having to
+/// know the other exists.
+///
+/// `cmd-k` is the platform key on macOS and `ctrl-k` its equivalent elsewhere;
+/// both are bound so the binding is right on either platform.
+fn install_in_app_launcher_key(launcher: LauncherIndex, app: &mut App) {
+    app.bind_keys([
+        KeyBinding::new("cmd-k", ToggleLauncher, None),
+        KeyBinding::new("ctrl-k", ToggleLauncher, None),
+    ]);
+    app.on_action(move |_: &ToggleLauncher, cx: &mut App| {
+        if let Err(error) = launcher.toggle(cx) {
+            tracing::error!("failed to toggle launcher window: {error}");
+        }
+    });
 }
 
 /// Opens the host KV store at `<data_dir>/state.redb`, creating the data

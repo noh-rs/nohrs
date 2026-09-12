@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nohrs-web",
+  "main": "workers/site.ts",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    // Every request, not just `/`: this option matches on path, and the
+    // canonical-host redirect in workers/site.ts has to see `www` requests on
+    // every path, not only the root. The Worker passes anything it does not
+    // answer itself straight to the assets binding.
+    //
+    // The two hostnames below are the only ones routed here. The Worker's
+    // redirect is written for any `*.nohrs.app` so that adding a hostname to
+    // `routes` is the only step needed, but nothing else reaches it today.
+    "run_worker_first": true,
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "routes": [
+    { "pattern": "nohrs.app", "custom_domain": true },
+    { "pattern": "www.nohrs.app", "custom_domain": true }
+  ]
+}

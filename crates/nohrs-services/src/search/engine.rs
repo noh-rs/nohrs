@@ -156,6 +156,7 @@ impl SearchEngine {
     /// Dispatches a search to the appropriate backend. Both backends are
     /// synchronous, so callers should invoke this from `cx.background_spawn` to
     /// keep the UI thread responsive (replaces the former spawn_blocking).
+    #[tracing::instrument(target = "nohrs::op", name = "search.query", level = "debug", skip_all, fields(query = %query, scope = ?scope))]
     pub fn search(&self, query: String, scope: SearchScope) -> Result<Vec<SearchResult>> {
         match scope {
             SearchScope::Home => self.index_manager.search(&query),

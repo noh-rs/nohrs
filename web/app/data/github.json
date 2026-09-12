@@ -1,0 +1,51 @@
+{
+  "fetchedAt": "2026-09-08",
+  "source": "fallback",
+  "repo": {
+    "nameWithOwner": "noh-rs/nohrs",
+    "description": "Launcher × Explorer - a fast, keyboard-driven Finder alternative, extensible with sandboxed WASM plugins. Built in Rust.",
+    "stars": 149,
+    "forks": 13,
+    "openIssues": 103,
+    "license": "MIT",
+    "defaultBranch": "develop"
+  },
+  "releases": [],
+  "commits": [
+    {
+      "sha": "85b5823",
+      "title": "nohrs-cli: Add a trash-by-default rm command (#232)",
+      "date": "2026-09-07",
+      "author": "syuya2036",
+      "url": "https://github.com/noh-rs/nohrs/commit/85b5823a364410c3f05cd8ffaa77fb818027e499"
+    },
+    {
+      "sha": "cb8cdeb",
+      "title": "Make ui-run.sh wait for a rendered frame instead of a log line (#233)",
+      "date": "2026-09-07",
+      "author": "syuya2036",
+      "url": "https://github.com/noh-rs/nohrs/commit/cb8cdeb95e7eaa4c04562bc04d182b1eba176676"
+    },
+    {
+      "sha": "a06ed70",
+      "title": "Merge pull request #191 from noh-rs/feature/explorer-file-ops-foundation",
+      "date": "2026-06-13",
+      "author": "syuya2036",
+      "url": "https://github.com/noh-rs/nohrs/commit/a06ed708ffd3422186198ce349fda7894eb1d075"
+    },
+    {
+      "sha": "a57820e",
+      "title": "explorer: Add file operations service and multi-select model",
+      "date": "2026-06-13",
+      "author": "syuya2036",
+      "url": "https://github.com/noh-rs/nohrs/commit/a57820e0744dbb79813bfb808f53f171d3ef8968"
+    },
+    {
+      "sha": "4756f8a",
+      "title": "deps: bump rust-embed from 8.9.0 to 8.11.0 (#175)",
+      "date": "2026-06-12",
+      "author": "dependabot[bot]",
+      "url": "https://github.com/noh-rs/nohrs/commit/4756f8a3e759d43fa355e08c18244f13f896bce9"
+    }
+  ]
+}

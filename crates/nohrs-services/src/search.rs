@@ -5,6 +5,8 @@
 pub mod backend;
 /// The search engine wiring together the index, watcher, and root backend.
 pub mod engine;
+/// In-memory index of file and directory names, for keystroke-latency matching.
+pub mod file_index;
 /// Tantivy index management and incremental updates.
 pub mod indexer;
 /// Ripgrep/`grep`-crate based regex search backend (non-macOS root scans).

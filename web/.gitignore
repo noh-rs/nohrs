@@ -1,0 +1,19 @@
+node_modules
+.output
+.tanstack
+.vite
+dist
+.wrangler
+
+# Fonts are self-hosted but not vendored: `scripts/fetch-fonts.mjs` downloads
+# them from Google Fonts at build time and writes the @font-face CSS. Keeping
+# the binaries out of git avoids ~400 subset files of churn per weight change.
+public/fonts
+
+# Rendered by scripts/build-og.mjs from the same strings the pages use.
+public/og
+public/apple-touch-icon.png
+
+# Written by scripts/fetch-github.mjs at build time; app/data/github.json is
+# the committed fallback used when the API is unreachable or rate-limited.
+app/data/github.generated.json
