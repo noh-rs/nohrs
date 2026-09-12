@@ -1,0 +1,914 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Design tokens — ADR 0008. Light is the primary theme; dark follows the OS
+   unless the header toggle has stamped an explicit `data-theme` on <html>.
+
+   Three states, in this order, and every token must be defined in the first
+   one: bare :root (light), the OS preference guarded so an explicit light
+   choice still wins, and the explicit dark choice last so the toggle beats
+   the media query in both directions.
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  --paper: #fcfaf8;
+  --surface: #f4efe9;
+  --sunken: #efe8e0;
+  --line: #e3dbd0;
+  --line-soft: #ede6dd;
+  --ink: #191510;
+  --ink-2: #453c33;
+  --muted: #6f6459;
+  --tan: #dea584; /* brand — decorative only, 1.9:1 on paper */
+  --tan-ink: #94541f; /* brand — the one that passes AA on every light ground */
+  --tan-wash: #f6e9de;
+
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur: 220ms;
+  --frame: 1120px;
+  --shot-dim: 1;
+  --orb-strength: 0.24;
+  --orb-bloom: 0.16;
+
+  --sans: "Inter", "Noto Sans JP", ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #100e0c;
+    --surface: #191512;
+    --sunken: #14110f;
+    --line: #2c2621;
+    --line-soft: #221d19;
+    --ink: #f3eee7;
+    --ink-2: #cfc6bb;
+    --muted: #9a9088;
+    --tan: #dea584;
+    --tan-ink: #e7b693;
+    --tan-wash: #241a13;
+    /* Five screenshots of a light app glare on a dark ground. Only the ring is
+       dimmed; the panel that opens shows the shot as it was taken. */
+    --shot-dim: 0.9;
+    /* The orb carries the same ramp in both themes, but dark has far less room
+       above its ground colour before the tagline over it stops passing AA, so
+       the flare is held much closer in. */
+    --orb-strength: 0.22;
+    --orb-bloom: 0.16;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: #100e0c;
+  --surface: #191512;
+  --sunken: #14110f;
+  --line: #2c2621;
+  --line-soft: #221d19;
+  --ink: #f3eee7;
+  --ink-2: #cfc6bb;
+  --muted: #9a9088;
+  --tan: #dea584;
+  --tan-ink: #e7b693;
+  --tan-wash: #241a13;
+  --shot-dim: 0.9;
+  --orb-strength: 0.22;
+  --orb-bloom: 0.16;
+  color-scheme: dark;
+}
+
+/* `inline` keeps the utilities pointing at the custom properties rather than
+   copying their values, so `bg-paper` re-resolves when the theme changes. */
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-tan: var(--tan);
+  --color-tan-ink: var(--tan-ink);
+  --color-tan-wash: var(--tan-wash);
+
+  --font-sans: var(--sans);
+  --font-mono: var(--mono);
+
+  --ease-brand: var(--ease);
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  /* The wheel is left entirely to the browser — scroll-snap pulls at its
+     anchors even in `proximity`, and `scroll-behavior: smooth` on the root
+     re-times keyboard and scrollbar scrolling too. Anchor jumps get their
+     easing from the click handler in `useAnchorScroll` instead.
+
+     `overscroll-behavior: none` is the one thing the page does assert: the
+     document stops dead at its ends instead of rubber-banding past them, and
+     an overscroll gesture cannot chain out to the browser (pull-to-refresh,
+     back-swipe). It changes what happens *past* the ends, not the wheel. */
+  html {
+    scroll-padding-top: 76px;
+    overscroll-behavior: none;
+  }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "cv05" 1, "cv11" 1;
+  }
+
+  :lang(ja) {
+    font-family: "Noto Sans JP", var(--sans);
+  }
+
+  a {
+    color: inherit;
+  }
+
+  ::selection {
+    background: var(--tan);
+    color: #191510;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--tan-ink);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+}
+
+@layer components {
+  /* The page's one horizontal measure. Everything lines up on it. */
+  .frame {
+    width: 100%;
+    max-width: var(--frame);
+    margin-inline: auto;
+    padding-inline: 24px;
+  }
+
+  /* Structural device: a mono label whose rule runs to the right margin. It
+     is what separates sections instead of cards, borders or background fills. */
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 28px;
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .eyebrow::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    white-space: nowrap;
+    padding: 11px 18px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font-size: 0.9375rem;
+    font-weight: 500;
+    text-decoration: none;
+    transition:
+      background var(--dur) var(--ease),
+      border-color var(--dur) var(--ease),
+      color var(--dur) var(--ease);
+  }
+
+  .btn-primary {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  .btn-primary:hover {
+    background: var(--tan-ink);
+  }
+
+  .btn-ghost {
+    color: var(--ink);
+    border-color: var(--line);
+  }
+
+  .btn-ghost:hover {
+    border-color: var(--tan);
+    background: var(--tan-wash);
+  }
+
+  .btn .count {
+    padding-left: 9px;
+    margin-left: 1px;
+    border-left: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    font-family: var(--mono);
+    font-size: 0.8125rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Segmented toggle: the pill slides between options rather than each option
+     lighting up, so the control reads as one thing with a position. */
+  .seg {
+    position: relative;
+    display: inline-flex;
+    padding: 2px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+  }
+
+  .seg .thumb {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 2px;
+    border-radius: 999px;
+    background: var(--paper);
+    box-shadow: 0 1px 2px rgb(30 20 10 / 0.1);
+    transition:
+      transform var(--dur) var(--ease),
+      width var(--dur) var(--ease);
+  }
+
+  .seg button {
+    position: relative;
+    z-index: 1;
+    padding: 7px 11px;
+    border: 0;
+    border-radius: 999px;
+    background: none;
+    cursor: pointer;
+    color: var(--muted);
+    font: 500 0.75rem/1 var(--mono);
+    letter-spacing: 0.04em;
+    transition: color var(--dur) var(--ease);
+  }
+
+  .seg button[aria-pressed="true"] {
+    color: var(--ink);
+  }
+
+  /* Hairline rows. The page's list vocabulary — roadmap phases, community
+     links, releases and commits all use it, so nothing needs a card. */
+  .rows {
+    border-top: 1px solid var(--line);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 20px 6px;
+    border-bottom: 1px solid var(--line);
+    color: inherit;
+    text-decoration: none;
+    transition:
+      background var(--dur) var(--ease),
+      padding-left var(--dur) var(--ease);
+  }
+
+  .row:hover {
+    background: var(--surface);
+    padding-left: 14px;
+  }
+
+  .row .rl {
+    flex: none;
+    width: 92px;
+    color: var(--ink);
+    font: 500 0.875rem/1 var(--mono);
+    letter-spacing: 0.06em;
+  }
+
+  .row .rd {
+    flex: 1;
+    color: var(--muted);
+    font-size: 0.9375rem;
+  }
+
+  .row .ra {
+    color: var(--muted);
+    transition:
+      transform var(--dur) var(--ease),
+      color var(--dur) var(--ease);
+  }
+
+  .row:hover .ra {
+    transform: translate(3px, -3px);
+    color: var(--tan-ink);
+  }
+
+  .cmd {
+    margin: 0;
+    padding: 15px 18px;
+    overflow-x: auto;
+    background: var(--surface);
+    border: 1px solid var(--line-soft);
+    border-radius: 5px;
+    font: 400 0.8125rem/1.9 var(--mono);
+    color: var(--ink-2);
+  }
+
+  .cmd .prompt {
+    padding-right: 10px;
+    color: var(--muted);
+    user-select: none;
+  }
+}
+
+/* ── Hero orbit ───────────────────────────────────────────────────────────
+   Five screens of the app on a ring, the tagline and the CTAs inside it.
+
+   One angle per item places both of its halves: the panel out on an ellipse
+   and its name on the same ellipse, set in from the panel. Both are turned by
+   that angle, so a name always lies along the panel it belongs to — and
+   opening one is that angle unwinding to level as the panel grows, which is
+   the whole point of the composition.
+
+   Every length is derived from the stage's height rather than the window's
+   width, because height is what a hero runs out of first: sized from the width
+   alone, the ring falls through the fold on a laptop.
+   ────────────────────────────────────────────────────────────────────────── */
+.orbit {
+  /* The window, less the header and a little air. */
+  --stage: clamp(430px, calc(100vh - 128px), 880px);
+  --half-h: calc(var(--stage) / 2);
+  /* Both radii put the panels' centres *outside* the stage, so roughly a third
+     of each one is on the page and the rest is past the edge. `--rx` follows
+     the window's own half-width, so the horizontal pair stays cut at any
+     width; the floor is for a window too narrow for that to reach. */
+  --ry: calc(var(--half-h) + 20px);
+  --rx: max(calc(var(--ry) * 1.2), calc(50vw - 20px));
+  /* Off the stage, not the window: a short window gets smaller panels rather
+     than the same panels with nowhere to sit. Capped where the shots stop
+     being able to fill them — the source is a 900px recording. */
+  --card-w: clamp(280px, calc(var(--half-h) * 1.15), 430px);
+  /* Names sit inside their own panel along the same ray, and no further out
+     than a ring of their own would be: with the panels this far out, following
+     them would strand the names at the edges of the window. The vertical cap
+     also clears the panel that slides in from the top on hover. */
+  --tag-inset: calc(var(--card-w) * 0.305 + 80px);
+  --tag-rx: min(
+    calc(var(--rx) - var(--tag-inset)),
+    calc(var(--half-h) * 1.02),
+    calc(50vw - 70px)
+  );
+  --tag-ry: min(calc(var(--ry) - var(--tag-inset)), calc(var(--half-h) * 0.58));
+  --peek: 0px;
+
+  position: relative;
+  height: var(--stage);
+  /* The panels are meant to run off the edges. This is what cuts them, and
+     `clip` does it without turning the stage into a scroll container. */
+  overflow: clip;
+}
+
+.orbit-ring {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A point at the centre of the ring. Both children hang off it, so hovering
+   either one is a hover on the same item. */
+.orbit-item {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+}
+
+/* The peek answers a pointer that is able to leave again. A tap leaves
+   `:hover` behind on a touch screen, and closing the panel returns focus to the
+   card it came from — between them, every tap used to strand one panel 56px
+   inside the ring, across the copy, until something else was tapped. Focus is
+   answered by the card's border and the outline the page already gives it,
+   neither of which moves anything if it lingers; only the peek is gated on a
+   pointer, and on nothing an engine has to guess at.  */
+@media (hover: hover) and (pointer: fine) {
+  .orbit-item:hover {
+    --peek: 56px;
+
+    z-index: 2;
+  }
+}
+
+.orbit-item:focus-within {
+  z-index: 2;
+}
+
+.orbit-card {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--card-w);
+  /* Half the shot's height: 549 / 900 / 2. */
+  margin-top: calc(var(--card-w) * -0.305);
+  margin-left: calc(var(--card-w) / -2);
+  padding: 0;
+  overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 18px 40px -32px rgb(25 21 16 / 0.55);
+  cursor: pointer;
+  transform: translate(
+      calc(var(--sin) * (var(--rx) - var(--peek))),
+      calc(var(--cos) * (var(--ry) - var(--peek)) * -1)
+    )
+    rotate(var(--a));
+  transition:
+    transform 420ms var(--ease),
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.orbit-item:focus-within .orbit-card {
+  border-color: var(--tan);
+  box-shadow: 0 28px 56px -32px rgb(25 21 16 / 0.6);
+}
+
+.orbit-item:focus-within .orbit-open {
+  background: var(--tan-wash);
+  border-color: var(--tan);
+  color: var(--tan-ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .orbit-item:hover .orbit-card {
+    border-color: var(--tan);
+    box-shadow: 0 28px 56px -32px rgb(25 21 16 / 0.6);
+  }
+
+  .orbit-item:hover .orbit-open {
+    background: var(--tan-wash);
+    border-color: var(--tan);
+    color: var(--tan-ink);
+  }
+}
+
+.orbit-card img {
+  filter: brightness(var(--shot-dim));
+}
+
+.orbit-card img,
+.orbit-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  /* The panel shows a detail, not the whole window. The origin is the point the
+     detail is framed on, so it is also the point the opened shot unzooms from. */
+  transform: scale(var(--zoom, 1));
+  transform-origin: var(--focus, 50% 50%);
+}
+
+/* The mark that says the picture is a control.
+   Every card is turned to face outward and cut by the edge it faces, so the
+   half that stays on the page is always its lower one — which is where this
+   sits, at the point of the card nearest the middle of the ring. It is round
+   because the card's own rounded corners clip it otherwise, and because a
+   circle is the one shape the turn cannot leave lying at an angle; the glyph
+   inside is turned back by that angle, or the pair below the horizon would
+   carry it upside down. */
+.orbit-open {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  box-shadow: 0 8px 18px -12px rgb(25 21 16 / 0.55);
+  color: var(--ink-2);
+  transform: translateX(-50%);
+  transition:
+    background-color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.orbit-open svg {
+  display: block;
+  transform: rotate(calc(var(--a) * -1));
+}
+
+.orbit-tag {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 300px;
+  height: 80px;
+  margin: -40px 0 0 -150px;
+  overflow: visible;
+  pointer-events: none;
+  /* The names ride a ring of their own, small enough to stay near the type
+     the panels are arranged around — but squared off by the same factor as
+     the panels, which is what carries the pair at the bottom clear of the
+     buttons instead of across their corners. */
+  transform: translate(calc(var(--sin) * var(--tag-rx)), calc(var(--cos) * var(--tag-ry) * -1))
+    rotate(var(--a));
+}
+
+.orbit-tag text {
+  fill: var(--muted);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  cursor: pointer;
+  /* `all` rather than the painted area, because the stroke below is only there
+     to widen the target around glyphs that are a pixel of ink wide. */
+  pointer-events: all;
+  stroke: transparent;
+  stroke-width: 16;
+  paint-order: stroke;
+  transition: fill var(--dur) var(--ease);
+}
+
+.orbit-item:focus-within .orbit-tag text {
+  fill: var(--tan-ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .orbit-item:hover .orbit-tag text {
+    fill: var(--tan-ink);
+  }
+}
+
+/* The accessible name of the panel button. It carries the label on the ring,
+   where the drawn name is decoration, and becomes that name on a phone. */
+.orbit-name {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.orbit-core {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 1;
+  /* The last term is what a narrow window binds on: the copy has to leave a
+     band for the names between itself and the panels. */
+  width: min(calc(var(--half-h) * 1.42), 82vw, calc(100vw - 220px));
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+/* The tagline is set off the stage as well, so the block inside the ring keeps
+   its proportion to it instead of growing until it reaches the names. */
+.orbit-core h1 {
+  font-size: clamp(2.05rem, calc(var(--half-h) * 0.19), 4.1rem);
+}
+
+.orbit-core p {
+  margin-top: calc(var(--half-h) * 0.05);
+  font-size: clamp(0.9rem, calc(var(--half-h) * 0.042), 1.0625rem);
+}
+
+.orbit-core .orbit-cta {
+  margin-top: calc(var(--half-h) * 0.07);
+}
+
+/* Set as a mono label, like every other aside on the page, so that a line of
+   instruction in the middle of the hero reads as part of the furniture rather
+   than as a second piece of copy competing with the tagline. */
+.orbit-core .orbit-hint {
+  margin-top: calc(var(--half-h) * 0.055);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+}
+
+/* ── The opened screen ────────────────────────────────────────────────────
+   Sized as it will end up and scaled *down* onto the card it came from, not
+   the other way round: the state the reader looks at is then the one whose
+   border and corners are authored, rather than a 1px hairline multiplied by
+   four. The card is measured in JS at the moment of the click. */
+.orbit-view {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+}
+
+.orbit-scrim {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--paper) 86%, transparent);
+  backdrop-filter: blur(7px);
+}
+
+/* Every rule below states the panel as the reader ends up seeing it. The flight
+   is keyframes in `HeroOrbit.tsx`, not transitions from here: a transition
+   starts from whatever the engine had resolved when the end value changed, and
+   engines disagree about when that is — driven that way this panel broke once
+   in each. Nothing here is a starting state, so a page whose JS never runs
+   shows the opened panel rather than an invisible one. */
+.orbit-panel {
+  position: relative;
+  width: min(1180px, 92vw, 130vh);
+  margin: 0;
+}
+
+.orbit-shot {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 40px 90px -50px rgb(25 21 16 / 0.6);
+}
+
+.orbit-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 18px;
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 0.9375rem;
+}
+
+.orbit-caption-label {
+  color: var(--ink);
+  font: 500 0.75rem/1.6 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.orbit-close {
+  position: absolute;
+  top: 20px;
+  right: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font: 500 0.6875rem/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.orbit-close:hover {
+  color: var(--ink);
+  border-color: var(--tan);
+}
+
+/* Standing up, for a window that is taller than it is wide. The ring above is
+   as wide as the window and no wider, which on a portrait one puts the pair on
+   the horizon so far out that only their corners are on the page. Here the
+   stage is the tall thing instead: the panels arrive from the top and bottom
+   edges with the copy in the band between them, and only slivers of the pair
+   on the horizon pass down its sides. */
+@media (max-width: 639px), (max-aspect-ratio: 5/4) {
+  .orbit {
+    --stage: clamp(620px, calc(100vh - 130px), 820px);
+    /* Capped in pixels as well: a panel scaled from the width alone outgrows
+       the ring on the wide end of this range, and neighbours start to touch. */
+    --card-w: min(66vw, 320px);
+    --rx: 56vw;
+    --ry: calc(var(--half-h) + 22px);
+  }
+
+  /* Far enough out that the two of them clear each other. At the radius the
+     rest of the ring uses, the bottom pair's corners cross in the middle of
+     the page and the two panels read as one wedge. There is room to push them:
+     the copy ends well above where they come in. */
+  .orbit-item[data-low="true"] {
+    --rx: 70vw;
+  }
+
+  .orbit-core {
+    width: min(72vw, 430px);
+  }
+}
+
+/* Below the ring's own width there is no room for the names: five panels and
+   the copy they are arranged around leave no band between the two for one to
+   sit in. The panel is still the control, and the name it carries for a screen
+   reader is the one that appears in the caption when it opens. */
+@media (max-width: 639px) {
+  .orbit-tag {
+    display: none;
+  }
+
+  .orbit-core h1 {
+    font-size: clamp(1.9rem, 8.2vw, 2.6rem);
+  }
+
+  .orbit-core p {
+    margin-top: 18px;
+    font-size: 0.9375rem;
+  }
+
+  .orbit-core .orbit-cta {
+    margin-top: 24px;
+  }
+
+  .orbit-core .orbit-hint {
+    margin-top: 20px;
+  }
+}
+
+/* Reveal is opt-in: the markup renders visible, and the observer only hides
+   what is still below the fold. A JS failure then costs an animation, not the
+   page. */
+.js-reveal .reveal:not(.in) {
+  opacity: 0.001;
+  transform: translateY(6px);
+}
+
+.reveal {
+  transition:
+    opacity 420ms var(--ease),
+    transform 420ms var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .js-reveal .reveal:not(.in) {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Long-form typography (MDX: blog posts and docs) ─────────────────────
+   Prose is set on the same measure and hairlines as the rest of the site, so
+   an article does not read as a different product from the landing page. */
+.prose {
+  color: var(--ink-2);
+  max-width: 72ch;
+}
+
+.prose > * + * {
+  margin-top: 1.15em;
+}
+
+.prose h2,
+.prose h3,
+.prose h4 {
+  color: var(--ink);
+  margin-top: 2.2em;
+  margin-bottom: 0.6em;
+  scroll-margin-top: 88px;
+}
+
+.prose h2 {
+  font-size: 1.375rem;
+  padding-top: 0.9em;
+  border-top: 1px solid var(--line-soft);
+}
+
+.prose h3 {
+  font-size: 1.0625rem;
+}
+
+.prose a {
+  color: var(--tan-ink);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+
+.prose .heading-anchor {
+  color: inherit;
+  text-decoration: none;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.35em;
+}
+
+.prose li + li {
+  margin-top: 0.35em;
+}
+
+.prose ul {
+  list-style: disc;
+}
+
+.prose ol {
+  list-style: decimal;
+}
+
+.prose blockquote {
+  padding-left: 1.1em;
+  border-left: 2px solid var(--tan);
+  color: var(--muted);
+}
+
+.prose code {
+  font-family: var(--mono);
+  font-size: 0.875em;
+}
+
+.prose :not(pre) > code {
+  padding: 0.15em 0.4em;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+}
+
+.prose pre {
+  padding: 16px 18px;
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  font-size: 0.8125rem;
+  line-height: 1.75;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+.prose th,
+.prose td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+}
+
+.prose th {
+  color: var(--ink);
+  font: 500 0.75rem/1.6 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.prose img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Shiki emits both themes on every token; this picks one without shipping a
+   highlighter to the browser. */
+.shiki span {
+  color: var(--shiki-light);
+}
+
+:root[data-theme="dark"] .shiki span {
+  color: var(--shiki-dark);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .shiki span {
+    color: var(--shiki-dark);
+  }
+}

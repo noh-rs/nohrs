@@ -1,0 +1,53 @@
+---
+title: Installing Nohrs
+description: Building from source on macOS, which is the only way to run it today.
+category: getting-started
+order: 2
+---
+
+There is no binary to download. Until the first release is tagged, running Nohrs means
+building it, which takes a few minutes from cold and is otherwise unremarkable.
+
+## Requirements
+
+| Requirement | Version |
+| --- | --- |
+| macOS | 13 or later, Apple silicon or Intel |
+| Rust | The toolchain pinned in `rust-toolchain.toml`, installed through `rustup` |
+| Xcode | Command line tools — `xcode-select --install` |
+
+## Build and run
+
+```sh
+git clone https://github.com/noh-rs/nohrs
+cd nohrs
+cargo run -p nohrs --release
+```
+
+The first build compiles the whole dependency graph, including gpui. Later builds reuse it.
+Drop `--release` while you are working on the code: the debug build starts faster and the
+frame rate is still usable.
+
+## The CLI
+
+The repository also carries `nohrs-cli`, whose `noh` binary is independent of the GUI. Its
+first command is `noh rm`, which mirrors the POSIX `rm` flags but moves its operands to the
+trash instead of unlinking them.
+
+```sh
+cargo run -p nohrs-cli -- rm -r some/directory
+```
+
+`--force` deliberately does not imply a permanent delete, so an `rm -rf` you inherited from
+a script becomes recoverable. `--permanent` opts back into a real delete.
+
+<Callout title="Replacing rm">
+The binary picks its entry point from `argv[0]`, so symlinking it as `rm` earlier on your
+`PATH` puts it in front of the system `rm`. Do that deliberately, not by accident.
+</Callout>
+
+## If the build fails
+
+Check the toolchain first: `rustup show` should report the version named in
+`rust-toolchain.toml`. If it does and the build still fails, open an issue with the full
+`cargo build` output — a failure that reproduces is worth more than a workaround.

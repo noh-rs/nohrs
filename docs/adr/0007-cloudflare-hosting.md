@@ -2,6 +2,8 @@
 
 > Status: Accepted
 > Date: 2026-05-28
+> 改訂: 2026-09-08 — 静的サイトの入れ口を **Pages から Workers + assets binding に変更**した。
+> 以下の Decision は当初の記録として残す。現行の構成は末尾の「改訂」節を参照。
 
 ## Context
 
@@ -62,3 +64,26 @@ P1 で web (nohrs.app + noh.rs) を立ち上げるにあたり、ホスティン
 | GitHub Pages | 静的のみ。TanStack Start の SSR / 動的機能を活用できない |
 | 自前 VPS | OSS 個人プロジェクトに運用負担が見合わない |
 | AWS Amplify + CloudFront | AWS は無料枠が小さく、個人 OSS 規模では月額が読みにくい |
+
+## 改訂 (2026-09-08) — Pages ではなく Workers + assets binding
+
+実装時に、静的サイト部分のホスティングを **Cloudflare Pages から Cloudflare Workers の
+assets binding に変更**した。Cloudflare にエコシステムを一本化する・無料枠が広い・R2 と
+同じコンソールで扱える、という本 ADR の判断根拠は変わらない。変わったのは、同じ
+Cloudflare の中でどの入れ口を使うか。
+
+理由は**成果物を 1 つにするため**。web の全ページはビルド時に prerender され、
+リクエストごとに決まるのは正規ホストと `/` の言語振り分けだけ ([`docs/web.md`](../web.md) §4)。
+assets binding なら、その 2 つを担う Worker 1 本と静的アセットを同じ `wrangler deploy` で
+出せる。Pages プロジェクトと別 Worker の 2 つをデプロイして両者のルーティングを合わせる
+必要がなくなり、**リダイレクトの規則がダッシュボードの設定ではなくリポジトリ内のコードとして
+残る**。
+
+### 影響
+
+- PR preview が Pages 標準機能ではなくなる。**現時点では自動化していない**: PR では build と
+  prerender 出力の検証までを行い、成果物を artifact として上げるだけ。`wrangler versions upload` の
+  プレビュー URL に置き換えるのは今後の作業
+- デプロイは GitHub Actions の `wrangler deploy` に一本化 ([`docs/web.md`](../web.md) §7)。
+  Pages の cron ビルドも使えなくなるため、**週次再ビルドは GitHub Actions の `schedule`** で行う
+- `coverage.nohrs.app` (R2) と noh.rs リダイレクト Worker は本 ADR のまま変更なし

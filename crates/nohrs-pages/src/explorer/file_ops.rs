@@ -42,22 +42,47 @@ pub(crate) struct ExplorerClipboard {
     // "is the clipboard empty" cannot: two cut pastes in flight both leave it
     // empty, and whichever finishes first would look like the owner of both.
     generation: u64,
+    // Cut pastes whose background move has not finished yet. Emptying `entry` is
+    // what stops a second paste from moving the same sources twice, but the
+    // paths are also mirrored to the system clipboard, and an empty `entry` is
+    // exactly when `read_clipboard` falls back to that text — as a *copy*,
+    // racing the move it was meant to stand aside for. While this is non-zero
+    // the clipboard is deliberately empty rather than unset, so there is nothing
+    // to fall back to.
+    cuts_in_flight: u32,
 }
 
 impl Global for ExplorerClipboard {}
 
 impl ExplorerClipboard {
     // Replaces the clipboard contents, returning the generation stamped on this
-    // write.
+    // write. Mutates in place rather than replacing the global so a write during
+    // a cut paste does not lose the in-flight count.
     fn write(entry: Option<(ClipMode, Vec<PathBuf>)>, cx: &mut App) -> u64 {
-        let generation = Self::generation(cx).wrapping_add(1);
-        cx.set_global(ExplorerClipboard { entry, generation });
-        generation
+        let clipboard = cx.default_global::<ExplorerClipboard>();
+        clipboard.generation = clipboard.generation.wrapping_add(1);
+        clipboard.entry = entry;
+        clipboard.generation
     }
 
     fn generation(cx: &App) -> u64 {
         cx.try_global::<ExplorerClipboard>()
             .map_or(0, |clip| clip.generation)
+    }
+
+    fn begin_cut(cx: &mut App) {
+        let clipboard = cx.default_global::<ExplorerClipboard>();
+        clipboard.cuts_in_flight = clipboard.cuts_in_flight.saturating_add(1);
+    }
+
+    fn end_cut(cx: &mut App) {
+        let clipboard = cx.default_global::<ExplorerClipboard>();
+        clipboard.cuts_in_flight = clipboard.cuts_in_flight.saturating_sub(1);
+    }
+
+    fn cut_in_flight(cx: &App) -> bool {
+        cx.try_global::<ExplorerClipboard>()
+            .is_some_and(|clip| clip.cuts_in_flight > 0)
     }
 }
 
@@ -76,6 +101,20 @@ fn retain_failed_cut(failed: Vec<PathBuf>, generation: u64, cx: &mut App) {
         return;
     }
     ExplorerClipboard::write(Some((ClipMode::Cut, failed)), cx);
+}
+
+// The path `name` should take inside `dir`, numbered if the filesystem already
+// has that name.
+//
+// `None` where the name is taken and cannot be numbered because it is not valid
+// UTF-8 — a reported failure beats silently writing over whatever is there.
+fn free_destination(dir: &Path, name: &std::ffi::OsStr) -> Option<PathBuf> {
+    let dst = dir.join(name);
+    if !ops::would_conflict(&dst) {
+        return Some(dst);
+    }
+    name.to_str()
+        .map(|name| dir.join(ops::unique_name(dir, name)))
 }
 
 /// State of an in-progress inline rename of the listing row at `index` (an index
@@ -258,7 +297,13 @@ impl ExplorerPane {
         self.run_fs_op(total, label, cx, move || {
             let mut errors = Vec::new();
             for path in paths {
-                if let Err(error) = ops::trash_path(Path::new(&path)) {
+                // No ledger. On Linux and Windows the OS trash already records
+                // where an item came from, so a second copy would never be read
+                // (`ops::trash_path`). On macOS, where it would be, the ledger
+                // is the SQLite metadata database, and the explorer has no
+                // handle to it and nothing that reads it yet: restoring a
+                // trashed item is #189, and the handle belongs with that work.
+                if let Err(error) = ops::trash_path(Path::new(&path), None) {
                     errors.push(format!("{path}: {error}"));
                 }
             }
@@ -314,6 +359,11 @@ impl ExplorerPane {
             .and_then(|clip| clip.entry.clone())
         {
             return Some((mode, paths));
+        }
+        if ExplorerClipboard::cut_in_flight(cx) {
+            // Emptied by a cut paste that is still moving those very sources.
+            // Falling back now would hand them straight back as a copy.
+            return None;
         }
         // Fall back to the system clipboard as newline-separated path text (e.g.
         // a path copied from elsewhere), treated as a copy.
@@ -461,7 +511,10 @@ impl ExplorerPane {
         // second time. Whatever fails to move is put back afterwards by
         // `retain_failed_cut`, which uses this generation to recognize the
         // clipboard state it left behind.
-        let cut_generation = (mode == ClipMode::Cut).then(|| ExplorerClipboard::write(None, cx));
+        let cut_generation = (mode == ClipMode::Cut).then(|| {
+            ExplorerClipboard::begin_cut(cx);
+            ExplorerClipboard::write(None, cx)
+        });
         let label = format!(
             "{total} item(s) {}",
             if mode == ClipMode::Cut {
@@ -483,7 +536,21 @@ impl ExplorerPane {
                     let Some(name) = src.file_name().map(std::ffi::OsStr::to_os_string) else {
                         continue;
                     };
-                    let dst = dest_dir.join(name);
+                    // The plan reserved this name by comparing paths lexically,
+                    // which is not how the filesystem compares them: on a
+                    // case-insensitive volume `foo.txt` and `FOO.txt` are one
+                    // destination, and the second source here would replace the
+                    // first. Asking the filesystem instead also covers a name
+                    // that appeared after the plan was built.
+                    let Some(dst) = free_destination(&dest_dir, &name) else {
+                        errors.push(format!(
+                            "{}: {} is taken and its name cannot be numbered",
+                            src.display(),
+                            dest_dir.join(&name).display()
+                        ));
+                        failed.push(src);
+                        continue;
+                    };
                     if let Err(error) = apply_one(mode, &src, &dst) {
                         errors.push(format!("{}: {error}", src.display()));
                         failed.push(src);
@@ -514,6 +581,7 @@ impl ExplorerPane {
             move |failed, cx| {
                 if let Some(generation) = cut_generation {
                     retain_failed_cut(failed, generation, cx);
+                    ExplorerClipboard::end_cut(cx);
                 }
             },
         );

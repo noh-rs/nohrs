@@ -1,0 +1,12 @@
+# Registry entry. Everything else about a plugin — README, stars, last commit,
+# license, plugin.toml — is read from its repository at build time.
+name = "Git status"
+category = "developer-tools"
+repo = "noh-rs/nohrs-plugin-git-status"
+author = "noh-rs"
+permissions = ["fs:read", "process:spawn"]
+status = "planned"
+
+[summary]
+en = "Marks tracked, modified and ignored files in the explorer, and shows the current branch in the footer."
+ja = "エクスプローラー上で追跡・変更・無視されているファイルを示し、現在のブランチをフッターに表示します。"

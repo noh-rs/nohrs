@@ -11,7 +11,7 @@
 
 | データ種別 | ストア | ファイル | 理由 |
 |-----------|--------|---------|------|
-| **ファイルメタデータ・履歴** | **SQLite (rusqlite)** | `db.sqlite` | SQL 表現力 (差分 query / 結合 query / 順序付き query) が必要 |
+| **ファイルメタデータ・履歴・ゴミ箱台帳** | **SQLite (rusqlite)** | `db.sqlite` | SQL 表現力 (差分 query / 結合 query / 順序付き query) が必要 |
 | **ホスト KV** (window 位置・タブ/セッション復元・動的設定) | **redb** | `state.redb` | 純粋な key→blob の高頻度・小サイズ書き込み。SQL 不要、メタデータ書き込みと隔離 |
 | **プラグイン専用 KV** (P4) | **redb** | `plugin-kv.redb` | 高速 R/W、plugin_id でテーブル隔離、host data と分離 |
 | **設定ファイル** | TOML (`config.toml`) | — | 詳細は [`docs/config.md`](./config.md) |
@@ -33,6 +33,58 @@
 
 新しい永続データを追加するときは必ずこの基準で配置先を決める。判断に迷う「とりあえず DB」を避け、SQL 表現力を実際に使うものだけを SQLite に集約する。
 
+### 1.2 SQLite を残すかは P3 で再評価する
+
+**§1.1 の基準そのものが、実は 2 つのストアを区別できていない。** 基準は「範囲・差分・順序・二次インデックスで引くなら SQLite」と言っており、その意味では P2 の実装は確かに基準を満たしています — `list_changed_since` は差分と範囲、`list_children` は順序、`find_by_inode` は二次インデックス、`history.list` は時刻順を使っています。
+
+問題は、**そのどれもが B-tree の性質であって SQL エンジンの性質ではない**ことです。redb も順序付きキーと範囲スキャンを持ち、二次インデックスも (自前整合が要るとはいえ) 表現できます。基準が本当に問うべきなのは「キー完全一致以外か」ではなく「**クエリプランナと関係演算子が要るか**」で、その意味での SQL 表現力は P2 時点で一度も使われていません。
+
+数える対象は `crates/nohrs-store/src/sqlite.rs` の実行時 SQL と `crates/nohrs-store/migrations/001_init.sql` のスキーマ文 (P2 時点で存在する唯一のマイグレーション) の 2 つ。
+
+| 対象 | 文数 | 内訳 |
+|------|------|------|
+| 実行時 SQL (`sqlite.rs`) | **13** | `PRAGMA journal_mode=WAL` 1 / `_migrations` の作成・照会・記録 3 / `files` 7 / `history` 2 |
+| スキーマ (`001_init.sql`) | **5** | `CREATE TABLE` 2 / `CREATE INDEX` 3 |
+| うち `JOIN` / `GROUP BY` / `HAVING` / `UNION` | **0** | 両方の対象を合わせて 0 |
+| うちサブクエリ | **1** | 実行時の `SELECT EXISTS(SELECT 1 FROM _migrations …)` のみ |
+
+数え方は「ソースに文字列として書かれた SQL 文」です。ドライバが暗黙に発行するもの — `pragma_update` 経由の
+`PRAGMA synchronous=NORMAL` (`sqlite.rs:58`) と、`connection.transaction()` / `commit()` が出す `BEGIN` / `COMMIT`
+(`sqlite.rs:129`, `:135`) — は**対象外**です。数えているのは「どんな問い合わせを書いたか」であって、
+発行されたステートメント数ではありません。
+
+全クエリが「点引き」「インデックス付き等価スキャン」「順序付き範囲スキャン」のいずれかで、クエリプランナが仕事をする場面が無い。一方で SQLite は次のコストを持ち込んでいる。
+
+- `sqlite3.c` は **9.1 MB の C ソース**、`libsqlite3-sys` の再ビルドに **約 40 秒**
+- 非 Rust ツールチェーンへの依存。実例として `libsqlite3-sys 0.38` は `cfg_select!` を要求するため、rustc が古い環境ではクレートがビルドできない
+
+つまり現状は「B-tree と順序と ACID のためだけに SQL エンジンを積んでいる」状態で、これは redb で置き換えられる。redb のキーは順序を持ち範囲スキャンができるため、`history` は連結キーで表現できる。ただし**キーの一意性は自分で担保する必要がある**: `(kind, occurred_at)` は一意ではなく (`history.id` が主キー、`occurred_at` は同一値を取りうる)、これをキーにすると同 kind・同時刻の 2 件が上書きで消える。したがって
+
+- キーは `(kind, occurred_at, id)` とし、`id` は SQLite の `INTEGER PRIMARY KEY` が担っていた**単調増加の採番を redb 側に持たせる** (採番用テーブルに次の値を持ち、書き込みと同一トランザクションで進める)。`HistoryEntry` は現状 `id` を持たないので、この採番を追加するのが移行の前提になる
+- `list` の「新しい順」は `range((kind, i64::MIN, 0)..=(kind, i64::MAX, i64::MAX))` を `.rev()` で走査して満たす。同時刻のタイブレークは `id` の降順、すなわち**後に記録された方が先**に来る
+
+  ここは SQLite と**同じ挙動にならない**ので、移行時に意識が要ります。現在の `HistoryStore::list` は
+  `ORDER BY occurred_at DESC` だけで、**同一 `occurred_at` の順序をクエリが規定していません**。実際には
+  `idx_history_kind_time(kind, occurred_at DESC)` を走査するため rowid 昇順、つまり**先に記録された方が先**に
+  出ますが、それはプラン依存の実装詳細で保証ではありません。redb 版は順序を*定義する*ぶん改善ですが、
+  向きが逆になります。順序を安定させたいなら SQLite 側も `ORDER BY occurred_at DESC, id DESC` にすべきで、
+  どちらの向きを正とするかは P3 の再検討で決めます (この PR はドキュメントのみなのでクエリは変更しません)
+
+`files` は二次インデックス (`parent_path` / `inode` / `mtime_ns`) を自前でトランザクション内整合させる必要がある。
+
+**それでも P2 では変更しない。** 理由は 2 つ。
+
+1. **この判断は可逆で、バックエンドは trait の裏に隠れている。** `MetadataQuery` / `MetadataStore` / `HistoryStore` / `KvStore` はいずれも trait として宣言されており、差し替えは `nohrs-store` に閉じる。ただし P2 時点で実際に `Arc<dyn _>` として呼び出し側へ配線されているのは `KvStore` だけで (`nohrs/src/app.rs`)、メタデータと履歴はまだ利用側が無い。**利用側が増える前に決めるほど差し替えは安い**、というのがここでの含意。
+2. **本命のワークロードがまだ無い。** この DB を本気で叩くのは P3 のメタデータインデクサで、数十万エントリの更新において自前二次インデックスが SQLite の B-tree に勝つかは、そのコード無しには測れない。いま決めるのは目隠しで決めること。
+
+**P3 のインデクサ実装後に、以下を実測したうえで再検討する。**
+
+- 数十万エントリの初回インデックス構築と差分更新のスループット (SQLite WAL vs redb)
+- ウォッチャの高頻度更新と読み取りの競合
+- `JOIN` が本当に必要になったか (undo が `trash` と `history` を結合する時点が最初の候補)
+
+再検討の結果 SQLite を残すなら、その根拠をこの節に記録する。redb 一本化に倒すなら `state.redb` へ統合し、§1 の表と §2 を差し替える。開発時に `sqlite3` CLI で DB を覗ける利点は失われるので、代替の検査手段 (`noh` 側のダンプコマンド等) をセットで用意すること。
+
 ---
 
 ## 2. SQLite (rusqlite)
@@ -41,10 +93,11 @@
 
 ```toml
 [dependencies]
-rusqlite = { version = "0.31", features = ["bundled", "blob"] }
+rusqlite = { version = "0.40", features = ["bundled", "blob", "trace"] }
 ```
 
 - `bundled` で SQLite 自体を vendoring (システム SQLite に依存しない、docker/nix 安定)
+- `trace` は §5 の遅いクエリ検出 (`StoreLogConfig::slow_query_ms`) が使う
 - WAL モード (`PRAGMA journal_mode=WAL`) で single writer + many readers
 - `cx.background_spawn` 経由で UI 層から async に見せる
 - tokio 依存なし
@@ -68,6 +121,20 @@ CREATE INDEX idx_files_parent ON files(parent_path);
 CREATE INDEX idx_files_inode  ON files(inode);
 
 -- (ホスト KV は redb `state.redb` に置く。§3 参照。SQLite には持たない)
+
+-- ゴミ箱台帳 (どこから捨てたか。docs/cli.md §8.1)
+-- OS 側が元パスを記録しないプラットフォーム (macOS) でのみ書き込む。
+-- original_path は一意ではない: 同じパスを何度も捨てられる。
+CREATE TABLE trash (
+    id            INTEGER PRIMARY KEY,
+    original_path TEXT NOT NULL,
+    file_name     TEXT NOT NULL,    -- ゴミ箱側で改名された場合の照合用
+    size          INTEGER NOT NULL, -- ディレクトリは 0
+    modified_ns   INTEGER,          -- 移動時点の mtime
+    trashed_at    INTEGER NOT NULL,
+    is_dir        INTEGER NOT NULL
+);
+CREATE INDEX idx_trash_time ON trash(trashed_at DESC);
 
 -- 履歴 (recent files, search history, command usage)
 CREATE TABLE history (
@@ -142,7 +209,7 @@ fn migrate(conn: &Connection) -> Result<()> {
 
 ```toml
 [dependencies]
-redb = "2"
+redb = "4"
 ```
 
 - ACID + MVCC、SQLite と同じく WAL 風 crash recovery
@@ -159,14 +226,59 @@ redb = "2"
 // crates/nohrs-store/src/nohrs_store.rs (擬似コード)
 use redb::TableDefinition;
 
-// 単一テーブル。key は "window.position" / "session.tabs" 等の名前空間付き文字列。
+// 単一テーブル。key は `KvKey` (= "window.position" / "session.tabs")。
 const HOST_KV: TableDefinition<'static, &str, &[u8]> = TableDefinition::new("kv");
 ```
 
 - `KvStore::get` / `put` / `delete` は `HOST_KV` への単純な点アクセス
-- `KvStore::list_prefix(prefix)` は `range(prefix..)` を走査し prefix 不一致で打ち切る
+- `KvStore::list_namespace(ns)` は `range("<ns>.".. )` を走査し prefix 不一致で打ち切る
 - `KvStore::batch(ops)` は 1 つの write transaction にまとめて atomic commit
 - value は JSON or MessagePack で serialize した blob (タブ群のスナップショット等)
+
+#### キーの名前空間は型で強制する
+
+key は `&str` ではなく **`KvKey`** です。`<namespace>.<name>` のドット区切りで、**セグメントは
+2 つ以上**（つまり必ず名前空間を持つ）。各セグメントは 1 文字以上の小文字 ASCII / 数字 / `_`。
+
+名前空間は「文字列の慣習」だった時期があり、それだと `put("tabs", …)` が普通にコンパイルされ、
+書けて読み戻せてしまいます。壊れるのは後から別の場所で、`list_*` が行を取りこぼす形です。
+そこで:
+
+| 作り方 | 検査 | 用途 |
+|--------|------|------|
+| `kv_key!("session.explorer_tabs")` | **コンパイル時** | サブシステムが持つ固定キー。ほぼ全部これ |
+| `KvKey::new(ns, name)` / `KvKey::parse(s)` | 実行時 (`Result`) | 実行時に組み立てるキー |
+
+`kv_key!("tabs")` は実行時エラーではなく**ビルドエラー**です。これが「規約」を規約以上のものに
+している部分です。
+
+**効いているのはマクロの `const { … }` ブロックです。** 検証関数を `const fn` にしただけでは
+足りません — `const fn` は通常式から呼ばれたとき const 評価が*許される*だけで*強制されない*ので、
+素の呼び出しでは assert がそのまま実行時 panic になります。マクロは:
+
+```rust
+macro_rules! kv_key {
+    ($key:literal) => { const { $crate::KvKey::from_static_checked($key) } };
+}
+```
+
+- `const { … }` が全呼び出し箇所で const 評価を強制する
+- `$key:literal` が、実行時に選ばれた `&'static str` の混入を防ぐ
+
+素のコンストラクタ (`from_static_checked`) は `#[doc(hidden)]` です。マクロが他クレートで
+展開されるために public なだけで、直接呼ぶものではありません。この保証は 3 本の doctest
+（正しいリテラル / 名前空間なし `compile_fail` / 非リテラル `compile_fail`）で固定しています。
+
+`list_namespace` が prefix ではなく名前空間を取るのも同じ理由です。自由な prefix だと
+`list_prefix("sess")` が `session.*` にたまたま一致し、`list_prefix("window")` は
+`window_backup.*` まで拾います。末尾のドットを内部で足すことで、走査は名前空間の中で閉じます。
+
+**「名前空間」を受け取る引数は 1 セグメントです。** キー自体は 3 セグメント以上でも構いません
+(`kv_key!("window.main.position")` は有効) が、`namespace()` は**最初の**セグメントを返すので、
+このキーは `list_namespace("window")` に並びます。逆に `"window.main"` を名前空間として渡すのは
+`KvKey::new` でも `list_namespace` でもエラーです — 通してしまうと、呼び出し側が思っている
+名前空間とキーが実際に属する名前空間がずれます。両者は `KvKey::check_namespace` を共有していて、
+片方だけ緩むことがないようにしてあります。
 
 > **書き込み頻度に関する注意**: redb の commit はデフォルトで durable (fsync) なので、window ドラッグ等の高頻度更新を 1 操作ずつ `put` すると fsync が多発する。呼び出し側 (UI 層) で **debounce してから書く**、複数キーは `batch` でまとめる、を原則とする。
 
@@ -214,6 +326,9 @@ fn cache_for(plugin_id: &str) -> TableDefinition<'static, &str, (i64, &[u8])>;
 ```rust
 // crates/nohrs-store/src/nohrs_store.rs
 
+// このスケッチ内だけの略記。実装では値はそのまま `Vec<u8>` です。
+type Bytes = Vec<u8>;
+
 pub trait MetadataQuery: Send + Sync {
     fn get_file(&self, path: &Path) -> Result<Option<FileRecord>>;
     fn list_children(&self, parent: &Path) -> Result<Vec<FileRecord>>;
@@ -228,10 +343,10 @@ pub trait MetadataStore: MetadataQuery {
 }
 
 pub trait KvStore: Send + Sync {
-    fn get(&self, key: &str) -> Result<Option<Bytes>>;
-    fn put(&self, key: &str, value: &[u8]) -> Result<()>;
-    fn delete(&self, key: &str) -> Result<()>;
-    fn list_prefix(&self, prefix: &str) -> Result<Vec<(String, Bytes)>>;
+    fn get(&self, key: &KvKey) -> Result<Option<Bytes>>;
+    fn put(&self, key: &KvKey, value: &[u8]) -> Result<()>;
+    fn delete(&self, key: &KvKey) -> Result<()>;
+    fn list_namespace(&self, namespace: &str) -> Result<Vec<(KvKey, Bytes)>>;
     fn batch(&self, ops: Vec<KvOp>) -> Result<()>;
 }
 

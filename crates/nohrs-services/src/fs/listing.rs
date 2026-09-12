@@ -30,6 +30,7 @@ pub struct ListResult {
 /// Lists a directory. The work is synchronous filesystem IO; callers that must
 /// keep the UI thread responsive should run it on GPUI's background executor via
 /// `cx.background_spawn` (async-runtime.md §2).
+#[tracing::instrument(target = "nohrs::op", name = "fs.list_dir", level = "debug", skip_all, fields(path = params.path, limit = params.limit))]
 pub fn list_dir_sync(params: ListParams<'_>) -> Result<ListResult> {
     list_dir_impl(params.path, params.limit, params.cursor)
 }

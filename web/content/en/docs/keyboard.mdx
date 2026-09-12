@@ -1,0 +1,46 @@
+---
+title: Keyboard
+description: The key map for the explorer, and the reasoning behind it.
+category: usage
+order: 3
+---
+
+Anything the pointer can do should have a key that does it faster. That is the standard the
+explorer is measured against, and where a key is missing it is a bug rather than a
+preference.
+
+## Moving
+
+| Key | Action |
+| --- | --- |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move the active row |
+| <kbd>→</kbd> | Enter the selected directory |
+| <kbd>←</kbd> | Go to the parent directory |
+| <kbd>⏎</kbd> | Open the selected file |
+| <kbd>⌘</kbd><kbd>↑</kbd> | Go to the parent directory |
+
+## Selecting
+
+| Key | Action |
+| --- | --- |
+| <kbd>⇧</kbd> + click, <kbd>⇧</kbd><kbd>↑</kbd> <kbd>⇧</kbd><kbd>↓</kbd> | Extend the selection from the anchor |
+| <kbd>⌘</kbd> + click | Add or remove one row |
+| <kbd>⌘</kbd><kbd>A</kbd> | Select everything in the current directory |
+| <kbd>esc</kbd> | Clear the selection |
+
+<Callout>
+<kbd>esc</kbd> is only consumed when there is a selection to clear. A key that silently
+swallows the escape you meant for something else is worse than no binding.
+</Callout>
+
+## Operating on files
+
+| Key | Action |
+| --- | --- |
+| <kbd>⌘</kbd><kbd>C</kbd> / <kbd>⌘</kbd><kbd>V</kbd> | Copy, then paste into the current directory |
+| <kbd>⌘</kbd><kbd>⌥</kbd><kbd>V</kbd> | Move rather than copy |
+| <kbd>⏎</kbd> on a selected name | Rename in place |
+| <kbd>⌘</kbd><kbd>⌫</kbd> | Move to the trash |
+
+A move across volumes is a copy followed by a delete, and is reported as such rather than
+being presented as instant.

@@ -1237,6 +1237,163 @@ async fn paste_numbers_a_second_source_sharing_an_existing_name(cx: &mut TestApp
 }
 
 #[gpui::test]
+async fn a_destination_taken_after_planning_is_numbered_not_overwritten(cx: &mut TestAppContext) {
+    // The plan records collision-free sources by name and the copy runs later on
+    // the background executor. Whatever takes the name in between must not be
+    // written over — the filesystem, not the plan's lexical comparison, decides
+    // whether a name is free.
+    let dir = tempfile::tempdir().unwrap();
+    let (src, dst) = (dir.path().join("src"), dir.path().join("dst"));
+    for sub in [&src, &dst] {
+        std::fs::create_dir(sub).unwrap();
+    }
+    std::fs::write(src.join("foo.txt"), "SRC").unwrap();
+
+    let window = new_explorer(cx);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_all();
+            pane.copy_selection(cx);
+        })
+        .unwrap();
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            assert!(
+                !pane.prepare_paste(cx),
+                "the destination name is free when the plan is built"
+            );
+        })
+        .unwrap();
+    std::fs::write(dst.join("foo.txt"), "OTHER").unwrap();
+    window
+        .update(cx, |pane, _window, cx| pane.execute_paste_plan(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        std::fs::read_to_string(dst.join("foo.txt")).unwrap(),
+        "OTHER",
+        "whatever took the name is left alone"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dst.join("foo (2).txt")).unwrap(),
+        "SRC",
+        "and the pasted source lands numbered beside it"
+    );
+}
+
+#[gpui::test]
+async fn pasting_names_differing_only_by_case_keeps_both_sources(cx: &mut TestAppContext) {
+    // `foo.txt` and `FOO.txt` are two destinations on a case-sensitive volume
+    // and one on a case-insensitive one (macOS, Windows). Either way neither
+    // source may be lost: where they collapse the second is numbered. Asserted
+    // on contents rather than names so the expectation holds on both.
+    let dir = tempfile::tempdir().unwrap();
+    let (first, second, dst) = (
+        dir.path().join("a"),
+        dir.path().join("b"),
+        dir.path().join("dst"),
+    );
+    for sub in [&first, &second, &dst] {
+        std::fs::create_dir(sub).unwrap();
+    }
+    std::fs::write(first.join("foo.txt"), "A").unwrap();
+    std::fs::write(second.join("FOO.txt"), "B").unwrap();
+
+    let window = new_explorer(cx);
+    // Two files in different directories can't be selected in one listing, so
+    // seed them through the system-clipboard path text.
+    cx.update(|cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(format!(
+            "{}\n{}",
+            first.join("foo.txt").display(),
+            second.join("FOO.txt").display()
+        )));
+    });
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            assert!(!pane.prepare_paste(cx), "the destination starts empty");
+            pane.execute_paste_plan(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let mut contents: Vec<String> = std::fs::read_dir(&dst)
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect();
+    contents.sort();
+    assert_eq!(
+        contents,
+        ["A", "B"],
+        "neither source was written over the other"
+    );
+}
+
+#[gpui::test]
+async fn a_paste_during_an_in_flight_cut_finds_nothing_to_paste(cx: &mut TestAppContext) {
+    // A cut paste empties the clipboard so a second paste cannot move the same
+    // sources twice. The paths stay in the *system* clipboard though, and an
+    // empty clipboard is exactly when `read_clipboard` falls back to that text —
+    // so the second paste has to find nothing, rather than racing the move it
+    // was meant to stand aside for by copying the sources straight back.
+    let dir = tempfile::tempdir().unwrap();
+    let (src, dst) = (dir.path().join("src"), dir.path().join("dst"));
+    for sub in [&src, &dst] {
+        std::fs::create_dir(sub).unwrap();
+    }
+    std::fs::write(src.join("x.txt"), "X").unwrap();
+
+    let window = new_explorer(cx);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = src.to_string_lossy().to_string();
+            pane.reload();
+            pane.select_all();
+            pane.cut_selection(cx);
+        })
+        .unwrap();
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.cwd = dst.to_string_lossy().to_string();
+            pane.reload();
+            pane.prepare_paste(cx);
+            // Started, not awaited: the move is still on the background executor.
+            pane.execute_paste_plan(cx);
+            pane.prepare_paste(cx);
+            assert!(
+                pane.paste_plan.is_none(),
+                "an in-flight cut leaves nothing for a second paste"
+            );
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(std::fs::read_to_string(dst.join("x.txt")).unwrap(), "X");
+    assert!(
+        !src.join("x.txt").exists(),
+        "the cut moved its source exactly once"
+    );
+    // The suppression is scoped to the batch: once it finishes, the fallback is
+    // live again. `dst/x.txt` is now occupied, so the replanned paste conflicts.
+    window
+        .update(cx, |pane, _window, cx| {
+            assert!(
+                pane.prepare_paste(cx),
+                "the system-clipboard fallback comes back when the cut completes"
+            );
+            pane.cancel_paste(cx);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
 async fn closing_the_conflict_dialog_leaves_the_plan_for_the_resolving_button(
     cx: &mut TestAppContext,
 ) {

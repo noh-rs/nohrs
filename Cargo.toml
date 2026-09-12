@@ -2,15 +2,16 @@
 resolver = "2"
 members = [
   "crates/nohrs",
+  "crates/nohrs-cli",
   "crates/nohrs-core",
   "crates/nohrs-models",
   "crates/nohrs-services",
   "crates/nohrs-store",
   "crates/nohrs-ui",
   "crates/nohrs-pages",
+  "crates/nohrs-launcher",
 ]
-# P2 以降に追加:
-#   "crates/nohrs-launcher",
+# P4 以降に追加:
 #   "crates/nohrs-plugin-host",
 #   "crates/plugins/*"
 exclude = ["web"]
@@ -18,9 +19,11 @@ exclude = ["web"]
 # gpui renders with Metal/Blade and the GUI stack is only exercised on macOS, so
 # Linux CI builds headless. `default-members` keeps bare `cargo build`/`test`/
 # `clippy` to the toolkit-free crates; the GUI crates (nohrs-ui / nohrs-pages /
-# nohrs) are still workspace members and build with `--workspace`, `-p`, or on
-# macOS. This mirrors the previous single-crate `default = []` / `gui` feature.
+# nohrs-launcher / nohrs) are still workspace members and build with
+# `--workspace`, `-p`, or on macOS. This mirrors the previous single-crate
+# `default = []` / `gui` feature.
 default-members = [
+  "crates/nohrs-cli",
   "crates/nohrs-core",
   "crates/nohrs-models",
   "crates/nohrs-services",
@@ -38,12 +41,17 @@ authors      = ["nohrs contributors"]
 
 [workspace.dependencies]
 anyhow             = "1"
+clap               = { version = "4", features = ["derive"] }
+clap_complete      = "4"
 thiserror          = "1"
 tracing            = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+# `json` renders the file sink as JSON Lines, which is what `noh log` and the
+# aggregation behind `noh perf` read; the stderr sink stays human-readable.
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
+tracing-appender   = "0.2"
 serde              = { version = "1", features = ["derive"] }
 serde_json         = "1"
-time               = { version = "0.3", features = ["formatting", "macros"] }
+time               = { version = "0.3", features = ["formatting", "macros", "parsing"] }
 
 [workspace.lints.rust]
 unsafe_code  = "deny"

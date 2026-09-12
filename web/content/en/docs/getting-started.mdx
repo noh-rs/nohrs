@@ -1,0 +1,37 @@
+---
+title: Getting started
+description: What Nohrs is, what it does, and what to read next.
+category: getting-started
+order: 1
+---
+
+Nohrs is a keyboard-driven file explorer for macOS with a launcher built into the same
+application. It is written in Rust on top of
+[gpui](https://github.com/zed-industries/zed), the GPU-accelerated UI framework Zed is
+built on.
+
+<Callout title="macOS only">
+Nohrs runs on macOS 13 or later, on Apple silicon and Intel. Whether it goes further than
+that is a decision the project has not made.
+</Callout>
+
+## What it does
+
+- Browsing the file system with the keyboard, in a list or grid view
+- A preview pane that renders the selected file — Markdown, code and text
+- Multi-select, with click, shift-click and command-click
+- File operations: copy, move, rename, create, trash and delete, with cross-volume handling
+- Search scoped to one folder or the whole tree, over names or over file contents
+- A launcher on `Cmd+Shift+Space` from any application, or `Cmd+K` inside Nohrs, that
+  fuzzy-searches files and folders and opens one on `Enter`
+
+## What is still ahead
+
+- **Plugins** as WASM components, each holding only the permissions you granted it. The
+  host that runs them arrives in P4.
+
+## Where to go next
+
+Read [Installing Nohrs](/en/docs/installation) to build it, then
+[Keyboard](/en/docs/keyboard) for the key map. If you want to know where the project is
+heading, the [roadmap](/en/roadmap) lists all six phases with their status.

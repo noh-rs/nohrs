@@ -1,0 +1,44 @@
+---
+title: Nohrs を導入する
+description: macOS でソースからビルドする方法。いまはこれが唯一の動かし方です。
+category: getting-started
+order: 2
+---
+
+ダウンロードできるバイナリはありません。最初のリリースにタグが打たれるまで、Nohrs を動かすということはビルドすることを意味します。初回は数分かかりますが、それ以外に特別なことはありません。
+
+## 必要なもの
+
+| 必要なもの | バージョン |
+| --- | --- |
+| macOS | 13 以降。Apple シリコン / Intel のどちらでも動きます |
+| Rust | `rust-toolchain.toml` に固定したツールチェーン (`rustup` で導入) |
+| Xcode | コマンドラインツール — `xcode-select --install` |
+
+## ビルドして起動する
+
+```sh
+git clone https://github.com/noh-rs/nohrs
+cd nohrs
+cargo run -p nohrs --release
+```
+
+初回は gpui を含む依存グラフ全体をコンパイルします。2 回目以降は再利用されます。コードをいじっている間は `--release` を外してください。デバッグビルドの方が起動が速く、フレームレートも十分実用になります。
+
+## CLI
+
+リポジトリには `nohrs-cli` も入っており、その `noh` バイナリは GUI とは独立して動きます。最初のコマンドは `noh rm` で、POSIX の `rm` のフラグをそのまま受け取りますが、対象を unlink せずゴミ箱へ移します。
+
+```sh
+cargo run -p nohrs-cli -- rm -r some/directory
+```
+
+`--force` は意図的に「完全削除」を意味しません。スクリプトから受け継いだ `rm -rf` が、そのまま復元可能になります。本当に消したいときは `--permanent` を付けてください。
+
+<Callout title="rm を置き換える">
+このバイナリは `argv[0]` から動作を選ぶので、`PATH` 上でシステムの `rm` より前に `rm` という名前でシンボリックリンクを張れば、そちらが使われます。事故ではなく、意図してやってください。
+</Callout>
+
+## ビルドが失敗したら
+
+まずツールチェーンを確認してください。`rustup show` が `rust-toolchain.toml` のバージョンを表示していれば正しい状態です。それでも失敗する場合は、`cargo build` の出力全体を添えて issue を立ててください。再現する失敗は、回避策より価値があります。

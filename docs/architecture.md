@@ -15,6 +15,7 @@ nohrs/
 ├── rust-toolchain.toml
 ├── crates/
 │   ├── nohrs/                # main binary (P1)
+│   ├── nohrs-cli/            # `noh` binary — rm 等の CLI (P2)
 │   ├── nohrs-core/           # errors / config / telemetry (P1)
 │   ├── nohrs-models/         # FileEntry など pure data types (P1)
 │   ├── nohrs-services/       # fs / search / syntax (P1)
@@ -40,6 +41,7 @@ nohrs/
 resolver = "2"
 members = [
   "crates/nohrs",
+  "crates/nohrs-cli",
   "crates/nohrs-core",
   "crates/nohrs-models",
   "crates/nohrs-services",
@@ -65,6 +67,7 @@ authors      = ["nohrs contributors"]
 
 [workspace.dependencies]
 anyhow            = "1"
+clap              = { version = "4", features = ["derive"] }
 thiserror         = "1"
 tracing           = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
@@ -90,21 +93,21 @@ expect_used  = "warn"
 ## 2. レイヤーと責務
 
 ```text
-                 ┌──────────────┐
-                 │  nohrs (bin) │   GUI エントリポイント + CLI
-                 └──────┬───────┘
-                        │
-        ┌───────────────┼───────────────┐
-        ▼               ▼               ▼
-  ┌──────────┐   ┌──────────┐    ┌──────────┐
-  │  pages   │   │ launcher │    │ plugin-  │  …各 view / feature
-  │          │   │   (P3)   │    │ host(P4) │
-  └────┬─────┘   └────┬─────┘    └────┬─────┘
-       │              │               │
-       └──────┬───────┴──────┬────────┘
-              ▼              ▼
-        ┌──────────┐   ┌──────────┐
-        │    ui    │   │ services │   描画 / ビジネスロジック
+                 ┌──────────────┐              ┌─────────────────┐
+                 │  nohrs (bin) │              │ nohrs-cli (bin) │   GUI / `noh` 各エントリポイント
+                 └──────┬───────┘              └────────┬────────┘
+                        │                               │
+        ┌───────────────┼───────────────┐               │
+        ▼               ▼               ▼               │
+  ┌──────────┐   ┌──────────┐    ┌──────────┐           │
+  │  pages   │   │ launcher │    │ plugin-  │           │  …各 view / feature
+  │          │   │   (P3)   │    │ host(P4) │           │
+  └────┬─────┘   └────┬─────┘    └────┬─────┘           │
+       │              │               │                 │
+       └──────┬───────┴──────┬────────┘                 │
+              ▼              ▼                          │
+        ┌──────────┐   ┌──────────┐                     │
+        │    ui    │   │ services │ ◀───────────────────┘   描画 / ビジネスロジック
         └────┬─────┘   └────┬─────┘
              │              ▼
              │        ┌──────────┐
@@ -125,13 +128,14 @@ expect_used  = "warn"
 
 | crate | 主な責務 | 依存 |
 |-------|---------|------|
-| **nohrs (bin)** | GUI エントリ、CLI サブコマンド、起動シーケンス | 全 crate |
+| **nohrs (bin)** | GUI エントリ、`nohrs config` サブコマンド、起動シーケンス | 全 crate |
+| **nohrs-cli (bin `noh`)** | ターミナル用エントリ (`rm` / `restore` / `trash` / `shim` / `doctor`)。GUI を開かない toolkit-free バイナリ。詳細は [`docs/cli.md`](./cli.md) | `core`, `services`, `store` |
 | **nohrs-pages** | explorer / settings / git / s3 などのページ | `ui`, `services`, `models`, `core`, (P2) `store` |
 | **nohrs-launcher** (P3) | ランチャー window、Command trait、結果リスト | `ui`, `services`, `core`, `store`, (P4) `plugin-host` |
 | **nohrs-plugin-host** (P4) | wasmtime + wasmtime-wasi + WIT host、permission ガード、専用 tokio runtime (隔離) | `core`, `store`, `services`, `models` |
 | **nohrs-ui** | gpui コンポーネント、テーマ、ウィンドウ管理 | `core`, `models` |
-| **nohrs-services** | fs listing、search、syntax highlighting | `core`, `models`, (P2) `store` |
-| **nohrs-store** (P2) | SQLite (rusqlite) + redb (plugin KV) | `core`, `models` |
+| **nohrs-services** | fs listing / mutation / ゴミ箱、search、syntax highlighting | `core`, `models`, `store` |
+| **nohrs-store** (P2) | SQLite (rusqlite、メタデータ / 履歴 / ゴミ箱台帳) + redb (host KV) | `core`, `models` |
 | **nohrs-models** | FileEntry など pure data types | `core` |
 | **nohrs-core** | errors / config / telemetry / resource policy | — |
 
