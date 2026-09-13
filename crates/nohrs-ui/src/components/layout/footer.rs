@@ -53,8 +53,8 @@ pub fn footer<V: gpui::Render>(
         .flex()
         .items_center()
         .justify_between()
-        .px(px(8.0))
-        .bg(rgb(theme::GRAY_200))
+        .px(px(12.0))
+        .bg(rgb(theme::FOOTER_BG))
         .border_t_1()
         .border_color(rgb(theme::BORDER))
         .child(
@@ -62,12 +62,12 @@ pub fn footer<V: gpui::Render>(
             div()
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap_1()
                 // Git branch
                 .when_some(props.git_branch.clone(), |this, branch| {
-                    this.child(footer_button(
+                    this.child(footer_item(
                         ("footer-git", 0_usize),
-                        IconName::File,
+                        Some(Icon::new(IconName::GitHub)),
                         &branch,
                         cx,
                     ))
@@ -76,9 +76,9 @@ pub fn footer<V: gpui::Render>(
                 .when_some(props.indexing_progress, |this, progress| {
                     if progress < 1.0 {
                         let percent = (progress * 100.0) as u32;
-                        this.child(footer_button(
+                        this.child(footer_item(
                             ("footer-indexing", 99_usize),
-                            IconName::File, // Use a spinner icon if available? IconName::Sync?
+                            Some(Icon::new(IconName::Loader)),
                             &format!("Indexing: {}%", percent),
                             cx,
                         ))
@@ -88,24 +88,25 @@ pub fn footer<V: gpui::Render>(
                 })
                 // Selected items
                 .when(props.selected_count > 0, |this| {
-                    this.child(footer_button(
+                    this.child(footer_item(
                         ("footer-selected", 1_usize),
-                        IconName::File,
+                        Some(Icon::new(IconName::CircleCheck)),
                         &format!("{} selected", props.selected_count),
                         cx,
                     ))
                 })
                 // Total items
-                .child(footer_button(
+                .child(footer_item(
                     ("footer-total", 2_usize),
-                    IconName::Folder,
+                    Some(Icon::new(IconName::Folder)),
                     &format!("{} items", props.total_count),
                     cx,
                 ))
-                // Total size
-                .child(footer_button(
+                // Total size, which no icon in the set describes; the label
+                // alone is unambiguous next to the item count.
+                .child(footer_item(
                     ("footer-size", 3_usize),
-                    IconName::File,
+                    None,
                     &props.total_size,
                     cx,
                 ))
@@ -143,29 +144,34 @@ pub fn footer<V: gpui::Render>(
             div()
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap_1()
                 // Storage status (S3 connection, etc)
                 .when_some(props.storage_status, |this, status| {
-                    this.child(footer_button(
+                    this.child(footer_item(
                         ("footer-storage", 4_usize),
-                        IconName::Folder,
+                        Some(
+                            Icon::new(Icon::empty())
+                                .path(gpui::SharedString::from("icons/database.svg")),
+                        ),
                         &status,
                         cx,
                     ))
                 })
                 // Current path indicator
-                .child(footer_button(
+                .child(footer_item(
                     ("footer-path", 5_usize),
-                    IconName::Folder,
+                    Some(Icon::new(IconName::FolderOpen)),
                     &truncate_path(&props.current_path, 30),
                     cx,
                 )),
         )
 }
 
-fn footer_button<V: gpui::Render>(
+/// One status-bar readout. These are informational, so they carry no pointer
+/// cursor or hover fill — nothing here is clickable.
+fn footer_item<V: gpui::Render>(
     id: impl Into<gpui::ElementId>,
-    icon: IconName,
+    icon: Option<Icon>,
     label: &str,
     _cx: &mut Context<V>,
 ) -> impl IntoElement {
@@ -175,36 +181,65 @@ fn footer_button<V: gpui::Render>(
     div()
         .id(id)
         .h(px(24.0))
-        .px(px(8.0))
+        .px(px(6.0))
         .flex()
         .items_center()
-        .gap_1()
-        .rounded(px(4.0))
-        .cursor_pointer()
-        .hover(|style| style.bg(rgb(theme::GRAY_300)))
-        .child(Icon::new(icon).size_3().text_color(rgb(theme::GRAY_700)))
+        .gap_1p5()
+        .when_some(icon, |this, icon| {
+            this.child(icon.size_3().text_color(rgb(theme::GRAY_500)))
+        })
         .when(has_label, |this| {
             this.child(
+                // `overflow_hidden` is load-bearing, not decoration: it drops a
+                // flex item's automatic minimum size to zero, so a long label
+                // (a branch name, a storage status) ellipsizes when the bar runs
+                // out of room instead of forcing the row wider and pushing the
+                // right-hand section off-window.
                 div()
                     .text_xs()
-                    .text_color(rgb(theme::GRAY_700))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(rgb(theme::GRAY_600))
                     .child(label),
             )
         })
 }
 
+/// Hard cap on the elided path's final component. The middle-elided form keeps
+/// that component whole, so on its own a pathological directory name is
+/// unbounded and — the label being `whitespace_nowrap` — would push the footer's
+/// right-hand section past the window edge. Set well above ordinary names so
+/// real paths are untouched.
+const MAX_TAIL_CHARS: usize = 40;
+
+/// The last `max_chars` characters of `s`. Counts characters rather than bytes:
+/// byte slicing panics when the cut lands inside a multi-byte character, which a
+/// non-ASCII path would hit.
+fn tail_chars(s: &str, max_chars: usize) -> String {
+    let count = s.chars().count();
+    if count <= max_chars {
+        return s.to_string();
+    }
+    s.chars().skip(count - max_chars).collect()
+}
+
 fn truncate_path(path: &str, max_len: usize) -> String {
-    if path.len() <= max_len {
+    if path.chars().count() <= max_len {
         return path.to_string();
     }
 
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() <= 2 {
-        return format!("...{}", &path[path.len().saturating_sub(max_len)..]);
+        return format!("...{}", tail_chars(path, max_len));
     }
 
     // Show first and last parts
-    format!("{}/.../{}", parts[0], parts[parts.len() - 1])
+    format!(
+        "{}/.../{}",
+        parts[0],
+        tail_chars(parts[parts.len() - 1], MAX_TAIL_CHARS)
+    )
 }
 
 #[cfg(test)]
@@ -221,6 +256,23 @@ mod tests {
     fn long_multi_segment_paths_elide_the_middle() {
         let path = "/usr/local/share/nohrs/config.toml";
         assert_eq!(truncate_path(path, 10), "/.../config.toml");
+    }
+
+    #[test]
+    fn elided_paths_bound_their_final_component() {
+        // The status bar renders this with `whitespace_nowrap`, so an unbounded
+        // tail would push the right-hand section off-window.
+        let path = format!("/home/user/{}", "d".repeat(300));
+        let truncated = truncate_path(&path, 30);
+        assert!(truncated.starts_with("/.../"));
+        assert!(truncated.chars().count() <= 5 + super::MAX_TAIL_CHARS);
+    }
+
+    #[test]
+    fn multibyte_paths_do_not_panic() {
+        // Byte slicing here used to cut inside a multi-byte character.
+        let truncated = truncate_path("日本語のとても長いファイル名です", 5);
+        assert!(truncated.starts_with("..."));
     }
 
     #[test]

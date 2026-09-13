@@ -3,6 +3,8 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use nohrs_ui::theme::theme;
 
+/// Modal dialogs for file operations (permanent-delete confirm, paste conflict).
+mod dialogs;
 /// The explorer header with navigation controls and the path bar.
 pub mod header;
 /// The main file listing, in list or grid mode, with the search bar.
@@ -37,11 +39,75 @@ pub fn render(
             let modifiers = event.keystroke.modifiers;
             let with_modifier = modifiers.platform || modifiers.control;
             let is_f = key_lc == "f" || event.keystroke.key == "KeyF";
+            // Escape abandons an open rename before anything else can claim it —
+            // the field has focus, so this is the only Escape the user means.
+            if key_lc == "escape" && this.renaming.is_some() {
+                this.cancel_rename(window, cx);
+                cx.stop_propagation();
+                return;
+            }
             let close_with_escape = key_lc == "escape" && this.search_visible;
             if (is_f && with_modifier) || close_with_escape {
                 this.toggle_search(window, cx);
                 cx.stop_propagation();
                 return;
+            }
+            // File operations (§1, canonical keys in §6). Each arm consumes the
+            // event; anything unmatched falls through to the selection model below.
+            let shift = modifiers.shift;
+            match key_lc.as_str() {
+                "delete" if shift => {
+                    this.request_permanent_delete(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "delete" => {
+                    this.trash_selection(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                // macOS also trashes on Backspace (§6); on Linux only Delete does.
+                "backspace" if cfg!(target_os = "macos") && !shift => {
+                    this.trash_selection(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "c" if with_modifier && !shift => {
+                    this.copy_selection(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "x" if with_modifier && !shift => {
+                    this.cut_selection(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "v" if with_modifier && !shift => {
+                    this.paste_into_cwd(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "n" if with_modifier && shift => {
+                    this.create_new_folder(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                // Rename: F2 everywhere, plus Enter on macOS (§6).
+                "f2" => {
+                    if let Some(index) = this.active_index {
+                        this.begin_rename(index, window, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                "enter" if cfg!(target_os = "macos") && !with_modifier => {
+                    if let Some(index) = this.active_index {
+                        this.begin_rename(index, window, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
             }
             // Selection model (§5). Escape while searching is handled above, so
             // here it only clears the selection.

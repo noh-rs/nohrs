@@ -71,7 +71,7 @@ pub fn render(page: &mut ExplorerPane, cx: &mut Context<ExplorerPane>) -> impl I
             div()
                 .flex()
                 .gap_4()
-                .px(px(12.0))
+                .px(px(24.0))
                 .pt(px(8.0))
                 .text_xs()
                 .text_color(rgb(theme::FG_SECONDARY))
@@ -105,7 +105,7 @@ pub fn render(page: &mut ExplorerPane, cx: &mut Context<ExplorerPane>) -> impl I
                 .flex()
                 .items_start()
                 .gap_2()
-                .px(px(12.0))
+                .px(px(24.0))
                 .py(px(10.0))
                 .child(
                     Icon::new(IconName::Search)
@@ -162,14 +162,14 @@ pub fn render(page: &mut ExplorerPane, cx: &mut Context<ExplorerPane>) -> impl I
                                     div()
                                         .cursor_pointer()
                                         .bg(rgb(theme::ACCENT))
-                                        .text_color(rgb(theme::BG))
-                                        .px(px(8.0))
-                                        .py(px(2.0))
-                                        .rounded(px(4.0))
+                                        .text_color(rgb(theme::ACCENT_FG))
+                                        .px(px(10.0))
+                                        .py(px(4.0))
+                                        .rounded(px(6.0))
                                         .text_xs()
-                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .child("Search")
-                                        .hover(|this| this.opacity(0.8))
+                                        .hover(|this| this.bg(rgb(theme::ACCENT_HOVER)))
                                         .on_mouse_down(
                                             gpui::MouseButton::Left,
                                             cx.listener(|this, _, window, cx| {
@@ -189,18 +189,16 @@ pub fn render(page: &mut ExplorerPane, cx: &mut Context<ExplorerPane>) -> impl I
                 )
                 .child(
                     ListItem::new("close-search")
-                        .px(px(4.0))
-                        .py(px(2.0))
-                        .rounded(px(4.0))
+                        .px(px(6.0))
+                        .py(px(6.0))
+                        .rounded(px(6.0))
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.toggle_search(window, cx);
                         }))
                         .child(
-                            div()
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .text_color(rgb(theme::MUTED))
-                                .child("×"),
+                            Icon::new(IconName::Close)
+                                .size_4()
+                                .text_color(rgb(theme::FG_SECONDARY)),
                         ),
                 ),
         )
@@ -213,22 +211,32 @@ fn render_scope_button(
     cx: &mut Context<ExplorerPane>,
 ) -> impl IntoElement + use<> {
     let is_active = page.search_scope == scope;
+    chip(label, is_active).on_mouse_down(
+        gpui::MouseButton::Left,
+        cx.listener(move |this, _, _, cx| {
+            this.set_search_scope(scope, cx);
+        }),
+    )
+}
+
+/// A small selectable pill used by the scope and type rows, so both read the
+/// same and the active one keeps `ACCENT_FG` on `ACCENT` for legibility.
+fn chip(label: &str, is_active: bool) -> gpui::Stateful<gpui::Div> {
     div()
+        .id(SharedString::from(format!("search-chip-{label}")))
         .cursor_pointer()
-        .px(px(4.0))
-        .rounded(px(4.0))
+        .px(px(8.0))
+        .py(px(2.0))
+        .rounded(px(10.0))
         .when(is_active, |this| {
-            this.bg(rgb(theme::ACCENT)).text_color(rgb(theme::BG))
+            this.bg(rgb(theme::ACCENT))
+                .text_color(rgb(theme::ACCENT_FG))
+                .font_weight(gpui::FontWeight::MEDIUM)
         })
         .when(!is_active, |this| {
-            this.hover(|s| s.bg(rgb(theme::BG_HOVER)))
+            this.text_color(rgb(theme::FG_SECONDARY))
+                .hover(|s| s.bg(rgb(theme::BG_HOVER)))
         })
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(move |this, _, _, cx| {
-                this.set_search_scope(scope, cx);
-            }),
-        )
         .child(label.to_string())
 }
 
@@ -239,24 +247,13 @@ fn render_type_button(
     cx: &mut Context<ExplorerPane>,
 ) -> impl IntoElement + use<> {
     let is_active = page.search_type == search_type;
-    div()
-        .cursor_pointer()
-        .px(px(4.0))
-        .rounded(px(4.0))
-        .when(is_active, |this| {
-            this.bg(rgb(theme::ACCENT)).text_color(rgb(theme::BG))
-        })
-        .when(!is_active, |this| {
-            this.hover(|s| s.bg(rgb(theme::BG_HOVER)))
-        })
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(move |this, _, _, cx| {
-                this.search_type = search_type;
-                cx.notify();
-            }),
-        )
-        .child(label.to_string())
+    chip(label, is_active).on_mouse_down(
+        gpui::MouseButton::Left,
+        cx.listener(move |this, _, _, cx| {
+            this.search_type = search_type;
+            cx.notify();
+        }),
+    )
 }
 
 fn render_toggle_button(
@@ -267,6 +264,11 @@ fn render_toggle_button(
 ) -> impl IntoElement {
     div()
         .cursor_pointer()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(26.0))
+        .h(px(22.0))
         .border_1()
         .border_color(if active {
             rgb(theme::ACCENT)
@@ -274,16 +276,19 @@ fn render_toggle_button(
             rgb(theme::BORDER)
         })
         .bg(if active {
-            rgb(theme::ACCENT_LIGHT)
+            rgb(theme::ACCENT_SUBTLE)
         } else {
             rgb(theme::BG)
         })
-        .px(px(4.0))
-        .rounded(px(4.0))
+        .text_color(if active {
+            rgb(theme::ACCENT)
+        } else {
+            rgb(theme::FG_SECONDARY)
+        })
+        .rounded(px(6.0))
         .text_xs()
         .font_family("Mono")
         .child(label.to_string())
-        .hover(|this| this.bg(rgb(theme::BG_HOVER)))
         .on_mouse_down(
             gpui::MouseButton::Left,
             cx.listener(move |this, _, _, cx| {

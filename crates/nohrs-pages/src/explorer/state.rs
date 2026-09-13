@@ -130,6 +130,12 @@ pub struct ExplorerPane {
     // Transient message shown in the footer status bar.
     /// Transient message shown in the footer status bar.
     pub status_message: Option<StatusMessage>,
+
+    // File operations (`docs/explorer-essentials.md` §1)
+    /// In-progress inline rename of a listing row, if any.
+    pub(crate) renaming: Option<super::file_ops::RenameState>,
+    /// In-progress paste whose name conflicts are being resolved via the dialog.
+    pub(crate) paste_plan: Option<super::file_ops::PastePlan>,
 }
 
 impl Focusable for ExplorerPane {
@@ -227,6 +233,8 @@ impl ExplorerPane {
             preview_image_path: None,
             preview_message: None,
             status_message: None,
+            renaming: None,
+            paste_plan: None,
         }
     }
 

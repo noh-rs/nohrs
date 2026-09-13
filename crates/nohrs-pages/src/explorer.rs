@@ -1,4 +1,5 @@
 mod entries;
+pub(crate) mod file_ops;
 mod list_setup;
 mod navigation;
 /// The split-view container that owns one or more panes (`docs/explorer-essentials.md` §3).
