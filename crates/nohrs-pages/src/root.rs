@@ -20,7 +20,7 @@ use gpui_component::{Icon, Root, Theme, ThemeMode as GpuiThemeMode};
 use nohrs_core::config::{self, Config, ConfigOverride, ConfigWatcher};
 use nohrs_core::telemetry::LogErr;
 use nohrs_services::search::SearchService;
-use nohrs_store::KvStore;
+use nohrs_store::{KvStore, TrashLedger};
 use nohrs_ui::components::layout::footer::{FooterProps, footer};
 use nohrs_ui::components::layout::unified_toolbar::{
     AccountMenuAction, AccountMenuCommand, UnifiedToolbarProps, unified_toolbar,
@@ -69,6 +69,7 @@ impl RootView {
         resizable: Entity<ResizableState>,
         search_service: Option<Arc<SearchService>>,
         store: Option<Arc<dyn KvStore>>,
+        trash_ledger: Option<Arc<dyn TrashLedger>>,
         config: Config,
         config_path: PathBuf,
         config_overrides: Vec<ConfigOverride>,
@@ -84,6 +85,7 @@ impl RootView {
                 resizable,
                 search_service.clone(),
                 store,
+                trash_ledger,
                 restore_tabs,
                 window,
                 cx,

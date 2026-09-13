@@ -87,11 +87,14 @@ jobs:
       - name: Fail if the committed schema is stale
         run: git diff --exit-code -- docs/config.schema.json
 
-  # gpui renders with Metal/Blade and the GUI stack is only exercised on macOS.
-  # Linux therefore lints/tests/builds the headless `default-members` subset
-  # (nohrs-core / nohrs-models / nohrs-services without its `gui` feature), while
-  # macOS covers the full workspace with `--all-features` (pulling in gpui). This
-  # mirrors the `default-members` split documented in the workspace Cargo.toml.
+  # gpui renders with Metal/Blade, and only macOS *runs* the GUI, so `test` and
+  # `build` below stay on the headless `default-members` subset on Linux
+  # (nohrs-core / nohrs-models / nohrs-services without its `gui` feature) and
+  # cover the full workspace on macOS. Clippy is the exception: it type-checks
+  # without linking, so it lints the whole workspace — nohrs-ui / nohrs-pages /
+  # nohrs-launcher / nohrs included — on both. Without that, an explorer
+  # regression was caught by the macOS jobs alone, and a Linux-only break in the
+  # GUI crates by nothing at all.
   clippy:
     name: clippy (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -100,13 +103,21 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            args: "--all-targets"
+            args: "--workspace --all-targets --all-features"
           - os: macos-latest
             args: "--workspace --all-targets --all-features"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+
+      # gpui's font stack resolves freetype and fontconfig through pkg-config in
+      # its build scripts, which run even under `cargo clippy`. The libraries it
+      # links against (xkbcommon, wayland, vulkan) are not needed: clippy does
+      # not link, which is what keeps this job to one apt call.
+      - name: Install GUI build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libfreetype6-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable

@@ -10,11 +10,12 @@
 //! UI are tracked separately in #188.
 
 use std::collections::VecDeque;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use gpui::*;
 use gpui_component::input::{InputEvent, InputState};
-use nohrs_core::errors::Result;
+use nohrs_core::errors::{Error, Result};
 use nohrs_services::fs::ops::{self, ConflictResolution};
 
 use super::state::ExplorerPane;
@@ -106,15 +107,25 @@ fn retain_failed_cut(failed: Vec<PathBuf>, generation: u64, cx: &mut App) {
 // The path `name` should take inside `dir`, numbered if the filesystem already
 // has that name.
 //
-// `None` where the name is taken and cannot be numbered because it is not valid
-// UTF-8 — a reported failure beats silently writing over whatever is there.
-fn free_destination(dir: &Path, name: &std::ffi::OsStr) -> Option<PathBuf> {
-    let dst = dir.join(name);
+// Goes through `ops::destination_in` rather than joining, so a name that is not
+// a single plain component — anything a path in the system clipboard, or a path
+// dropped on the pane, could carry — cannot aim the paste at a directory the
+// user never opened.
+//
+// An error where the name is taken and cannot be numbered because it is not
+// valid UTF-8: a reported failure beats silently writing over whatever is there.
+fn free_destination(dir: &Path, name: &OsStr) -> Result<PathBuf> {
+    let dst = ops::destination_in(dir, name)?;
     if !ops::would_conflict(&dst) {
-        return Some(dst);
+        return Ok(dst);
     }
-    name.to_str()
-        .map(|name| dir.join(ops::unique_name(dir, name)))
+    let name = name.to_str().ok_or_else(|| {
+        Error::Other(format!(
+            "{} is taken and its name cannot be numbered",
+            dst.display()
+        ))
+    })?;
+    ops::destination_in(dir, OsStr::new(&ops::unique_name(dir, name)))
 }
 
 /// State of an in-progress inline rename of the listing row at `index` (an index
@@ -176,10 +187,16 @@ fn rename_selection_end(name: &str, is_dir: bool) -> usize {
 }
 
 // Performs a single copy or move from `src` to `dst` according to `mode`.
+//
+// Claims `dst` rather than writing over it. Every destination here was chosen by
+// looking at the filesystem — `free_destination`, `unique_name`, the conflict
+// dialog — and between that look and this call the name can be taken by anything
+// else on the machine. A replacing write would destroy what took it; refusing
+// costs one reported failure.
 fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
     match mode {
-        ClipMode::Copy => ops::copy_path(src, dst),
-        ClipMode::Cut => ops::move_path(src, dst).map(|_| ()),
+        ClipMode::Copy => ops::copy_path_no_replace(src, dst),
+        ClipMode::Cut => ops::move_path_no_replace(src, dst).map(|_| ()),
     }
 }
 
@@ -187,13 +204,18 @@ fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
 // destination is moved aside first, and only deleted once the paste succeeds;
 // if the paste fails, the original is rolled back into place. Staging aside (vs.
 // deleting upfront) also makes a directory a clean replace rather than a merge.
+//
+// Both halves claim the path they write to, so the window the staging opens
+// cannot be used against it: `move_path_no_replace` will not stage over a
+// backup path something else took, and `apply_one` will not write over a
+// destination re-created while the original was out of the way.
 fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
     use nohrs_core::telemetry::LogErr as _;
     if !ops::would_conflict(dst) {
         return apply_one(mode, src, dst);
     }
     let backup = backup_path(dst);
-    ops::move_path(dst, &backup)?;
+    ops::move_path_no_replace(dst, &backup)?;
     match apply_one(mode, src, dst) {
         Ok(()) => {
             ops::delete_permanent(&backup).log_err();
@@ -294,16 +316,16 @@ impl ExplorerPane {
         }
         let total = paths.len();
         let label = format!("{total} item(s) moved to trash");
+        // The same ledger `noh rm` writes, on the platforms that need one: macOS
+        // keeps its trash index inside Finder's private `.DS_Store` and exposes
+        // nothing to read it back, so an item trashed without a record here can
+        // never be restored — not by `noh trash restore`, not by us. `None` on
+        // Linux and Windows, where the OS trash records the same facts itself.
+        let ledger = self.trash_ledger.clone();
         self.run_fs_op(total, label, cx, move || {
             let mut errors = Vec::new();
             for path in paths {
-                // No ledger. On Linux and Windows the OS trash already records
-                // where an item came from, so a second copy would never be read
-                // (`ops::trash_path`). On macOS, where it would be, the ledger
-                // is the SQLite metadata database, and the explorer has no
-                // handle to it and nothing that reads it yet: restoring a
-                // trashed item is #189, and the handle belongs with that work.
-                if let Err(error) = ops::trash_path(Path::new(&path), None) {
+                if let Err(error) = ops::trash_path(Path::new(&path), ledger.as_deref()) {
                     errors.push(format!("{path}: {error}"));
                 }
             }
@@ -533,7 +555,7 @@ impl ExplorerPane {
                 for src in clear {
                     // Owned so the borrow of `src` ends before `src` is moved
                     // into `failed`.
-                    let Some(name) = src.file_name().map(std::ffi::OsStr::to_os_string) else {
+                    let Some(name) = src.file_name().map(OsStr::to_os_string) else {
                         continue;
                     };
                     // The plan reserved this name by comparing paths lexically,
@@ -542,14 +564,13 @@ impl ExplorerPane {
                     // destination, and the second source here would replace the
                     // first. Asking the filesystem instead also covers a name
                     // that appeared after the plan was built.
-                    let Some(dst) = free_destination(&dest_dir, &name) else {
-                        errors.push(format!(
-                            "{}: {} is taken and its name cannot be numbered",
-                            src.display(),
-                            dest_dir.join(&name).display()
-                        ));
-                        failed.push(src);
-                        continue;
+                    let dst = match free_destination(&dest_dir, &name) {
+                        Ok(dst) => dst,
+                        Err(error) => {
+                            errors.push(format!("{}: {error}", src.display()));
+                            failed.push(src);
+                            continue;
+                        }
                     };
                     if let Err(error) = apply_one(mode, &src, &dst) {
                         errors.push(format!("{}: {error}", src.display()));
@@ -557,19 +578,16 @@ impl ExplorerPane {
                     }
                 }
                 for (src, resolution) in resolved {
-                    let Some(name) = file_name_of(&src) else {
+                    let Some(name) = src.file_name().map(OsStr::to_os_string) else {
                         continue;
                     };
                     let result = match resolution {
                         // Filtered out above; kept for exhaustiveness without panicking.
                         ConflictResolution::Skip => continue,
-                        ConflictResolution::Rename => {
-                            let unique = ops::unique_name(&dest_dir, &name);
-                            apply_one(mode, &src, &dest_dir.join(unique))
-                        }
-                        ConflictResolution::Overwrite => {
-                            overwrite_apply(mode, &src, &dest_dir.join(&name))
-                        }
+                        ConflictResolution::Rename => free_destination(&dest_dir, &name)
+                            .and_then(|dst| apply_one(mode, &src, &dst)),
+                        ConflictResolution::Overwrite => ops::destination_in(&dest_dir, &name)
+                            .and_then(|dst| overwrite_apply(mode, &src, &dst)),
                     };
                     if let Err(error) = result {
                         errors.push(format!("{}: {error}", src.display()));

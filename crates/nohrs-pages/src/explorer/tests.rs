@@ -47,7 +47,7 @@ fn new_explorer_page(cx: &mut TestAppContext) -> WindowHandle<ExplorerPage> {
     cx.update(gpui_component::init);
     cx.add_window(|window, cx| {
         let resizable = cx.new(|_| ResizableState::default());
-        ExplorerPage::new(resizable, None, None, false, window, cx)
+        ExplorerPage::new(resizable, None, None, None, false, window, cx)
     })
 }
 
@@ -61,7 +61,7 @@ fn new_explorer_page_with_store(
     cx.update(gpui_component::init);
     cx.add_window(|window, cx| {
         let resizable = cx.new(|_| ResizableState::default());
-        ExplorerPage::new(resizable, None, Some(store), restore_tabs, window, cx)
+        ExplorerPage::new(resizable, None, Some(store), None, restore_tabs, window, cx)
     })
 }
 
@@ -885,15 +885,12 @@ async fn selection_single_toggle_range_and_paths(cx: &mut TestAppContext) {
             page.select_single(1);
             assert!(page.is_selected(1));
             assert_eq!(page.selection.len(), 1);
-            assert_eq!(page.active_index, Some(1));
+            assert_eq!(page.active_row(), Some(1));
 
             // Shift range spans from the anchor (row 1) to row 3 inclusive.
             page.select_range_to(3);
-            assert_eq!(
-                page.selection.iter().copied().collect::<Vec<_>>(),
-                vec![1, 2, 3]
-            );
-            assert_eq!(page.active_index, Some(3));
+            assert_eq!(page.selected_paths(), vec!["/tmp/b", "/tmp/c", "/tmp/d"]);
+            assert_eq!(page.active_row(), Some(3));
 
             // Cmd/Ctrl toggle removes one without clearing the rest and adds
             // another, re-anchoring at the toggled row.
@@ -921,47 +918,80 @@ async fn selection_all_clear_and_arrow_navigation(cx: &mut TestAppContext) {
 
             page.select_all();
             assert_eq!(page.selection.len(), 3);
-            assert_eq!(page.active_index, Some(2));
+            assert_eq!(page.active_row(), Some(2));
 
             page.clear_selection();
             assert!(page.selection.is_empty());
-            assert_eq!(page.active_index, None);
+            assert_eq!(page.active_row(), None);
             assert_eq!(page.selection_anchor, None);
 
             // Arrow-down from an empty selection lands on the first row.
             page.move_active(1, false);
-            assert_eq!(page.active_index, Some(0));
+            assert_eq!(page.active_row(), Some(0));
             page.move_active(1, false);
-            assert_eq!(page.active_index, Some(1));
+            assert_eq!(page.active_row(), Some(1));
 
             // Shift+down extends the range from the anchor; up is clamped at 0.
             page.move_active(1, true);
-            assert_eq!(
-                page.selection.iter().copied().collect::<Vec<_>>(),
-                vec![1, 2]
-            );
+            assert_eq!(page.selected_paths(), vec!["/tmp/b", "/tmp/c"]);
             page.select_single(0);
             page.move_active(-1, false);
-            assert_eq!(page.active_index, Some(0));
+            assert_eq!(page.active_row(), Some(0));
         })
         .unwrap();
 }
 
 #[gpui::test]
-async fn apply_filter_resets_stale_selection(cx: &mut TestAppContext) {
+async fn sorting_keeps_the_selection_on_the_entries_it_was_made_on(cx: &mut TestAppContext) {
+    let window = new_explorer(cx);
+    window
+        .update(cx, |page, _window, _cx| {
+            page.entries = vec![
+                file("a", "file", 1),
+                file("b", "file", 2),
+                file("c", "file", 3),
+            ];
+            page.apply_filter();
+
+            // Pick the first two rows, then reverse the sort. "Select, then sort,
+            // then act" used to be impossible: the selection was addressed by row
+            // index, so every rebuild had to throw it away.
+            page.select_single(0);
+            page.select_range_to(1);
+            assert_eq!(page.selected_paths(), vec!["/tmp/a", "/tmp/b"]);
+
+            page.set_sort_key(SortKey::Name);
+            assert_eq!(
+                page.filtered_entries[0].path, "/tmp/c",
+                "the sort did reverse"
+            );
+            assert_eq!(page.selected_paths(), vec!["/tmp/b", "/tmp/a"]);
+            assert!(page.is_selected(1) && page.is_selected(2) && !page.is_selected(0));
+            assert_eq!(page.active_row(), Some(1), "the active entry moved with it");
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+async fn filtering_drops_entries_that_are_no_longer_visible(cx: &mut TestAppContext) {
     let window = new_explorer(cx);
     window
         .update(cx, |page, _window, _cx| {
             page.entries = vec![file("a", "file", 1), file("b", "file", 2)];
             page.apply_filter();
             page.select_all();
-            assert!(!page.selection.is_empty());
 
-            // Re-filtering rebuilds the row set, so the selection must reset to
-            // avoid pointing at stale indices.
+            // What the user cannot see cannot stay selected, or a later
+            // operation would act on an entry that is not on screen.
+            page.search_query = "a".to_string();
+            page.apply_filter();
+            assert_eq!(page.selected_paths(), vec!["/tmp/a"]);
+
+            page.search_query = "zzz".to_string();
             page.apply_filter();
             assert!(page.selection.is_empty());
-            assert_eq!(page.active_index, None);
+            assert_eq!(page.active_row(), None);
+            assert_eq!(page.selection_anchor, None);
         })
         .unwrap();
 }

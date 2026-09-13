@@ -5,58 +5,45 @@
 //! consulted where the operating system keeps no trash index of its own — macOS
 //! — so on every other platform the database is never even opened.
 
+//! The opening itself lives in `nohrs-services::fs::trash`, next to the platform
+//! decision it depends on, so the explorer reaches the same database as `noh rm`
+//! — a GUI that opened its own would leave everything it trashed unrestorable
+//! from the command line, and the other way around.
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use nohrs_core::config::paths;
-use nohrs_core::errors::{Error, Result};
+use nohrs_core::errors::Result;
 use nohrs_services::fs::trash;
-use nohrs_store::{SqliteStore, StoreLogConfig, TrashLedger};
-
-/// File name of the metadata database inside the nohrs data directory.
-const DATABASE_FILE: &str = "db.sqlite";
+use nohrs_store::TrashLedger;
 
 /// Where the ledger lives, whether or not it exists yet. Reading this creates
 /// nothing.
 pub fn path() -> PathBuf {
-    paths::data_dir().join(DATABASE_FILE)
+    trash::ledger_path()
 }
 
 /// Whether restores on this platform go through the ledger rather than an OS
 /// trash index.
 pub fn required() -> bool {
-    !trash::OS_INDEX_AVAILABLE
+    trash::ledger_required()
 }
 
 /// Open the ledger, creating the data directory and the database if needed.
 pub fn open() -> Result<Arc<dyn TrashLedger>> {
-    open_at(&path())
+    trash::open_ledger()
 }
 
 /// Open the ledger held in the database at `path`, creating its directory and
 /// running any pending migrations.
 pub fn open_at(path: &Path) -> Result<Arc<dyn TrashLedger>> {
-    // A bare file name has a parent, but it is empty, and `create_dir_all("")`
-    // fails — the database would then never be created.
-    if let Some(directory) = path
-        .parent()
-        .filter(|directory| !directory.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(directory)?;
-    }
-    let store = SqliteStore::open(path, &StoreLogConfig::default())
-        .map_err(|error| Error::Other(format!("{}: {error}", path.display())))?;
-    Ok(Arc::new(store))
+    trash::open_ledger_at(path)
 }
 
 /// The ledger, or `None` where this platform does not use one — in which case
 /// nothing is opened and no data directory is created.
 pub fn open_if_needed() -> Result<Option<Arc<dyn TrashLedger>>> {
-    if required() {
-        open().map(Some)
-    } else {
-        Ok(None)
-    }
+    trash::open_ledger_if_needed()
 }
 
 #[cfg(test)]

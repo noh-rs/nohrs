@@ -304,6 +304,57 @@ pub const OS_INDEX_AVAILABLE: bool = cfg!(any(
     )
 ));
 
+/// File name of the metadata database inside the nohrs data directory.
+const LEDGER_DATABASE_FILE: &str = "db.sqlite";
+
+/// Whether deleting on this platform has to write the ledger for the item to be
+/// restorable later.
+///
+/// Every caller that trashes something — the CLI and the explorer alike — decides
+/// here rather than each reaching its own conclusion about the platform: pass
+/// `None` to [`ops::trash_path`] where this is `false`, and the ledger where it
+/// is `true`.
+pub fn ledger_required() -> bool {
+    !OS_INDEX_AVAILABLE
+}
+
+/// Where the ledger lives, whether or not it exists yet. Reading this creates
+/// nothing.
+pub fn ledger_path() -> PathBuf {
+    nohrs_core::config::paths::data_dir().join(LEDGER_DATABASE_FILE)
+}
+
+/// Open the ledger, creating the data directory and the database if needed.
+pub fn open_ledger() -> Result<Arc<dyn TrashLedger>> {
+    open_ledger_at(&ledger_path())
+}
+
+/// Open the ledger held in the database at `path`, creating its directory and
+/// running any pending migrations.
+pub fn open_ledger_at(path: &Path) -> Result<Arc<dyn TrashLedger>> {
+    // A bare file name has a parent, but it is empty, and `create_dir_all("")`
+    // fails — the database would then never be created.
+    if let Some(directory) = path
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(directory)?;
+    }
+    let store = nohrs_store::SqliteStore::open(path, &nohrs_store::StoreLogConfig::default())
+        .map_err(|error| Error::Other(format!("{}: {error}", path.display())))?;
+    Ok(Arc::new(store))
+}
+
+/// The ledger, or `None` where this platform does not use one — in which case
+/// nothing is opened and no data directory is created.
+pub fn open_ledger_if_needed() -> Result<Option<Arc<dyn TrashLedger>>> {
+    if ledger_required() {
+        open_ledger().map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
 /// The store for this platform: the OS trash index where there is one, and the
 /// nohrs ledger where there is not.
 ///
