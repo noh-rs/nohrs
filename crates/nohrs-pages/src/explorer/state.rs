@@ -59,12 +59,18 @@ pub struct ExplorerPane {
     pub preview_path: Option<String>,
     /// Text content of the previewed file, when it is textual.
     pub preview_text: Option<String>,
-    /// Indices (into `filtered_entries`) of all currently selected rows.
-    pub selection: std::collections::BTreeSet<usize>,
-    /// Anchor row for Shift range selection, or `None` when nothing is anchored.
-    pub selection_anchor: Option<usize>,
-    /// The active/primary row that drives the preview and keyboard navigation.
-    pub active_index: Option<usize>,
+    /// Paths of all currently selected entries.
+    ///
+    /// Held as paths rather than row indices: an index-addressed selection stops
+    /// meaning anything the moment the visible rows are rebuilt, so sorting or
+    /// filtering had to clear it to avoid acting on whichever entries had moved
+    /// into those slots. Rows are matched back to it when the listing renders.
+    pub selection: std::collections::HashSet<String>,
+    /// Path a Shift range selection extends from, or `None` when nothing is
+    /// anchored.
+    pub selection_anchor: Option<String>,
+    /// The active/primary entry that drives the preview and keyboard navigation.
+    pub active_path: Option<String>,
     /// Scroll handle for the virtualized listing.
     pub virtual_scroll_handle: VirtualListScrollHandle,
     /// Per-row sizes for the virtualized listing.
@@ -132,6 +138,9 @@ pub struct ExplorerPane {
     pub status_message: Option<StatusMessage>,
 
     // File operations (`docs/explorer-essentials.md` §1)
+    /// Ledger recording where trashed items came from, on platforms with no OS
+    /// trash index of their own. `None` elsewhere, and in tests.
+    pub(crate) trash_ledger: Option<Arc<dyn nohrs_store::TrashLedger>>,
     /// In-progress inline rename of a listing row, if any.
     pub(crate) renaming: Option<super::file_ops::RenameState>,
     /// In-progress paste whose name conflicts are being resolved via the dialog.
@@ -161,12 +170,15 @@ impl ExplorerPane {
     /// by the split-view container, which may hold several independent panes.
     pub fn build(
         search_service: Option<Arc<SearchService>>,
+        trash_ledger: Option<Arc<dyn nohrs_store::TrashLedger>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let resizable = cx.new(|_| ResizableState::default());
         let search_input = cx.new(|cx| InputState::new(window, cx));
-        Self::new(resizable, search_input, search_service, cx.focus_handle())
+        let mut pane = Self::new(resizable, search_input, search_service, cx.focus_handle());
+        pane.trash_ledger = trash_ledger;
+        pane
     }
 
     /// Creates a new explorer pane rooted at the current working directory,
@@ -198,9 +210,9 @@ impl ExplorerPane {
             subs: Vec::new(),
             preview_path: None,
             preview_text: None,
-            selection: std::collections::BTreeSet::new(),
+            selection: std::collections::HashSet::new(),
             selection_anchor: None,
-            active_index: None,
+            active_path: None,
             virtual_scroll_handle: VirtualListScrollHandle::new(),
             item_sizes: Rc::new(Vec::new()),
             col_name_width: config::COL_NAME_WIDTH,
@@ -233,6 +245,7 @@ impl ExplorerPane {
             preview_image_path: None,
             preview_message: None,
             status_message: None,
+            trash_ledger: None,
             renaming: None,
             paste_plan: None,
         }
@@ -301,35 +314,67 @@ impl ExplorerPane {
         });
     }
 
+    /// Path of the entry shown at row `ix`, if there is one.
+    fn path_at(&self, ix: usize) -> Option<&str> {
+        self.filtered_entries
+            .get(ix)
+            .map(|entry| entry.path.as_str())
+    }
+
+    /// Row currently showing `path`, if it is visible.
+    fn row_of(&self, path: &str) -> Option<usize> {
+        self.filtered_entries
+            .iter()
+            .position(|entry| entry.path == path)
+    }
+
     /// Returns whether the row at `ix` (an index into `filtered_entries`) is
     /// part of the current selection.
     pub fn is_selected(&self, ix: usize) -> bool {
-        self.selection.contains(&ix)
+        self.path_at(ix)
+            .is_some_and(|path| self.selection.contains(path))
+    }
+
+    /// Row of the active/primary entry, if it is visible.
+    pub fn active_row(&self) -> Option<usize> {
+        self.active_path
+            .as_deref()
+            .and_then(|path| self.row_of(path))
     }
 
     /// Replaces the selection with the single row `ix`, making it both the
     /// anchor and the active row (a plain click or arrow-key move).
     pub(crate) fn select_single(&mut self, ix: usize) {
+        let Some(path) = self.path_at(ix).map(str::to_string) else {
+            return;
+        };
         self.selection.clear();
-        self.selection.insert(ix);
-        self.selection_anchor = Some(ix);
-        self.active_index = Some(ix);
+        self.selection.insert(path.clone());
+        self.selection_anchor = Some(path.clone());
+        self.active_path = Some(path);
     }
 
     /// Toggles row `ix` in the selection (Cmd/Ctrl+click) and re-anchors there.
     pub(crate) fn toggle_select(&mut self, ix: usize) {
-        if !self.selection.remove(&ix) {
-            self.selection.insert(ix);
+        let Some(path) = self.path_at(ix).map(str::to_string) else {
+            return;
+        };
+        if !self.selection.remove(&path) {
+            self.selection.insert(path.clone());
         }
-        self.selection_anchor = Some(ix);
-        self.active_index = Some(ix);
+        self.selection_anchor = Some(path.clone());
+        self.active_path = Some(path);
     }
 
     /// Selects the contiguous range between the current anchor and `ix`
     /// (Shift+click / Shift+arrow). Falls back to a single selection when there
-    /// is no anchor yet.
+    /// is no anchor yet, or when the anchored entry is no longer visible.
     pub(crate) fn select_range_to(&mut self, ix: usize) {
-        let anchor = match self.selection_anchor {
+        let anchor = match self
+            .selection_anchor
+            .as_deref()
+            .and_then(|a| self.row_of(a))
+        {
             Some(anchor) => anchor,
             None => {
                 self.select_single(ix);
@@ -341,23 +386,55 @@ impl ExplorerPane {
         } else {
             (ix, anchor)
         };
-        self.selection = (low..=high).collect();
-        self.active_index = Some(ix);
+        let range = (low..=high)
+            .filter_map(|row| self.path_at(row).map(str::to_string))
+            .collect();
+        self.selection = range;
+        self.active_path = self.path_at(ix).map(str::to_string);
     }
 
     /// Selects every visible row.
     pub(crate) fn select_all(&mut self) {
-        let len = self.filtered_entries.len();
-        self.selection = (0..len).collect();
-        self.selection_anchor = if len > 0 { Some(0) } else { None };
-        self.active_index = len.checked_sub(1);
+        self.selection = self
+            .filtered_entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
+        self.selection_anchor = self.path_at(0).map(str::to_string);
+        self.active_path = self
+            .filtered_entries
+            .len()
+            .checked_sub(1)
+            .and_then(|last| self.path_at(last))
+            .map(str::to_string);
     }
 
     /// Clears the selection, anchor, and active row.
     pub(crate) fn clear_selection(&mut self) {
         self.selection.clear();
         self.selection_anchor = None;
-        self.active_index = None;
+        self.active_path = None;
+    }
+
+    // Drops selected, anchored, and active paths that the visible rows no longer
+    // hold, so a hidden or deleted entry cannot be acted on and cannot come back
+    // selected if something later takes its path.
+    fn prune_selection(&mut self) {
+        let visible: std::collections::HashSet<&str> = self
+            .filtered_entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
+        self.selection
+            .retain(|path| visible.contains(path.as_str()));
+        let still_visible =
+            |path: &Option<String>| path.as_deref().is_some_and(|path| visible.contains(path));
+        if !still_visible(&self.selection_anchor) {
+            self.selection_anchor = None;
+        }
+        if !still_visible(&self.active_path) {
+            self.active_path = None;
+        }
     }
 
     /// Moves the active row by `delta` rows, clamped to the visible range. With
@@ -369,7 +446,7 @@ impl ExplorerPane {
         if len == 0 {
             return;
         }
-        let next = match self.active_index {
+        let next = match self.active_row() {
             Some(current) => (current as isize + delta).clamp(0, len as isize - 1) as usize,
             None => 0,
         };
@@ -383,9 +460,9 @@ impl ExplorerPane {
     /// Paths of the currently selected rows, in row order. Used by file
     /// operations and drag-and-drop.
     pub fn selected_paths(&self) -> Vec<String> {
-        self.selection
+        self.filtered_entries
             .iter()
-            .filter_map(|&ix| self.filtered_entries.get(ix))
+            .filter(|entry| self.selection.contains(&entry.path))
             .map(|entry| entry.path.clone())
             .collect()
     }
@@ -430,14 +507,14 @@ impl ExplorerPane {
     }
 
     pub(crate) fn apply_filter(&mut self) {
-        // Rebuilding the visible row set (here or via the search path) invalidates
-        // the row indices the selection is expressed in, so reset it rather than
-        // risk acting on unrelated rows after a sort/filter/reload/search.
-        self.clear_selection();
+        // The selection is addressed by path, so rebuilding the visible rows
+        // keeps it: sorting or filtering no longer throws away what the user
+        // picked. `prune_selection` below drops whatever is no longer visible.
 
         // When explicit search results are displayed, `filtered_entries` is owned
         // by the search path; only refresh row sizes here.
         if self.search_results.is_some() {
+            self.prune_selection();
             self.update_item_sizes();
             return;
         }
@@ -459,6 +536,7 @@ impl ExplorerPane {
         }
 
         entries::sort_entries(&mut self.filtered_entries, self.sort_key, self.sort_asc);
+        self.prune_selection();
         self.update_item_sizes();
     }
 

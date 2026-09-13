@@ -94,14 +94,14 @@ pub fn render(
                 }
                 // Rename: F2 everywhere, plus Enter on macOS (§6).
                 "f2" => {
-                    if let Some(index) = this.active_index {
+                    if let Some(index) = this.active_row() {
                         this.begin_rename(index, window, cx);
                     }
                     cx.stop_propagation();
                     return;
                 }
                 "enter" if cfg!(target_os = "macos") && !with_modifier => {
-                    if let Some(index) = this.active_index {
+                    if let Some(index) = this.active_row() {
                         this.begin_rename(index, window, cx);
                     }
                     cx.stop_propagation();

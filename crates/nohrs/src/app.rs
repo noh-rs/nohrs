@@ -15,8 +15,9 @@ use nohrs_core::config::{self, ConfigOverride};
 use nohrs_core::telemetry::logging::{FileLogConfig, init_logging_with_file};
 use nohrs_launcher::{LauncherIndex, ToggleLauncher};
 use nohrs_pages::RootView;
+use nohrs_services::fs::trash;
 use nohrs_services::search::SearchService;
-use nohrs_store::{KvStore, RedbKvStore, StoreLogConfig};
+use nohrs_store::{KvStore, RedbKvStore, StoreLogConfig, TrashLedger};
 use nohrs_ui::assets::Assets;
 use nohrs_ui::components::layout::unified_toolbar::UNIFIED_TOOLBAR_HEIGHT;
 use nohrs_ui::window::{self, traffic_lights::TrafficLightsHook};
@@ -91,12 +92,20 @@ impl NohrsApp {
             // without session persistence rather than crashing.
             let store: Option<Arc<dyn KvStore>> = open_host_store();
 
+            // The trash ledger, on the platforms whose OS trash records nothing
+            // (macOS). Without it the explorer's Delete is a one-way door: the
+            // item is in `~/.Trash` but nothing knows where it came from, so
+            // neither `noh trash restore` nor a future in-app restore can put it
+            // back. Failure is non-fatal, and reported where it is used.
+            let trash_ledger: Option<Arc<dyn TrashLedger>> = open_trash_ledger();
+
             let opened = app.open_window(window_options, {
                 let config = config.clone();
                 let config_path = config_path.clone();
                 let config_overrides = config_overrides.clone();
                 let config_error = config_error.clone();
                 let store = store.clone();
+                let trash_ledger = trash_ledger.clone();
                 move |window, cx| {
                     // Initialize SearchService. Failure is non-fatal: the app starts
                     // with full-text search disabled rather than crashing.
@@ -125,6 +134,7 @@ impl NohrsApp {
                             resizable.clone(),
                             search_service,
                             store,
+                            trash_ledger,
                             config,
                             config_path,
                             config_overrides,
@@ -166,6 +176,25 @@ fn install_in_app_launcher_key(launcher: LauncherIndex, app: &mut App) {
             tracing::error!("failed to toggle launcher window: {error}");
         }
     });
+}
+
+/// Opens the trash ledger where the platform needs one, which is the same
+/// database `noh rm` writes and `noh trash restore` reads.
+///
+/// Returns `None` (and logs) on failure: Delete then still works and still puts
+/// the item in the OS trash, but nothing records where it came from, so it
+/// cannot be restored automatically.
+fn open_trash_ledger() -> Option<Arc<dyn TrashLedger>> {
+    match trash::open_ledger_if_needed() {
+        Ok(ledger) => ledger,
+        Err(error) => {
+            tracing::error!(
+                "could not open the trash ledger {}; deleted items will not be restorable: {error}",
+                trash::ledger_path().display()
+            );
+            None
+        }
+    }
 }
 
 /// Opens the host KV store at `<data_dir>/state.redb`, creating the data
