@@ -1817,6 +1817,31 @@ async fn trash_selection_removes_from_source(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn a_reload_that_fails_takes_the_selection_with_it(cx: &mut TestAppContext) {
+    // The error path empties the listing without going through `apply_filter`,
+    // so nothing pruned the selection: it survived the empty rows and came back
+    // the moment those paths were on screen again, selected by nobody.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    std::fs::write(root.join("a.txt"), "A").unwrap();
+    let window = open_pane_at(cx, &root);
+    window
+        .update(cx, |pane, _window, _cx| {
+            pane.select_all();
+            assert_eq!(pane.selected_paths().len(), 1);
+
+            pane.cwd = root.join("gone").to_string_lossy().into_owned();
+            pane.reload();
+
+            assert!(pane.filtered_entries.is_empty(), "the listing is empty");
+            assert!(pane.selection.is_empty(), "and so is the selection");
+            assert_eq!(pane.active_row(), None);
+            assert_eq!(pane.selection_anchor, None);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
 async fn trash_refuses_when_nothing_can_record_where_the_item_came_from(cx: &mut TestAppContext) {
     // On a platform whose OS trash indexes nothing, a ledger that cannot be
     // opened is not the same as not needing one. Trashing would still succeed —

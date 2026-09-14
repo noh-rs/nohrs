@@ -31,7 +31,21 @@ use std::process::Command;
 /// A name no real file would have, so a run that fails between trashing and
 /// restoring leaves something identifiable behind rather than a plausible
 /// `notes.txt` the user has to puzzle over.
-const FIXTURE_NAME: &str = "nohrs-trash-round-trip-fixture.txt";
+///
+/// Unique per run, because on macOS the fixture goes to the real `~/.Trash`: a
+/// leftover from an interrupted run is matched by name, size and modification
+/// time, so a fixed name would let a later run restore the *stale* copy, pass
+/// every assertion, and leave the file it actually trashed behind.
+fn fixture_name() -> String {
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    format!(
+        "nohrs-trash-round-trip-fixture-{}-{since_epoch}.txt",
+        std::process::id()
+    )
+}
 
 /// Run `noh` with the data and state directories redirected into temporaries.
 fn noh(data: &Path, state: &Path, args: &[&str]) -> std::process::Output {
@@ -51,7 +65,8 @@ fn what_rm_trashes_is_listed_and_comes_back_where_it_was() {
     let data = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();
-    let file = work.path().join(FIXTURE_NAME);
+    let fixture = fixture_name();
+    let file = work.path().join(&fixture);
     std::fs::write(&file, "payload").unwrap();
     let path = file.to_str().unwrap();
 
@@ -65,7 +80,7 @@ fn what_rm_trashes_is_listed_and_comes_back_where_it_was() {
     assert!(listed.status.success(), "trash list failed: {listed:?}");
     let listing = String::from_utf8(listed.stdout).unwrap();
     assert!(
-        listing.contains(FIXTURE_NAME),
+        listing.contains(&fixture),
         "trashed item is not in the listing: {listing}"
     );
 
@@ -80,7 +95,7 @@ fn what_rm_trashes_is_listed_and_comes_back_where_it_was() {
     let after = noh(data.path(), state.path(), &["trash", "list"]);
     let listing = String::from_utf8(after.stdout).unwrap();
     assert!(
-        !listing.contains(FIXTURE_NAME),
+        !listing.contains(&fixture),
         "a restored item is still in the trash: {listing}"
     );
 }

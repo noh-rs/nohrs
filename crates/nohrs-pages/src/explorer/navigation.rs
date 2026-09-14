@@ -40,6 +40,11 @@ impl ExplorerPane {
                 tracing::error!("Failed to list directory '{}': {}", self.cwd, e);
                 self.entries = Vec::new();
                 self.filtered_entries = Vec::new();
+                // The rows are gone, so the selection addressing them has to go
+                // too. Without this it survives the empty listing and comes back
+                // the moment a later reload puts those paths on screen again,
+                // selected by nobody.
+                self.prune_selection();
                 self.update_item_sizes();
                 self.set_status(
                     StatusLevel::Error,
