@@ -424,7 +424,7 @@ impl ExplorerPane {
     // Drops selected, anchored, and active paths that the visible rows no longer
     // hold, so a hidden or deleted entry cannot be acted on and cannot come back
     // selected if something later takes its path.
-    fn prune_selection(&mut self) {
+    pub(crate) fn prune_selection(&mut self) {
         let visible: std::collections::HashSet<&str> = self
             .filtered_entries
             .iter()

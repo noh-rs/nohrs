@@ -92,41 +92,95 @@ pub fn destination_in(dir: &Path, name: &OsStr) -> Result<PathBuf> {
 /// before a byte is read. Enforced here rather than in the explorer so every
 /// caller — paste today, drag and drop later — is covered by one check.
 fn ensure_destination_outside_source(src: &Path, dst: &Path) -> Result<()> {
-    let source = containment_path(src);
-    if containment_path(dst).starts_with(&source) {
-        return Err(Error::Other(format!(
+    let refuse = || {
+        Err(Error::Other(format!(
             "cannot copy or move {} into itself: {}",
             src.display(),
             dst.display()
-        )));
+        )))
+    };
+    // Names can differ while the file does not: a hard link is a second name for
+    // the same inode, and a symbolic link resolves to one. Either way a replacing
+    // copy opens the destination truncating, which empties the source before a
+    // byte of it is read.
+    if is_same_file(src, dst) {
+        return refuse();
+    }
+    if destination_path(dst).starts_with(source_path(src)) {
+        return refuse();
     }
     Ok(())
+}
+
+// Whether two paths lead to one file. Both are resolved through links, because
+// that is what the copy itself does.
+#[cfg(unix)]
+fn is_same_file(one: &Path, other: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(one), fs::metadata(other)) {
+        (Ok(one), Ok(other)) => one.dev() == other.dev() && one.ino() == other.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn is_same_file(_one: &Path, _other: &Path) -> bool {
+    false
+}
+
+// Where the source sits, with its own final component left unresolved: a copy
+// recreates a symbolic link rather than following it, so copying a link *into
+// the directory it points at* is not copying something into itself, and
+// resolving the link would make it look like it was.
+fn source_path(src: &Path) -> PathBuf {
+    containment_path(src)
+}
+
+// Where a write to `dst` would actually land. Unlike the source, a symbolic link
+// already sitting there is followed, because `create_dir_all` and `fs::copy`
+// follow it too: a link pointing back into the source is a write into the
+// source, however unrelated the path it is spelled with looks.
+fn destination_path(dst: &Path) -> PathBuf {
+    fs::canonicalize(dst).unwrap_or_else(|_| containment_path(dst))
 }
 
 // The path to compare containment with: every leading component that exists is
 // resolved, so neither `..` nor an intermediate symlink can hide that one path
 // is inside the other, and the components that do not exist yet (a destination
 // is usually one of them) are appended as written.
-//
-// The final component is deliberately left unresolved. A copy recreates symbolic
-// links rather than following them, so copying a link *into the directory it
-// points at* is not copying something into itself, and resolving the link would
-// make it look like it was.
 fn containment_path(path: &Path) -> PathBuf {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut trailing = Vec::new();
     let mut current = absolute.as_path();
-    while let (Some(parent), Some(name)) = (current.parent(), current.file_name()) {
-        trailing.push(name);
-        if let Ok(mut resolved) = fs::canonicalize(parent) {
-            for name in trailing.iter().rev() {
-                resolved.push(name);
+    loop {
+        // `file_name` is `None` exactly where there is no final component to hold
+        // back — a path ending in `..`, or the root. Resolving the whole thing is
+        // then both safe and necessary: `dir/src/..` *is* `dir`, and left as
+        // written it compares as something below `dir/src`, which is how a copy
+        // of `dir` into its own child would slip past the guard.
+        let Some(name) = current.file_name() else {
+            if let Ok(resolved) = fs::canonicalize(current) {
+                return with_trailing(resolved, &trailing);
             }
-            return resolved;
+            break;
+        };
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        trailing.push(name);
+        if let Ok(resolved) = fs::canonicalize(parent) {
+            return with_trailing(resolved, &trailing);
         }
         current = parent;
     }
     absolute
+}
+
+fn with_trailing(mut resolved: PathBuf, trailing: &[&OsStr]) -> PathBuf {
+    for name in trailing.iter().rev() {
+        resolved.push(name);
+    }
+    resolved
 }
 
 /// Returns `true` when `src` and `dst_dir` reside on different filesystems, in
@@ -238,10 +292,38 @@ fn copy_symlink(from: &Path, to: &Path, existing: Existing) -> Result<()> {
     symlink_no_replace(&target, to)
 }
 
-// Recursively copies the contents of directory `src` into `dst`, creating
-// `dst` and any intermediate directories.
+// Copies the regular file `from` to `to`.
+fn copy_file(from: &Path, to: &Path, existing: Existing) -> Result<()> {
+    if existing == Existing::Replace {
+        fs::copy(from, to)?;
+        return Ok(());
+    }
+    let mut source = fs::File::open(from)?;
+    let mut destination = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)?;
+    std::io::copy(&mut source, &mut destination)?;
+    // After the contents, so a read-only mode cannot stop the copy that has to
+    // happen first.
+    fs::set_permissions(to, fs::metadata(from)?.permissions())?;
+    Ok(())
+}
+
+// Recursively copies the contents of directory `src` into `dst`, creating `dst`
+// itself. Under `Refuse` every entry is claimed by a call that fails if the name
+// is taken — not just the root: a tree takes time to write, and the guarantee is
+// worth nothing if something else can create an entry inside it meanwhile and
+// have it silently replaced.
 fn copy_dir_all(src: &Path, dst: &Path, existing: Existing) -> Result<()> {
-    fs::create_dir_all(dst)?;
+    match existing {
+        // `create_dir_all` so intermediate directories a caller left out are
+        // created, matching what `copy_path` documents.
+        Existing::Replace => fs::create_dir_all(dst)?,
+        // Refuses an existing directory, and a symbolic link standing in for one,
+        // which `create_dir_all` would have followed.
+        Existing::Refuse => fs::create_dir(dst)?,
+    }
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -252,7 +334,7 @@ fn copy_dir_all(src: &Path, dst: &Path, existing: Existing) -> Result<()> {
         } else if file_type.is_dir() {
             copy_dir_all(&from, &to, existing)?;
         } else {
-            fs::copy(&from, &to)?;
+            copy_file(&from, &to, existing)?;
         }
     }
     // `create_dir_all` derives the mode from the umask, so a private `0700`
@@ -351,22 +433,9 @@ pub fn copy_path_no_replace(src: &Path, dst: &Path) -> Result<()> {
         return copy_symlink(src, dst, Existing::Refuse);
     }
     if metadata.is_dir() {
-        // `create_dir` rather than the `create_dir_all` inside `copy_dir_all`,
-        // so an existing destination is refused; the recursion then fills it in
-        // and applies the source's mode to it and to every directory below.
-        fs::create_dir(dst)?;
         return copy_dir_all(src, dst, Existing::Refuse);
     }
-    let mut source = fs::File::open(src)?;
-    let mut destination = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dst)?;
-    std::io::copy(&mut source, &mut destination)?;
-    // After the contents, so a read-only mode cannot stop the copy that has to
-    // happen first.
-    fs::set_permissions(dst, metadata.permissions())?;
-    Ok(())
+    copy_file(src, dst, Existing::Refuse)
 }
 
 // Recreates a symlink to `target` at `link`, failing if `link` is taken.
@@ -655,6 +724,92 @@ mod tests {
 
         // A sibling destination is still fine.
         copy_path(&src, &dir.path().join("beside")).unwrap();
+    }
+
+    #[test]
+    fn a_trailing_dot_dot_cannot_dress_a_source_up_as_something_else() {
+        // `dir/src/..` is `dir`, so this is copying `dir` into its own child.
+        // `Path::file_name` is `None` for it, which is what made the guard leave
+        // it unresolved and compare it as something *below* `dir/src`.
+        let dir = tempdir().unwrap();
+        let inner = dir.path().join("src");
+        fs::create_dir(&inner).unwrap();
+        fs::write(inner.join("deep.txt"), "deep").unwrap();
+
+        let disguised = inner.join("..");
+        let dst = inner.join("copy-of-dir");
+        assert!(copy_path(&disguised, &dst).is_err());
+        assert!(move_path(&disguised, &dst).is_err());
+        assert!(move_path_no_replace(&disguised, &dst).is_err());
+        assert!(!dst.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_destination_link_pointing_back_into_the_source_is_refused() {
+        // The destination's own final component is followed, unlike the
+        // source's: `create_dir_all` and `fs::copy` follow it, so a link back
+        // into the source is a write into the source however unrelated the path
+        // it is spelled with looks. Left unchecked this copied a directory into
+        // itself, and copied a file onto itself.
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("kept.txt"), "kept").unwrap();
+
+        let link_to_source = dir.path().join("link-to-source");
+        std::os::unix::fs::symlink(&source, &link_to_source).unwrap();
+        assert!(copy_path(&source, &link_to_source).is_err());
+
+        let file = dir.path().join("notes.txt");
+        fs::write(&file, "payload").unwrap();
+        let link_to_file = dir.path().join("link-to-notes");
+        std::os::unix::fs::symlink(&file, &link_to_file).unwrap();
+        assert!(copy_path(&file, &link_to_file).is_err());
+
+        assert_eq!(fs::read_to_string(&file).unwrap(), "payload");
+        assert_eq!(fs::read_to_string(source.join("kept.txt")).unwrap(), "kept");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_second_name_for_the_same_file_is_refused() {
+        // A hard link is a different path and the same inode. A replacing copy
+        // opens the destination truncating, so the source is emptied before a
+        // byte of it is read — the same loss as copying a file onto itself, with
+        // nothing in the two paths to hint at it.
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("notes.txt");
+        fs::write(&file, "payload").unwrap();
+        let hard_link = dir.path().join("also-notes.txt");
+        fs::hard_link(&file, &hard_link).unwrap();
+
+        assert!(copy_path(&file, &hard_link).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "payload");
+    }
+
+    #[test]
+    fn the_no_replace_copy_refuses_a_name_taken_below_its_root_too() {
+        // Claiming only the root is not enough: a tree takes time to write, and
+        // an entry that appears inside it meanwhile used to be replaced by
+        // `fs::copy` / `create_dir_all` on the way past.
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("nested").join("deep.txt"), "mine").unwrap();
+
+        // Stand in for the concurrent creator by pre-making what the recursion
+        // is about to write, one level down from the root it claimed.
+        let dst = dir.path().join("dst");
+        fs::create_dir_all(dst.join("nested")).unwrap();
+        fs::write(dst.join("nested").join("deep.txt"), "theirs").unwrap();
+
+        assert!(copy_path_no_replace(&source, &dst).is_err());
+        assert_eq!(
+            fs::read_to_string(dst.join("nested").join("deep.txt")).unwrap(),
+            "theirs",
+            "what was already there has to survive"
+        );
     }
 
     #[test]
