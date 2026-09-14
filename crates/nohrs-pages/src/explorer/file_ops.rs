@@ -701,8 +701,16 @@ impl ExplorerPane {
             cx.notify();
             return;
         }
+        // Typed by the user, so it can be anything. A name that is not a single
+        // plain component is left as it is, for `rename_in_place` to reject with
+        // the one message for it: numbering `../notes.txt` would quietly turn a
+        // rename that was going to fail into one that renames the entry to a
+        // sibling of whatever `..` reached.
         let final_name = match original_path.parent() {
-            Some(parent) if ops::would_conflict(&parent.join(&new_name)) => {
+            Some(parent)
+                if ops::destination_in(parent, OsStr::new(&new_name))
+                    .is_ok_and(|dst| ops::would_conflict(&dst)) =>
+            {
                 ops::unique_name(parent, &new_name)
             }
             _ => new_name,
