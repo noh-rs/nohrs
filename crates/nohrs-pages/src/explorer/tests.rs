@@ -38,7 +38,13 @@ fn new_explorer(cx: &mut TestAppContext) -> WindowHandle<ExplorerPane> {
     cx.add_window(|window, cx| {
         let resizable = cx.new(|_| ResizableState::default());
         let search_input = cx.new(|cx| InputState::new(window, cx));
-        ExplorerPane::new(resizable, search_input, None, cx.focus_handle())
+        ExplorerPane::new(
+            resizable,
+            search_input,
+            None,
+            TrashLedger::KeptByOs,
+            cx.focus_handle(),
+        )
     })
 }
 
@@ -1038,8 +1044,15 @@ fn new_explorer_in_root(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<
     let window = cx.add_window(|window, cx| {
         let resizable = cx.new(|_| ResizableState::default());
         let search_input = cx.new(|cx| InputState::new(window, cx));
-        let entity =
-            cx.new(|cx| ExplorerPane::new(resizable, search_input, None, cx.focus_handle()));
+        let entity = cx.new(|cx| {
+            ExplorerPane::new(
+                resizable,
+                search_input,
+                None,
+                TrashLedger::KeptByOs,
+                cx.focus_handle(),
+            )
+        });
         pane = Some(entity.clone());
         Root::new(entity, window, cx)
     });
