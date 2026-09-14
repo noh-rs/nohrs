@@ -205,11 +205,9 @@ fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
 // if the paste fails, the original is rolled back into place. Staging aside (vs.
 // deleting upfront) also makes a directory a clean replace rather than a merge.
 //
-// The new entry is built at a path only this call knows and moved onto `dst` in
-// one rename at the end. That keeps every write and every cleanup to something
-// this paste created: the destination is claimed atomically once it is whole,
-// and a failure removes only the staging path — never whatever took `dst` while
-// the original was out of the way, which is not ours to delete.
+// The new entry is built at a path only this call knows and moved onto `dst` at
+// the end, so the destination is claimed once the replacement is whole rather
+// than held open for the length of a copy.
 fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
     use nohrs_core::telemetry::LogErr as _;
     if !ops::would_conflict(dst) {
@@ -218,31 +216,77 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
     let backup = scratch_path(dst, "old");
     ops::move_path_no_replace(dst, &backup)?;
     let staged = scratch_path(dst, "new");
-    let result = apply_one(mode, src, &staged)
-        .and_then(|()| ops::move_path_no_replace(&staged, dst).map(|_| ()));
-    match result {
-        Ok(()) => {
-            ops::delete_permanent(&backup).log_err();
-            Ok(())
-        }
-        Err(error) => {
-            // Ours by construction, whole or partial, so there is no question of
-            // whose data this is.
-            if ops::would_conflict(&staged) {
-                ops::delete_permanent(&staged).log_err();
-            }
-            // If the restore fails, log loudly — the data still exists at
-            // `backup`, but the destination is now wrong.
-            if let Err(restore_error) = ops::move_path_no_replace(&backup, dst) {
-                tracing::error!(
-                    "failed to restore {} after a failed overwrite (original kept at {}): {restore_error}",
-                    dst.display(),
-                    backup.display(),
-                );
-            }
-            Err(error)
-        }
+    let Err(error) = build_and_commit(mode, src, dst, &staged) else {
+        ops::delete_permanent(&backup).log_err();
+        return Ok(());
+    };
+    // Put the original back. Whatever took `dst` in the meantime is not ours to
+    // replace, so a failure here leaves the original at `backup` and says where.
+    if let Err(restore_error) = ops::move_path_no_replace(&backup, dst) {
+        tracing::error!(
+            "failed to restore {} after a failed overwrite (original kept at {}): {restore_error}",
+            dst.display(),
+            backup.display(),
+        );
     }
+    Err(error)
+}
+
+// Builds the replacement at `staged` and takes `dst` with it, leaving nothing of
+// its own behind when it cannot. `dst` is free on entry — the caller moved what
+// was there to the backup.
+fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Result<()> {
+    use nohrs_core::telemetry::LogErr as _;
+    if let Err(error) = apply_one(mode, src, staged) {
+        // `scratch_path` picks a free name rather than claiming one, so the name
+        // can be taken between the two. That is the one failure that leaves
+        // nothing of ours at `staged` — every write here claims its path, so it
+        // wrote nothing — and the entry belongs to whoever got there first.
+        if !is_already_taken(&error) {
+            discard_staged(mode, src, staged);
+        }
+        return Err(error);
+    }
+    if let Err(error) = ops::move_path_no_replace(staged, dst) {
+        // Where the filesystem has no no-replace rename, this was a copy, and one
+        // that failed partway leaves a partial `dst` that would block the
+        // rollback. `AlreadyExists` is what it reports when the destination is
+        // someone else's, which is the case to leave alone.
+        if !is_already_taken(&error) && ops::would_conflict(dst) {
+            ops::delete_permanent(dst).log_err();
+        }
+        discard_staged(mode, src, staged);
+        return Err(error);
+    }
+    Ok(())
+}
+
+// Gets rid of the staged entry — except that a cut has already *moved* the
+// source into it, so where the source is gone this puts it back rather than
+// deleting the only copy of it there is.
+fn discard_staged(mode: ClipMode, src: &Path, staged: &Path) {
+    use nohrs_core::telemetry::LogErr as _;
+    if !ops::would_conflict(staged) {
+        return;
+    }
+    if mode == ClipMode::Cut && !ops::would_conflict(src) {
+        if let Err(error) = ops::move_path_no_replace(staged, src) {
+            tracing::error!(
+                "failed to put {} back after a move that could not finish (it is at {}): {error}",
+                src.display(),
+                staged.display(),
+            );
+        }
+        return;
+    }
+    ops::delete_permanent(staged).log_err();
+}
+
+// Whether an error means the path was already taken. Every write in an overwrite
+// claims the path it writes to, so this is the one failure that leaves nothing
+// behind — and the one that says the entry there belongs to someone else.
+fn is_already_taken(error: &Error) -> bool {
+    matches!(error, Error::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists)
 }
 
 // A sibling path of `dst` that does not yet exist, for one side of an overwrite
@@ -774,6 +818,61 @@ impl ExplorerPane {
                 cx.notify();
             }
         }
+    }
+}
+
+#[cfg(test)]
+// Staging real entries on disk is the point of these; there is no UI thread in
+// a test binary to keep responsive.
+#[allow(clippy::unwrap_used, clippy::disallowed_methods)]
+mod overwrite_recovery_tests {
+    use super::{ClipMode, discard_staged};
+
+    #[test]
+    fn a_cut_that_cannot_finish_puts_the_source_back() {
+        // The source is *inside* the staging path by then: a cut moves it there
+        // before the destination is taken. Deleting it — which is the right
+        // thing for a copy's staging — would destroy the only copy there is.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("notes.txt");
+        let staged = dir.path().join(".notes.txt.nohrs-new");
+        std::fs::write(&staged, "payload").unwrap();
+
+        discard_staged(ClipMode::Cut, &src, &staged);
+
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "payload");
+        assert!(!staged.exists());
+    }
+
+    #[test]
+    fn a_copy_that_cannot_finish_just_drops_its_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("notes.txt");
+        std::fs::write(&src, "payload").unwrap();
+        let staged = dir.path().join(".notes.txt.nohrs-new");
+        std::fs::write(&staged, "half a copy").unwrap();
+
+        discard_staged(ClipMode::Copy, &src, &staged);
+
+        assert!(!staged.exists());
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "payload");
+    }
+
+    #[test]
+    fn a_cut_whose_source_is_still_there_drops_the_partial_instead() {
+        // The move never got far enough to take the source away, so what is at
+        // the staging path is a partial copy and putting it "back" would replace
+        // a whole source with it.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("notes.txt");
+        std::fs::write(&src, "payload").unwrap();
+        let staged = dir.path().join(".notes.txt.nohrs-new");
+        std::fs::write(&staged, "half").unwrap();
+
+        discard_staged(ClipMode::Cut, &src, &staged);
+
+        assert!(!staged.exists());
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "payload");
     }
 }
 

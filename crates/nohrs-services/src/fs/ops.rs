@@ -104,7 +104,11 @@ fn ensure_destination_outside_source(src: &Path, dst: &Path) -> Result<()> {
     // would land on what the copy is about to read, and a replacing write opens
     // the destination truncating — so the source is emptied before a byte of it
     // is read.
-    if writes_over_what_it_reads(src, dst) {
+    // One entry under two names is still one entry, and copying it onto itself
+    // is never what was meant — a symbolic link included, where the write would
+    // otherwise land on the link and the read resolve to its target, so the
+    // check below sees two different inodes and lets it through.
+    if is_same_entry(src, dst) || writes_over_what_it_reads(src, dst) {
         return refuse();
     }
     if destination_path(dst).starts_with(source_path(src)) {
@@ -142,6 +146,21 @@ fn writes_over_what_it_reads(src: &Path, dst: &Path) -> bool {
 #[cfg(not(unix))]
 fn writes_over_what_it_reads(_src: &Path, _dst: &Path) -> bool {
     false
+}
+
+// Whether both paths name the one filesystem entry, links unresolved.
+#[cfg(unix)]
+fn is_same_entry(one: &Path, other: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::symlink_metadata(one), fs::symlink_metadata(other)) {
+        (Ok(one), Ok(other)) => one.dev() == other.dev() && one.ino() == other.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn is_same_entry(one: &Path, other: &Path) -> bool {
+    containment_path(one) == containment_path(other)
 }
 
 // Where the source sits, with its own final component left unresolved: a copy
@@ -805,6 +824,12 @@ mod tests {
         copy_path(&one, &other).unwrap();
         assert!(fs::symlink_metadata(&other).unwrap().is_symlink());
         assert_eq!(fs::read_link(&other).unwrap(), target);
+
+        // The link onto itself is refused, like any other entry onto itself,
+        // even though the read resolves to the target and the write lands on
+        // the link — two different inodes.
+        assert!(copy_path(&one, &one).is_err());
+        assert!(move_path(&one, &one).is_err());
 
         // Onto the target itself is still refused: recreating the link there
         // would remove the file it points at and leave a link to nothing.
