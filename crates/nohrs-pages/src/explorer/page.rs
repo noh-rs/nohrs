@@ -16,8 +16,9 @@ use gpui::*;
 use gpui_component::resizable::ResizableState;
 use nohrs_core::config::{Explorer as ExplorerConfig, SplitDirection, Ui};
 use nohrs_core::telemetry::LogErr;
+use nohrs_services::fs::trash::Ledger as TrashLedger;
 use nohrs_services::search::SearchService;
-use nohrs_store::{KvKey, KvStore, TrashLedger, kv_key};
+use nohrs_store::{KvKey, KvStore, kv_key};
 use nohrs_ui::theme::theme;
 use serde::{Deserialize, Serialize};
 
@@ -174,7 +175,7 @@ impl ExplorerPage {
         pane_resizable: Entity<ResizableState>,
         search_service: Option<Arc<SearchService>>,
         store: Option<Arc<dyn KvStore>>,
-        trash_ledger: Option<Arc<dyn TrashLedger>>,
+        trash_ledger: TrashLedger,
         restore_tabs: bool,
         window: &mut Window,
         cx: &mut Context<Self>,

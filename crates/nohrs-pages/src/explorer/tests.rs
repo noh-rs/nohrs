@@ -19,6 +19,7 @@ use gpui_component::resizable::ResizableState;
 use nohrs_core::config;
 use nohrs_services::fs::listing::FileEntryDto;
 use nohrs_services::fs::ops::ConflictResolution;
+use nohrs_services::fs::trash::Ledger as TrashLedger;
 use nohrs_store::{KvStore, RedbKvStore, StoreLogConfig};
 
 use nohrs_core::config::SplitDirection;
@@ -47,7 +48,15 @@ fn new_explorer_page(cx: &mut TestAppContext) -> WindowHandle<ExplorerPage> {
     cx.update(gpui_component::init);
     cx.add_window(|window, cx| {
         let resizable = cx.new(|_| ResizableState::default());
-        ExplorerPage::new(resizable, None, None, None, false, window, cx)
+        ExplorerPage::new(
+            resizable,
+            None,
+            None,
+            TrashLedger::KeptByOs,
+            false,
+            window,
+            cx,
+        )
     })
 }
 
@@ -61,7 +70,15 @@ fn new_explorer_page_with_store(
     cx.update(gpui_component::init);
     cx.add_window(|window, cx| {
         let resizable = cx.new(|_| ResizableState::default());
-        ExplorerPage::new(resizable, None, Some(store), None, restore_tabs, window, cx)
+        ExplorerPage::new(
+            resizable,
+            None,
+            Some(store),
+            TrashLedger::KeptByOs,
+            restore_tabs,
+            window,
+            cx,
+        )
     })
 }
 
@@ -1797,6 +1814,35 @@ async fn trash_selection_removes_from_source(cx: &mut TestAppContext) {
         "trashed file leaves the source"
     );
     assert!(root.join("b.txt").exists());
+}
+
+#[gpui::test]
+async fn trash_refuses_when_nothing_can_record_where_the_item_came_from(cx: &mut TestAppContext) {
+    // On a platform whose OS trash indexes nothing, a ledger that cannot be
+    // opened is not the same as not needing one. Trashing would still succeed —
+    // and the item would be in the trash with no way back — so it has to be
+    // refused, and said out loud, rather than reported as a delete that worked.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.txt"), "A").unwrap();
+    let window = open_pane_at(cx, root);
+    window
+        .update(cx, |pane, _window, cx| {
+            pane.trash_ledger = TrashLedger::Unavailable("the database is locked".into());
+            pane.select_single(0);
+            pane.trash_selection(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    assert!(root.join("a.txt").exists(), "the item must not be trashed");
+    window
+        .read_with(cx, |pane, _cx| {
+            let (text, is_error) = pane.status_for_footer().expect("a status is reported");
+            assert!(is_error, "{text}");
+            assert!(text.contains("the database is locked"), "{text}");
+        })
+        .unwrap();
 }
 
 #[gpui::test]
