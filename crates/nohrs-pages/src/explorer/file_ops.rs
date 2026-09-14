@@ -229,7 +229,11 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
             if ops::would_conflict(dst) {
                 ops::delete_permanent(dst).log_err();
             }
-            if let Err(restore_error) = ops::move_path(&backup, dst) {
+            // No-replace, like every other write here: the cleanup above frees
+            // `dst`, and anything that takes it in between is something else's
+            // data. Failing leaves the original at `backup`, which the log names,
+            // rather than destroying what took the destination.
+            if let Err(restore_error) = ops::move_path_no_replace(&backup, dst) {
                 tracing::error!(
                     "failed to restore {} after a failed overwrite (original kept at {}): {restore_error}",
                     dst.display(),
@@ -314,18 +318,33 @@ impl ExplorerPane {
         if paths.is_empty() {
             return;
         }
-        let total = paths.len();
-        let label = format!("{total} item(s) moved to trash");
         // The same ledger `noh rm` writes, on the platforms that need one: macOS
         // keeps its trash index inside Finder's private `.DS_Store` and exposes
         // nothing to read it back, so an item trashed without a record here can
-        // never be restored — not by `noh trash restore`, not by us. `None` on
-        // Linux and Windows, where the OS trash records the same facts itself.
+        // never be restored — not by `noh trash restore`, not by us. Where that
+        // record cannot be written, the delete is refused instead: putting the
+        // item in the trash would succeed, and it would be a one-way door.
         let ledger = self.trash_ledger.clone();
+        if let Err(error) = ledger.to_record() {
+            self.set_status(StatusLevel::Error, format!("Can't move to trash: {error}"));
+            cx.notify();
+            return;
+        }
+        let total = paths.len();
+        let label = format!("{total} item(s) moved to trash");
         self.run_fs_op(total, label, cx, move || {
             let mut errors = Vec::new();
             for path in paths {
-                if let Err(error) = ops::trash_path(Path::new(&path), ledger.as_deref()) {
+                // Re-read per item rather than captured once: `to_record`
+                // borrows from `ledger`, which this closure owns.
+                let record = match ledger.to_record() {
+                    Ok(record) => record,
+                    Err(error) => {
+                        errors.push(format!("{path}: {error}"));
+                        continue;
+                    }
+                };
+                if let Err(error) = ops::trash_path(Path::new(&path), record) {
                     errors.push(format!("{path}: {error}"));
                 }
             }

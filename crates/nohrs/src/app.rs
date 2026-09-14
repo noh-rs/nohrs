@@ -17,7 +17,7 @@ use nohrs_launcher::{LauncherIndex, ToggleLauncher};
 use nohrs_pages::RootView;
 use nohrs_services::fs::trash;
 use nohrs_services::search::SearchService;
-use nohrs_store::{KvStore, RedbKvStore, StoreLogConfig, TrashLedger};
+use nohrs_store::{KvStore, RedbKvStore, StoreLogConfig};
 use nohrs_ui::assets::Assets;
 use nohrs_ui::components::layout::unified_toolbar::UNIFIED_TOOLBAR_HEIGHT;
 use nohrs_ui::window::{self, traffic_lights::TrafficLightsHook};
@@ -96,8 +96,10 @@ impl NohrsApp {
             // (macOS). Without it the explorer's Delete is a one-way door: the
             // item is in `~/.Trash` but nothing knows where it came from, so
             // neither `noh trash restore` nor a future in-app restore can put it
-            // back. Failure is non-fatal, and reported where it is used.
-            let trash_ledger: Option<Arc<dyn TrashLedger>> = open_trash_ledger();
+            // back. Failing to open it is not fatal to the app and does not
+            // become "no ledger needed" either — `Ledger` carries the difference
+            // so Delete can refuse rather than silently lose the way back.
+            let trash_ledger = trash::Ledger::open();
 
             let opened = app.open_window(window_options, {
                 let config = config.clone();
@@ -176,25 +178,6 @@ fn install_in_app_launcher_key(launcher: LauncherIndex, app: &mut App) {
             tracing::error!("failed to toggle launcher window: {error}");
         }
     });
-}
-
-/// Opens the trash ledger where the platform needs one, which is the same
-/// database `noh rm` writes and `noh trash restore` reads.
-///
-/// Returns `None` (and logs) on failure: Delete then still works and still puts
-/// the item in the OS trash, but nothing records where it came from, so it
-/// cannot be restored automatically.
-fn open_trash_ledger() -> Option<Arc<dyn TrashLedger>> {
-    match trash::open_ledger_if_needed() {
-        Ok(ledger) => ledger,
-        Err(error) => {
-            tracing::error!(
-                "could not open the trash ledger {}; deleted items will not be restorable: {error}",
-                trash::ledger_path().display()
-            );
-            None
-        }
-    }
 }
 
 /// Opens the host KV store at `<data_dir>/state.redb`, creating the data

@@ -355,6 +355,55 @@ pub fn open_ledger_if_needed() -> Result<Option<Arc<dyn TrashLedger>>> {
     }
 }
 
+/// What a caller that trashes something has to record, resolved once.
+///
+/// The distinction that matters is between "nothing needs recording" and "the
+/// record could not be opened": both leave the caller without a ledger, but only
+/// the first is safe to delete on. Collapsing them into one `Option` is how an
+/// item ends up in the trash on a platform that indexes nothing, with no way
+/// back and nothing said about it.
+#[derive(Clone)]
+pub enum Ledger {
+    /// The OS trash records where an item came from, so nothing else has to.
+    KeptByOs,
+    /// Nothing else records it: every trashed item goes in here.
+    Ours(Arc<dyn TrashLedger>),
+    /// Needed here, and not available. Trashing would be a one-way door, so it
+    /// must not happen; the string says why.
+    Unavailable(Arc<str>),
+}
+
+impl Ledger {
+    /// Resolve what this platform needs, opening the database only where one is
+    /// actually read.
+    pub fn open() -> Self {
+        if !ledger_required() {
+            return Self::KeptByOs;
+        }
+        match open_ledger() {
+            Ok(ledger) => Self::Ours(ledger),
+            Err(error) => Self::Unavailable(
+                format!(
+                    "the trash ledger at {} could not be opened, and nothing else \
+                     on this system records where a trashed item came from: {error}",
+                    ledger_path().display()
+                )
+                .into(),
+            ),
+        }
+    }
+
+    /// What to hand [`ops::trash_path`], or why the item must not be trashed at
+    /// all.
+    pub fn to_record(&self) -> Result<Option<&dyn TrashLedger>> {
+        match self {
+            Self::KeptByOs => Ok(None),
+            Self::Ours(ledger) => Ok(Some(ledger.as_ref())),
+            Self::Unavailable(reason) => Err(Error::Other(reason.to_string())),
+        }
+    }
+}
+
 /// The store for this platform: the OS trash index where there is one, and the
 /// nohrs ledger where there is not.
 ///

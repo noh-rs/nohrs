@@ -1,5 +1,6 @@
 use nohrs_core::config;
 use nohrs_services::fs::listing::FileEntryDto;
+use nohrs_services::fs::trash::Ledger as TrashLedger;
 use nohrs_services::search::{SearchScope, SearchService};
 use nohrs_services::syntax::SyntaxService;
 use nohrs_ui::components::file_list::FileListDelegate;
@@ -138,9 +139,10 @@ pub struct ExplorerPane {
     pub status_message: Option<StatusMessage>,
 
     // File operations (`docs/explorer-essentials.md` §1)
-    /// Ledger recording where trashed items came from, on platforms with no OS
-    /// trash index of their own. `None` elsewhere, and in tests.
-    pub(crate) trash_ledger: Option<Arc<dyn nohrs_store::TrashLedger>>,
+    /// Where a trashed item's origin is recorded, on platforms with no OS trash
+    /// index of their own — or why it cannot be, which has to stop a delete
+    /// rather than let one through unrecorded.
+    pub(crate) trash_ledger: TrashLedger,
     /// In-progress inline rename of a listing row, if any.
     pub(crate) renaming: Option<super::file_ops::RenameState>,
     /// In-progress paste whose name conflicts are being resolved via the dialog.
@@ -170,7 +172,7 @@ impl ExplorerPane {
     /// by the split-view container, which may hold several independent panes.
     pub fn build(
         search_service: Option<Arc<SearchService>>,
-        trash_ledger: Option<Arc<dyn nohrs_store::TrashLedger>>,
+        trash_ledger: TrashLedger,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -245,7 +247,10 @@ impl ExplorerPane {
             preview_image_path: None,
             preview_message: None,
             status_message: None,
-            trash_ledger: None,
+            // The pane a caller built without saying: the platforms this is the
+            // right answer for are the ones with an OS trash index, and
+            // `ExplorerPage` overwrites it with the resolved state everywhere.
+            trash_ledger: TrashLedger::KeptByOs,
             renaming: None,
             paste_plan: None,
         }
