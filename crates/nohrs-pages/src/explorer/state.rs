@@ -178,9 +178,13 @@ impl ExplorerPane {
     ) -> Self {
         let resizable = cx.new(|_| ResizableState::default());
         let search_input = cx.new(|cx| InputState::new(window, cx));
-        let mut pane = Self::new(resizable, search_input, search_service, cx.focus_handle());
-        pane.trash_ledger = trash_ledger;
-        pane
+        Self::new(
+            resizable,
+            search_input,
+            search_service,
+            trash_ledger,
+            cx.focus_handle(),
+        )
     }
 
     /// Creates a new explorer pane rooted at the current working directory,
@@ -189,6 +193,7 @@ impl ExplorerPane {
         resizable: Entity<ResizableState>,
         search_input: Entity<InputState>,
         search_service: Option<Arc<SearchService>>,
+        trash_ledger: TrashLedger,
         focus_handle: FocusHandle,
     ) -> Self {
         Self {
@@ -247,10 +252,7 @@ impl ExplorerPane {
             preview_image_path: None,
             preview_message: None,
             status_message: None,
-            // The pane a caller built without saying: the platforms this is the
-            // right answer for are the ones with an OS trash index, and
-            // `ExplorerPage` overwrites it with the resolved state everywhere.
-            trash_ledger: TrashLedger::KeptByOs,
+            trash_ledger,
             renaming: None,
             paste_plan: None,
         }

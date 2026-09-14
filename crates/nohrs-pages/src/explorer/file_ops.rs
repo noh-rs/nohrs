@@ -205,34 +205,34 @@ fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
 // if the paste fails, the original is rolled back into place. Staging aside (vs.
 // deleting upfront) also makes a directory a clean replace rather than a merge.
 //
-// Both halves claim the path they write to, so the window the staging opens
-// cannot be used against it: `move_path_no_replace` will not stage over a
-// backup path something else took, and `apply_one` will not write over a
-// destination re-created while the original was out of the way.
+// The new entry is built at a path only this call knows and moved onto `dst` in
+// one rename at the end. That keeps every write and every cleanup to something
+// this paste created: the destination is claimed atomically once it is whole,
+// and a failure removes only the staging path — never whatever took `dst` while
+// the original was out of the way, which is not ours to delete.
 fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
     use nohrs_core::telemetry::LogErr as _;
     if !ops::would_conflict(dst) {
         return apply_one(mode, src, dst);
     }
-    let backup = backup_path(dst);
+    let backup = scratch_path(dst, "old");
     ops::move_path_no_replace(dst, &backup)?;
-    match apply_one(mode, src, dst) {
+    let staged = scratch_path(dst, "new");
+    let result = apply_one(mode, src, &staged)
+        .and_then(|()| ops::move_path_no_replace(&staged, dst).map(|_| ()));
+    match result {
         Ok(()) => {
             ops::delete_permanent(&backup).log_err();
             Ok(())
         }
         Err(error) => {
-            // The failed paste may have left a partial entry at `dst`; remove it
-            // first so the original can be moved back rather than stranded in the
-            // backup. If the restore itself fails, log loudly — the data still
-            // exists at `backup`, but the destination is now wrong.
-            if ops::would_conflict(dst) {
-                ops::delete_permanent(dst).log_err();
+            // Ours by construction, whole or partial, so there is no question of
+            // whose data this is.
+            if ops::would_conflict(&staged) {
+                ops::delete_permanent(&staged).log_err();
             }
-            // No-replace, like every other write here: the cleanup above frees
-            // `dst`, and anything that takes it in between is something else's
-            // data. Failing leaves the original at `backup`, which the log names,
-            // rather than destroying what took the destination.
+            // If the restore fails, log loudly — the data still exists at
+            // `backup`, but the destination is now wrong.
             if let Err(restore_error) = ops::move_path_no_replace(&backup, dst) {
                 tracing::error!(
                     "failed to restore {} after a failed overwrite (original kept at {}): {restore_error}",
@@ -245,12 +245,13 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
     }
 }
 
-// A sibling path of `dst` that does not yet exist, used to stage the existing
-// destination aside during an overwrite.
-fn backup_path(dst: &Path) -> PathBuf {
+// A sibling path of `dst` that does not yet exist, for one side of an overwrite
+// to work at. A sibling so the final rename stays within one filesystem, and
+// hidden and suffixed so it is recognizable if a crash leaves one behind.
+fn scratch_path(dst: &Path, role: &str) -> PathBuf {
     let parent = dst.parent().unwrap_or_else(|| Path::new("."));
     let name = file_name_of(dst).unwrap_or_default();
-    parent.join(ops::unique_name(parent, &format!(".{name}.nohrs-tmp")))
+    parent.join(ops::unique_name(parent, &format!(".{name}.nohrs-{role}")))
 }
 
 impl ExplorerPane {

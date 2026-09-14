@@ -100,10 +100,11 @@ fn ensure_destination_outside_source(src: &Path, dst: &Path) -> Result<()> {
         )))
     };
     // Names can differ while the file does not: a hard link is a second name for
-    // the same inode, and a symbolic link resolves to one. Either way a replacing
-    // copy opens the destination truncating, which empties the source before a
-    // byte of it is read.
-    if is_same_file(src, dst) {
+    // the same inode, and a symbolic link resolves to one. Either way the write
+    // would land on what the copy is about to read, and a replacing write opens
+    // the destination truncating — so the source is emptied before a byte of it
+    // is read.
+    if writes_over_what_it_reads(src, dst) {
         return refuse();
     }
     if destination_path(dst).starts_with(source_path(src)) {
@@ -112,19 +113,34 @@ fn ensure_destination_outside_source(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-// Whether two paths lead to one file. Both are resolved through links, because
-// that is what the copy itself does.
+// Whether the file a write to `dst` would land on is the one the copy reads from
+// `src`, compared by identity rather than by name.
+//
+// What the copy reads is what `src` resolves to, links and all. What a write
+// lands on depends on the source: for a symbolic link source, only the link is
+// read and only a link is written, so the entry `dst` names is what would be
+// destroyed — another link to the same target is a different entry, and copying
+// one onto the other is an ordinary copy. For anything else the write follows
+// `dst` the way `fs::copy` does.
 #[cfg(unix)]
-fn is_same_file(one: &Path, other: &Path) -> bool {
+fn writes_over_what_it_reads(src: &Path, dst: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    match (fs::metadata(one), fs::metadata(other)) {
-        (Ok(one), Ok(other)) => one.dev() == other.dev() && one.ino() == other.ino(),
+    let source_is_link = fs::symlink_metadata(src).is_ok_and(|source| source.is_symlink());
+    let destination = if source_is_link {
+        fs::symlink_metadata(dst)
+    } else {
+        fs::metadata(dst)
+    };
+    match (fs::metadata(src), destination) {
+        (Ok(source), Ok(destination)) => {
+            source.dev() == destination.dev() && source.ino() == destination.ino()
+        }
         _ => false,
     }
 }
 
 #[cfg(not(unix))]
-fn is_same_file(_one: &Path, _other: &Path) -> bool {
+fn writes_over_what_it_reads(_src: &Path, _dst: &Path) -> bool {
     false
 }
 
@@ -769,6 +785,31 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&file).unwrap(), "payload");
         assert_eq!(fs::read_to_string(source.join("kept.txt")).unwrap(), "kept");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_link_can_be_copied_over_another_to_the_same_target() {
+        // The identity check is about what the copy *reads*. A symbolic link
+        // source is recreated, never opened, so a second link to the same target
+        // is a different entry and replacing it is an ordinary copy — refusing
+        // this would be the check firing on a safe operation.
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        fs::write(&target, "pointed at").unwrap();
+        let one = dir.path().join("one");
+        let other = dir.path().join("other");
+        std::os::unix::fs::symlink(&target, &one).unwrap();
+        std::os::unix::fs::symlink(&target, &other).unwrap();
+
+        copy_path(&one, &other).unwrap();
+        assert!(fs::symlink_metadata(&other).unwrap().is_symlink());
+        assert_eq!(fs::read_link(&other).unwrap(), target);
+
+        // Onto the target itself is still refused: recreating the link there
+        // would remove the file it points at and leave a link to nothing.
+        assert!(copy_path(&one, &target).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "pointed at");
     }
 
     #[cfg(unix)]
