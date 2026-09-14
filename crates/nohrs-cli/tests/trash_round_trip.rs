@@ -93,6 +93,9 @@ fn what_rm_trashes_is_listed_and_comes_back_where_it_was() {
     );
 
     let after = noh(data.path(), state.path(), &["trash", "list"]);
+    // Without this the assertion below is vacuous: a `trash list` that failed
+    // outright prints nothing about the fixture either.
+    assert!(after.status.success(), "trash list failed: {after:?}");
     let listing = String::from_utf8(after.stdout).unwrap();
     assert!(
         !listing.contains(&fixture),
