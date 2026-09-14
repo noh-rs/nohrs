@@ -238,15 +238,23 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
 fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Result<()> {
     use nohrs_core::telemetry::LogErr as _;
     if let Err(error) = apply_one(mode, src, staged) {
-        // `scratch_path` picks a free name rather than claiming one, so the name
-        // can be taken between the two. That is the one failure that leaves
-        // nothing of ours at `staged` — every write here claims its path, so it
-        // wrote nothing — and the entry belongs to whoever got there first.
+        // A failure here never took the source away, whatever else it did: a
+        // rename that fails moves nothing, and the copy-and-delete fallback
+        // deletes the source only once the copy is complete. So anything at
+        // `staged` is a fragment the source outlived — which is what makes this
+        // provable rather than a guess from whether `src` happens to be occupied
+        // now, and something else may have re-created it since.
+        //
+        // Except when the name was taken before we wrote: every write here claims
+        // its path, so that failure left nothing of ours and the entry belongs to
+        // whoever got there first.
         if !is_already_taken(&error) {
-            discard_staged(mode, src, staged);
+            drop_staged(staged);
         }
         return Err(error);
     }
+    // Past here `apply_one` returned `Ok`, which for a cut is what says the
+    // source is gone and `staged` holds the only copy of it there is.
     if let Err(error) = ops::move_path_no_replace(staged, dst) {
         // Where the filesystem has no no-replace rename, this was a copy, and one
         // that failed partway leaves a partial `dst` that would block the
@@ -255,31 +263,37 @@ fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Re
         if !is_already_taken(&error) && ops::would_conflict(dst) {
             ops::delete_permanent(dst).log_err();
         }
-        discard_staged(mode, src, staged);
+        match mode {
+            ClipMode::Cut => restore_staged(src, staged),
+            ClipMode::Copy => drop_staged(staged),
+        }
         return Err(error);
     }
     Ok(())
 }
 
-// Gets rid of the staged entry — except that a cut has already *moved* the
-// source into it, so where the source is gone this puts it back rather than
-// deleting the only copy of it there is.
-fn discard_staged(mode: ClipMode, src: &Path, staged: &Path) {
-    use nohrs_core::telemetry::LogErr as _;
+// Puts a cut's source back where it came from. `staged` holds the only copy of
+// it, so a failure here leaves it sitting there and says where, rather than
+// deleting it.
+fn restore_staged(src: &Path, staged: &Path) {
     if !ops::would_conflict(staged) {
         return;
     }
-    if mode == ClipMode::Cut && !ops::would_conflict(src) {
-        if let Err(error) = ops::move_path_no_replace(staged, src) {
-            tracing::error!(
-                "failed to put {} back after a move that could not finish (it is at {}): {error}",
-                src.display(),
-                staged.display(),
-            );
-        }
-        return;
+    if let Err(error) = ops::move_path_no_replace(staged, src) {
+        tracing::error!(
+            "failed to put {} back after a move that could not finish (it is at {}): {error}",
+            src.display(),
+            staged.display(),
+        );
     }
-    ops::delete_permanent(staged).log_err();
+}
+
+// Removes a staged entry the source outlived.
+fn drop_staged(staged: &Path) {
+    use nohrs_core::telemetry::LogErr as _;
+    if ops::would_conflict(staged) {
+        ops::delete_permanent(staged).log_err();
+    }
 }
 
 // Whether an error means the path was already taken. Every write in an overwrite
@@ -826,7 +840,7 @@ impl ExplorerPane {
 // a test binary to keep responsive.
 #[allow(clippy::unwrap_used, clippy::disallowed_methods)]
 mod overwrite_recovery_tests {
-    use super::{ClipMode, discard_staged};
+    use super::{drop_staged, restore_staged};
 
     #[test]
     fn a_cut_that_cannot_finish_puts_the_source_back() {
@@ -838,38 +852,40 @@ mod overwrite_recovery_tests {
         let staged = dir.path().join(".notes.txt.nohrs-new");
         std::fs::write(&staged, "payload").unwrap();
 
-        discard_staged(ClipMode::Cut, &src, &staged);
+        restore_staged(&src, &staged);
 
         assert_eq!(std::fs::read_to_string(&src).unwrap(), "payload");
         assert!(!staged.exists());
     }
 
     #[test]
-    fn a_copy_that_cannot_finish_just_drops_its_staging() {
+    fn a_source_re_created_under_us_does_not_cost_the_staged_one() {
+        // Something else taking the source's name back is not a reason to throw
+        // away what was moved out of it. The no-replace move refuses, and the
+        // only copy stays where it can still be found.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("notes.txt");
+        std::fs::write(&src, "someone else's").unwrap();
+        let staged = dir.path().join(".notes.txt.nohrs-new");
+        std::fs::write(&staged, "payload").unwrap();
+
+        restore_staged(&src, &staged);
+
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "payload");
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "someone else's");
+    }
+
+    #[test]
+    fn staging_the_source_outlived_is_dropped() {
+        // Every way `apply_one` can fail leaves the source where it was, so what
+        // is at the staging path is a fragment and goes.
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("notes.txt");
         std::fs::write(&src, "payload").unwrap();
         let staged = dir.path().join(".notes.txt.nohrs-new");
         std::fs::write(&staged, "half a copy").unwrap();
 
-        discard_staged(ClipMode::Copy, &src, &staged);
-
-        assert!(!staged.exists());
-        assert_eq!(std::fs::read_to_string(&src).unwrap(), "payload");
-    }
-
-    #[test]
-    fn a_cut_whose_source_is_still_there_drops_the_partial_instead() {
-        // The move never got far enough to take the source away, so what is at
-        // the staging path is a partial copy and putting it "back" would replace
-        // a whole source with it.
-        let dir = tempfile::tempdir().unwrap();
-        let src = dir.path().join("notes.txt");
-        std::fs::write(&src, "payload").unwrap();
-        let staged = dir.path().join(".notes.txt.nohrs-new");
-        std::fs::write(&staged, "half").unwrap();
-
-        discard_staged(ClipMode::Cut, &src, &staged);
+        drop_staged(&staged);
 
         assert!(!staged.exists());
         assert_eq!(std::fs::read_to_string(&src).unwrap(), "payload");
