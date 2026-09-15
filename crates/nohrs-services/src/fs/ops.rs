@@ -25,6 +25,79 @@ pub enum MoveKind {
     CrossVolume,
 }
 
+/// A failed [`copy_path_no_replace`] or [`move_path_no_replace`], carrying
+/// whether the destination had become the operation's own by the time it failed.
+///
+/// The error alone cannot say. Every write in a no-replace copy takes its path
+/// with a call that fails if the name is already there, and the kernel reports
+/// that as `EEXIST` without naming the path — so "the destination was already
+/// someone else's" and "a name inside the tree this call had started writing was
+/// taken" arrive as the same [`std::io::ErrorKind::AlreadyExists`]. A caller
+/// rolling back has to tell them apart: clearing away its own half-written
+/// destination is what lets the original come back, and clearing away a
+/// stranger's destroys data nothing can recover.
+#[derive(Debug)]
+pub struct ClaimFailure {
+    error: Error,
+    took_the_destination: bool,
+}
+
+/// What a no-replace copy or move returns: the outcome, or a [`ClaimFailure`].
+pub type ClaimResult<T> = std::result::Result<T, ClaimFailure>;
+
+impl ClaimFailure {
+    // Failed before the destination was taken: whatever is at that path, if
+    // anything, was not put there by this operation.
+    fn untaken(error: impl Into<Error>) -> Self {
+        Self {
+            error: error.into(),
+            took_the_destination: false,
+        }
+    }
+
+    // Failed once the destination was taken: everything at that path is this
+    // operation's own work, whole or partial.
+    fn taken(error: impl Into<Error>) -> Self {
+        Self {
+            error: error.into(),
+            took_the_destination: true,
+        }
+    }
+
+    /// Whether the destination was created by the operation that failed.
+    ///
+    /// `true` means what is at the destination now is that operation's own work
+    /// — a tree it only partly wrote, or a whole copy whose source it could not
+    /// remove — so removing it is what undoes the attempt. `false` means the
+    /// operation never got the name, and anything there belongs to whoever did.
+    pub fn took_the_destination(&self) -> bool {
+        self.took_the_destination
+    }
+
+    /// The failure itself, without the claim.
+    pub fn into_error(self) -> Error {
+        self.error
+    }
+}
+
+impl std::fmt::Display for ClaimFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for ClaimFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+impl From<ClaimFailure> for Error {
+    fn from(failure: ClaimFailure) -> Self {
+        failure.error
+    }
+}
+
 /// How a name collision at the destination should be resolved when copying or
 /// moving. The resolution itself is applied by the caller; this module only
 /// provides the building blocks ([`would_conflict`], [`unique_name`]).
@@ -333,11 +406,29 @@ fn copy_file(from: &Path, to: &Path, existing: Existing) -> Result<()> {
         fs::copy(from, to)?;
         return Ok(());
     }
-    let mut source = fs::File::open(from)?;
-    let mut destination = fs::OpenOptions::new()
+    // Opening the source first, so a source that cannot be read fails before the
+    // destination name is taken.
+    let source = fs::File::open(from)?;
+    let destination = claim_file(to)?;
+    fill_file(from, to, source, destination)
+}
+
+// Takes the name `to` with a call that fails if it is already there — the point
+// past which everything at that path was written by this copy.
+fn claim_file(to: &Path) -> Result<fs::File> {
+    Ok(fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(to)?;
+        .open(to)?)
+}
+
+// Writes `from` into the already-claimed `to`.
+fn fill_file(
+    from: &Path,
+    to: &Path,
+    mut source: fs::File,
+    mut destination: fs::File,
+) -> Result<()> {
     std::io::copy(&mut source, &mut destination)?;
     // After the contents, so a read-only mode cannot stop the copy that has to
     // happen first.
@@ -351,6 +442,13 @@ fn copy_file(from: &Path, to: &Path, existing: Existing) -> Result<()> {
 // worth nothing if something else can create an entry inside it meanwhile and
 // have it silently replaced.
 fn copy_dir_all(src: &Path, dst: &Path, existing: Existing) -> Result<()> {
+    claim_dir(dst, existing)?;
+    fill_dir(src, dst, existing)
+}
+
+// Creates `dst` itself — the point past which everything under that path was
+// written by this copy.
+fn claim_dir(dst: &Path, existing: Existing) -> Result<()> {
     match existing {
         // `create_dir_all` so intermediate directories a caller left out are
         // created, matching what `copy_path` documents.
@@ -359,6 +457,11 @@ fn copy_dir_all(src: &Path, dst: &Path, existing: Existing) -> Result<()> {
         // which `create_dir_all` would have followed.
         Existing::Refuse => fs::create_dir(dst)?,
     }
+    Ok(())
+}
+
+// Copies the contents of `src` into the already-claimed `dst`.
+fn fill_dir(src: &Path, dst: &Path, existing: Existing) -> Result<()> {
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -412,16 +515,27 @@ pub fn move_path(src: &Path, dst: &Path) -> Result<MoveKind> {
 /// plus deleting the source, which claims the destination atomically too; a
 /// check followed by a replacing `rename` would not, which is the very hole this
 /// function exists to close.
-pub fn move_path_no_replace(src: &Path, dst: &Path) -> Result<MoveKind> {
-    ensure_destination_outside_source(src, dst)?;
+///
+/// A failure reports whether the destination had become this move's own by then
+/// (see [`ClaimFailure`]), which is what a caller rolling back needs and cannot
+/// get from the error.
+pub fn move_path_no_replace(src: &Path, dst: &Path) -> ClaimResult<MoveKind> {
+    ensure_destination_outside_source(src, dst).map_err(ClaimFailure::untaken)?;
     match rename_no_replace(src, dst) {
         Some(Ok(())) => return Ok(MoveKind::Rename),
-        Some(Err(error)) if !is_cross_device(&error) => return Err(Error::Io(error)),
+        // `rename(2)` either moves the entry or leaves everything as it was, so
+        // a failure here never took the destination.
+        Some(Err(error)) if !is_cross_device(&error) => {
+            return Err(ClaimFailure::untaken(error));
+        }
         // Cross-device, or no no-replace rename to be had: copy and delete.
         Some(Err(_)) | None => {}
     }
     copy_path_no_replace(src, dst)?;
-    delete_permanent(src)?;
+    // The copy is whole and the destination is this move's. A source that cannot
+    // be removed leaves the two side by side, which is not what was asked for —
+    // and what is at the destination is this move's to clear away.
+    delete_permanent(src).map_err(ClaimFailure::taken)?;
     Ok(MoveKind::CrossVolume)
 }
 
@@ -458,19 +572,29 @@ fn rename_no_replace(_src: &Path, _dst: &Path) -> Option<std::io::Result<()>> {
 /// read. Permissions are carried across as well, which is what makes this the
 /// copying half of [`move_path_no_replace`]: a move has to hand back what it was
 /// given.
-pub fn copy_path_no_replace(src: &Path, dst: &Path) -> Result<()> {
-    ensure_destination_outside_source(src, dst)?;
+///
+/// A failure reports which side of that claim it fell on (see [`ClaimFailure`]).
+/// Only the operation itself knows: `EEXIST` is what the destination being taken
+/// first and a name colliding inside a tree this call had already claimed both
+/// come back as, and only the second leaves something a caller may remove.
+pub fn copy_path_no_replace(src: &Path, dst: &Path) -> ClaimResult<()> {
+    ensure_destination_outside_source(src, dst).map_err(ClaimFailure::untaken)?;
     if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).map_err(ClaimFailure::untaken)?;
     }
-    let metadata = fs::symlink_metadata(src)?;
+    let metadata = fs::symlink_metadata(src).map_err(ClaimFailure::untaken)?;
     if metadata.is_symlink() {
-        return copy_symlink(src, dst, Existing::Refuse);
+        // `symlink(2)` takes the name and writes the link in the one call, so it
+        // did both or neither: a failure never leaves the destination ours.
+        return copy_symlink(src, dst, Existing::Refuse).map_err(ClaimFailure::untaken);
     }
     if metadata.is_dir() {
-        return copy_dir_all(src, dst, Existing::Refuse);
+        claim_dir(dst, Existing::Refuse).map_err(ClaimFailure::untaken)?;
+        return fill_dir(src, dst, Existing::Refuse).map_err(ClaimFailure::taken);
     }
-    copy_file(src, dst, Existing::Refuse)
+    let source = fs::File::open(src).map_err(ClaimFailure::untaken)?;
+    let destination = claim_file(dst).map_err(ClaimFailure::untaken)?;
+    fill_file(src, dst, source, destination).map_err(ClaimFailure::taken)
 }
 
 // Recreates a symlink to `target` at `link`, failing if `link` is taken.
@@ -855,26 +979,63 @@ mod tests {
     }
 
     #[test]
-    fn the_no_replace_copy_refuses_a_name_taken_below_its_root_too() {
-        // Claiming only the root is not enough: a tree takes time to write, and
-        // an entry that appears inside it meanwhile used to be replaced by
-        // `fs::copy` / `create_dir_all` on the way past.
+    fn the_no_replace_copy_refuses_a_destination_it_did_not_create() {
+        // Every entry is claimed, not just the root — a tree takes time to
+        // write, and an entry appearing inside it meanwhile used to be replaced
+        // by `fs::copy` / `create_dir_all` on the way past. A root that is
+        // already there is as far as this gets: `create_dir` refuses it, so
+        // nothing below is written and nothing there is this copy's.
         let dir = tempdir().unwrap();
         let source = dir.path().join("source");
         fs::create_dir_all(source.join("nested")).unwrap();
         fs::write(source.join("nested").join("deep.txt"), "mine").unwrap();
 
-        // Stand in for the concurrent creator by pre-making what the recursion
-        // is about to write, one level down from the root it claimed.
         let dst = dir.path().join("dst");
         fs::create_dir_all(dst.join("nested")).unwrap();
         fs::write(dst.join("nested").join("deep.txt"), "theirs").unwrap();
 
-        assert!(copy_path_no_replace(&source, &dst).is_err());
+        let failure = copy_path_no_replace(&source, &dst).unwrap_err();
+        assert!(
+            !failure.took_the_destination(),
+            "a destination this copy never created is not its to remove"
+        );
         assert_eq!(
             fs::read_to_string(dst.join("nested").join("deep.txt")).unwrap(),
             "theirs",
             "what was already there has to survive"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_no_replace_copy_says_which_side_of_the_claim_it_failed_on() {
+        // What a caller rolling back needs and the error cannot give it: both
+        // failures below are a bare IO error with no path on them, and the one
+        // this test has to distinguish — a name taken *inside* a tree this copy
+        // created — is the very same `AlreadyExists` as a destination that was
+        // taken before it started.
+        //
+        // That nested collision needs a second process writing into the tree
+        // mid-copy, so it is not reproducible here. What is reproducible is the
+        // thing that decides it: the claim is set by *where* the failure fell,
+        // not by what the error says. A socket cannot be opened as a file, which
+        // stops a copy at a known point past the destination's creation — the
+        // same side of the claim the nested collision falls on.
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("page.txt"), "mine").unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(source.join("ipc")).unwrap();
+
+        let dst = dir.path().join("dst");
+        let failure = copy_path_no_replace(&source, &dst).unwrap_err();
+        assert!(
+            failure.took_the_destination(),
+            "a copy that got past creating the destination owns what is there"
+        );
+        assert!(
+            dst.is_dir(),
+            "and what is there is the partial tree the caller clears away"
         );
     }
 
@@ -1041,8 +1202,13 @@ mod tests {
         fs::write(&src, "restored").unwrap();
         fs::write(&dst, "newer").unwrap();
 
-        let error = move_path_no_replace(&src, &dst).unwrap_err();
+        let failure = move_path_no_replace(&src, &dst).unwrap_err();
 
+        assert!(
+            !failure.took_the_destination(),
+            "the move never got the name, so what is there is not its to remove"
+        );
+        let error = failure.into_error();
         assert!(
             matches!(&error, Error::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists),
             "{error}"

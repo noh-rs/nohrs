@@ -193,7 +193,7 @@ fn rename_selection_end(name: &str, is_dir: bool) -> usize {
 // dialog — and between that look and this call the name can be taken by anything
 // else on the machine. A replacing write would destroy what took it; refusing
 // costs one reported failure.
-fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
+fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> ops::ClaimResult<()> {
     match mode {
         ClipMode::Copy => ops::copy_path_no_replace(src, dst),
         ClipMode::Cut => ops::move_path_no_replace(src, dst).map(|_| ()),
@@ -211,10 +211,13 @@ fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
 fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
     use nohrs_core::telemetry::LogErr as _;
     if !ops::would_conflict(dst) {
-        return apply_one(mode, src, dst);
+        return Ok(apply_one(mode, src, dst)?);
     }
     let backup = scratch_path(dst, "old");
-    ops::move_path_no_replace(dst, &backup)?;
+    if let Err(failure) = ops::move_path_no_replace(dst, &backup) {
+        drop_claimed(&failure, &backup);
+        return Err(failure.into());
+    }
     let staged = scratch_path(dst, "new");
     let Err(error) = build_and_commit(mode, src, dst, &staged) else {
         ops::delete_permanent(&backup).log_err();
@@ -222,9 +225,13 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
     };
     // Put the original back. Whatever took `dst` in the meantime is not ours to
     // replace, so a failure here leaves the original at `backup` and says where.
-    if let Err(restore_error) = ops::move_path_no_replace(&backup, dst) {
+    if let Err(failure) = ops::move_path_no_replace(&backup, dst) {
+        // Unless the rollback itself got as far as taking `dst`: then what is
+        // there is the rollback's own fragment, and it has to go for the message
+        // below — the original is at `backup` — to be the whole truth.
+        drop_claimed(&failure, dst);
         tracing::error!(
-            "failed to restore {} after a failed overwrite (original kept at {}): {restore_error}",
+            "failed to restore {} after a failed overwrite (original kept at {}): {failure}",
             dst.display(),
             backup.display(),
         );
@@ -236,38 +243,33 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
 // its own behind when it cannot. `dst` is free on entry — the caller moved what
 // was there to the backup.
 fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Result<()> {
-    use nohrs_core::telemetry::LogErr as _;
-    if let Err(error) = apply_one(mode, src, staged) {
+    if let Err(failure) = apply_one(mode, src, staged) {
         // A failure here never took the source away, whatever else it did: a
         // rename that fails moves nothing, and the copy-and-delete fallback
-        // deletes the source only once the copy is complete. So anything at
-        // `staged` is a fragment the source outlived — which is what makes this
-        // provable rather than a guess from whether `src` happens to be occupied
-        // now, and something else may have re-created it since.
-        //
-        // Except when the name was taken before we wrote: every write here claims
-        // its path, so that failure left nothing of ours and the entry belongs to
-        // whoever got there first.
-        if !is_already_taken(&error) {
-            drop_staged(staged);
-        }
-        return Err(error);
+        // deletes the source only once the copy is complete. So anything this
+        // attempt left at `staged` is a fragment the source outlived — which is
+        // what makes this provable rather than a guess from whether `src`
+        // happens to be occupied now, and something else may have re-created it
+        // since. What it did not write there is not ours to remove, and the
+        // failure is the only thing that knows which of the two it is.
+        drop_claimed(&failure, staged);
+        return Err(failure.into());
     }
     // Past here `apply_one` returned `Ok`, which for a cut is what says the
     // source is gone and `staged` holds the only copy of it there is.
-    if let Err(error) = ops::move_path_no_replace(staged, dst) {
-        // Where the filesystem has no no-replace rename, this was a copy, and one
-        // that failed partway leaves a partial `dst` that would block the
-        // rollback. `AlreadyExists` is what it reports when the destination is
-        // someone else's, which is the case to leave alone.
-        if !is_already_taken(&error) && ops::would_conflict(dst) {
-            ops::delete_permanent(dst).log_err();
-        }
+    if let Err(failure) = ops::move_path_no_replace(staged, dst) {
+        // Where the filesystem has no no-replace rename this was a copy, and one
+        // that failed partway left a partial `dst` that would block the rollback
+        // the caller is about to run. Removing it is safe only because the
+        // failure says the name was this call's: `AlreadyExists` cannot, since
+        // the kernel reports a collision *at* `dst` and one below it alike, and
+        // reading the first as the second deletes a stranger's directory.
+        drop_claimed(&failure, dst);
         match mode {
             ClipMode::Cut => restore_staged(src, staged),
             ClipMode::Copy => drop_staged(staged),
         }
-        return Err(error);
+        return Err(failure.into());
     }
     Ok(())
 }
@@ -279,9 +281,14 @@ fn restore_staged(src: &Path, staged: &Path) {
     if !ops::would_conflict(staged) {
         return;
     }
-    if let Err(error) = ops::move_path_no_replace(staged, src) {
+    if let Err(failure) = ops::move_path_no_replace(staged, src) {
+        // A restore that got as far as taking the source's name and then failed
+        // left a fragment standing where the source was; the whole copy is still
+        // at `staged`, and the message below only tells the truth once that
+        // fragment is gone.
+        drop_claimed(&failure, src);
         tracing::error!(
-            "failed to put {} back after a move that could not finish (it is at {}): {error}",
+            "failed to put {} back after a move that could not finish (it is at {}): {failure}",
             src.display(),
             staged.display(),
         );
@@ -296,11 +303,18 @@ fn drop_staged(staged: &Path) {
     }
 }
 
-// Whether an error means the path was already taken. Every write in an overwrite
-// claims the path it writes to, so this is the one failure that leaves nothing
-// behind — and the one that says the entry there belongs to someone else.
-fn is_already_taken(error: &Error) -> bool {
-    matches!(error, Error::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists)
+// Clears away what a failed no-replace write left at the path it was writing to
+// — and only when that path had become the write's own.
+//
+// The decision comes from the operation rather than from what happens to occupy
+// the path now, because the two cases are indistinguishable afterwards and cost
+// very different things: a name the write never took holds someone else's entry,
+// and removing one of those cannot be undone.
+fn drop_claimed(failure: &ops::ClaimFailure, dst: &Path) {
+    use nohrs_core::telemetry::LogErr as _;
+    if failure.took_the_destination() {
+        ops::delete_permanent(dst).log_err();
+    }
 }
 
 // A sibling path of `dst` that does not yet exist, for one side of an overwrite
@@ -663,7 +677,7 @@ impl ExplorerPane {
                         // Filtered out above; kept for exhaustiveness without panicking.
                         ConflictResolution::Skip => continue,
                         ConflictResolution::Rename => free_destination(&dest_dir, &name)
-                            .and_then(|dst| apply_one(mode, &src, &dst)),
+                            .and_then(|dst| apply_one(mode, &src, &dst).map_err(Error::from)),
                         ConflictResolution::Overwrite => ops::destination_in(&dest_dir, &name)
                             .and_then(|dst| overwrite_apply(mode, &src, &dst)),
                     };
@@ -840,7 +854,95 @@ impl ExplorerPane {
 // a test binary to keep responsive.
 #[allow(clippy::unwrap_used, clippy::disallowed_methods)]
 mod overwrite_recovery_tests {
-    use super::{drop_staged, restore_staged};
+    use super::{ClipMode, drop_claimed, drop_staged, overwrite_apply, restore_staged};
+    use nohrs_services::fs::ops;
+
+    // A directory holding something a copy cannot read, so a no-replace copy of
+    // it stops at a known point *after* it has created the destination. That is
+    // the side of the claim a name taken inside the tree falls on too, which is
+    // the case this recovery exists for and the one no test can stage without a
+    // second process.
+    #[cfg(unix)]
+    fn uncopyable_tree(at: &std::path::Path) -> std::os::unix::net::UnixListener {
+        std::fs::create_dir(at).unwrap();
+        std::fs::write(at.join("page.txt"), "new").unwrap();
+        std::os::unix::net::UnixListener::bind(at.join("ipc")).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_destination_the_write_never_took_is_left_alone() {
+        // The case that makes reading `AlreadyExists` as "this is mine" so
+        // expensive: the name was taken before the copy reached for it, and
+        // removing what is there destroys a directory this application never
+        // created, with whatever the process that did create it had written.
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("mine.txt"), "mine").unwrap();
+
+        let theirs = dir.path().join("theirs");
+        std::fs::create_dir(&theirs).unwrap();
+        std::fs::write(theirs.join("theirs.txt"), "theirs").unwrap();
+
+        let failure = ops::copy_path_no_replace(&source, &theirs).unwrap_err();
+        drop_claimed(&failure, &theirs);
+
+        assert_eq!(
+            std::fs::read_to_string(theirs.join("theirs.txt")).unwrap(),
+            "theirs"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_destination_the_write_did_take_is_cleared_away() {
+        // And the half-written tree that *is* ours goes, because leaving it is
+        // what blocks the rollback that puts the original back.
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let _socket = uncopyable_tree(&source);
+
+        let dst = dir.path().join("dst");
+        let failure = ops::copy_path_no_replace(&source, &dst).unwrap_err();
+        assert!(dst.is_dir(), "the copy has to get past creating it");
+        drop_claimed(&failure, &dst);
+
+        assert!(!dst.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_overwrite_that_cannot_build_puts_the_original_back() {
+        // The whole recovery end to end: the original is moved aside, the
+        // replacement fails once the staging path is its own, the staging goes,
+        // and the original comes back to the name the user was looking at —
+        // with nothing of ours left beside it.
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("report");
+        let _socket = uncopyable_tree(&source);
+
+        let work = dir.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        let dst = work.join("report");
+        std::fs::create_dir(&dst).unwrap();
+        std::fs::write(dst.join("page.txt"), "original").unwrap();
+
+        assert!(overwrite_apply(ClipMode::Copy, &source, &dst).is_err());
+
+        assert_eq!(
+            std::fs::read_to_string(dst.join("page.txt")).unwrap(),
+            "original",
+            "the original has to be back where it was"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&work)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .filter(|name| name != "report")
+            .collect();
+        assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+    }
 
     #[test]
     fn a_cut_that_cannot_finish_puts_the_source_back() {
