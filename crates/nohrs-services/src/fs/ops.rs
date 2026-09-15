@@ -40,6 +40,28 @@ pub enum MoveKind {
 pub struct ClaimFailure {
     error: Error,
     leftover: Leftover,
+    // The entry the destination was when this operation claimed it, so a
+    // cleanup can tell it is still removing its own. `None` where there is
+    // nothing to compare — no claim was taken, or the platform has no entry
+    // identity to read.
+    claimed: Option<EntryIdentity>,
+}
+
+// A filesystem entry's identity: the same entry under any name, and a different
+// entry at the same name after something swaps it.
+type EntryIdentity = (u64, u64);
+
+#[cfg(unix)]
+fn entry_identity(path: &Path) -> Option<EntryIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    fs::symlink_metadata(path)
+        .ok()
+        .map(|entry| (entry.dev(), entry.ino()))
+}
+
+#[cfg(not(unix))]
+fn entry_identity(_path: &Path) -> Option<EntryIdentity> {
+    None
 }
 
 /// What a failed no-replace copy or move left behind, and so what a caller
@@ -67,23 +89,28 @@ pub enum Leftover {
 pub type ClaimResult<T> = std::result::Result<T, ClaimFailure>;
 
 impl ClaimFailure {
-    fn new(leftover: Leftover, error: impl Into<Error>) -> Self {
+    fn untouched(error: impl Into<Error>) -> Self {
         Self {
             error: error.into(),
-            leftover,
+            leftover: Leftover::Nothing,
+            claimed: None,
         }
     }
 
-    fn untouched(error: impl Into<Error>) -> Self {
-        Self::new(Leftover::Nothing, error)
-    }
-
-    fn partial(error: impl Into<Error>) -> Self {
-        Self::new(Leftover::PartialDestination, error)
+    fn partial(error: impl Into<Error>, claimed: Option<EntryIdentity>) -> Self {
+        Self {
+            error: error.into(),
+            leftover: Leftover::PartialDestination,
+            claimed,
+        }
     }
 
     fn whole(error: impl Into<Error>) -> Self {
-        Self::new(Leftover::WholeDestination, error)
+        Self {
+            error: error.into(),
+            leftover: Leftover::WholeDestination,
+            claimed: None,
+        }
     }
 
     /// What the failed operation left behind.
@@ -95,6 +122,27 @@ impl ClaimFailure {
     /// removing undoes — the one case a caller may clear away.
     pub fn left_a_partial_destination(&self) -> bool {
         self.leftover == Leftover::PartialDestination
+    }
+
+    /// Removes the half-written destination the failed operation left at `dst`,
+    /// and nothing else. Callers rolling back should come through here rather
+    /// than deciding for themselves and calling [`delete_permanent`].
+    ///
+    /// Does nothing unless [`Leftover::PartialDestination`] is what it left, and
+    /// nothing if `dst` no longer names the entry the operation claimed. A tree
+    /// takes time to write, and in that time another process can remove what
+    /// this call created and put its own entry at the same name; deleting by
+    /// path alone would take theirs. Narrowing, not closing: the check is a
+    /// `stat` and the removal a separate call, and nothing in `std` removes a
+    /// directory tree through an already-open handle.
+    pub fn discard_partial_destination(&self, dst: &Path) -> Result<()> {
+        if self.leftover != Leftover::PartialDestination {
+            return Ok(());
+        }
+        if self.claimed.is_some() && entry_identity(dst) != self.claimed {
+            return Ok(());
+        }
+        delete_permanent(dst)
     }
 
     /// The failure itself, without the claim.
@@ -613,11 +661,16 @@ pub fn copy_path_no_replace(src: &Path, dst: &Path) -> ClaimResult<()> {
     }
     if metadata.is_dir() {
         claim_dir(dst, Existing::Refuse).map_err(ClaimFailure::untouched)?;
-        return fill_dir(src, dst, Existing::Refuse).map_err(ClaimFailure::partial);
+        // Read straight after the claim, so what a cleanup compares against is
+        // the entry this call created rather than whatever ends up at the name.
+        let claimed = entry_identity(dst);
+        return fill_dir(src, dst, Existing::Refuse)
+            .map_err(|error| ClaimFailure::partial(error, claimed));
     }
     let source = fs::File::open(src).map_err(ClaimFailure::untouched)?;
     let destination = claim_file(dst).map_err(ClaimFailure::untouched)?;
-    fill_file(src, dst, source, destination).map_err(ClaimFailure::partial)
+    let claimed = entry_identity(dst);
+    fill_file(src, dst, source, destination).map_err(|error| ClaimFailure::partial(error, claimed))
 }
 
 // Recreates a symlink to `target` at `link`, failing if `link` is taken.
@@ -1061,6 +1114,41 @@ mod tests {
         assert!(
             dst.is_dir(),
             "and what is there is the partial tree the caller clears away"
+        );
+
+        failure.discard_partial_destination(&dst).unwrap();
+        assert!(!dst.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_destination_swapped_under_the_copy_is_not_the_copys_to_remove() {
+        // A tree takes time to write, and the name can be taken back in that
+        // time: another process removes what this call created and puts its own
+        // entry there. Deleting by path alone would take theirs — the identity
+        // read at the claim is what keeps the cleanup on its own work.
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("page.txt"), "mine").unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(source.join("ipc")).unwrap();
+
+        let dst = dir.path().join("dst");
+        let failure = copy_path_no_replace(&source, &dst).unwrap_err();
+        assert_eq!(failure.leftover(), Leftover::PartialDestination);
+
+        // Stand in for that other process: the partial this copy made is gone,
+        // and a different entry holds the name now.
+        fs::remove_dir_all(&dst).unwrap();
+        fs::create_dir(&dst).unwrap();
+        fs::write(dst.join("theirs.txt"), "theirs").unwrap();
+
+        failure.discard_partial_destination(&dst).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dst.join("theirs.txt")).unwrap(),
+            "theirs",
+            "the cleanup removed an entry it never created"
         );
     }
 
