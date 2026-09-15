@@ -43,7 +43,7 @@ authors      = ["nohrs contributors"]
 anyhow             = "1"
 clap               = { version = "4", features = ["derive"] }
 clap_complete      = "4"
-thiserror          = "1"
+thiserror          = "2"
 tracing            = "0.1"
 # `json` renders the file sink as JSON Lines, which is what `noh log` and the
 # aggregation behind `noh perf` read; the stderr sink stays human-readable.
