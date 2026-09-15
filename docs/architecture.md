@@ -59,7 +59,7 @@ exclude = ["web"]
 [workspace.package]
 version      = "0.0.1"
 edition      = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 license      = "MIT"
 repository   = "https://github.com/noh-rs/nohrs"
 homepage     = "https://nohrs.app"
