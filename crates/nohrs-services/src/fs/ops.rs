@@ -132,9 +132,16 @@ impl ClaimFailure {
     /// nothing if `dst` no longer names the entry the operation claimed. A tree
     /// takes time to write, and in that time another process can remove what
     /// this call created and put its own entry at the same name; deleting by
-    /// path alone would take theirs. Narrowing, not closing: the check is a
-    /// `stat` and the removal a separate call, and nothing in `std` removes a
-    /// directory tree through an already-open handle.
+    /// path alone would take theirs.
+    ///
+    /// Narrowing, not closing, in two ways worth naming. The check is a `stat`
+    /// and the removal a separate call, and nothing in `std` removes a directory
+    /// tree through an already-open handle, so a swap timed at that gap still
+    /// gets through. And an entry created at the same name after this one was
+    /// removed can be handed the same inode number, in which case it is
+    /// indistinguishable from the entry that was claimed. What the check does
+    /// rule out is the whole length of the copy, where the replacement exists
+    /// alongside the partial and so cannot share its identity.
     pub fn discard_partial_destination(&self, dst: &Path) -> Result<()> {
         if self.leftover != Leftover::PartialDestination {
             return Ok(());
@@ -1122,11 +1129,11 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_destination_swapped_under_the_copy_is_not_the_copys_to_remove() {
+    fn a_destination_swapped_under_the_copy_is_not_its_to_remove() {
         // A tree takes time to write, and the name can be taken back in that
-        // time: another process removes what this call created and puts its own
-        // entry there. Deleting by path alone would take theirs — the identity
-        // read at the claim is what keeps the cleanup on its own work.
+        // time: another process puts its own entry where this call's partial
+        // was. Deleting by path alone would take theirs — the identity read at
+        // the claim is what keeps the cleanup on its own work.
         let dir = tempdir().unwrap();
         let source = dir.path().join("source");
         fs::create_dir(&source).unwrap();
@@ -1137,11 +1144,18 @@ mod tests {
         let failure = copy_path_no_replace(&source, &dst).unwrap_err();
         assert_eq!(failure.leftover(), Leftover::PartialDestination);
 
-        // Stand in for that other process: the partial this copy made is gone,
-        // and a different entry holds the name now.
+        // Stand in for that other process, building its directory *before* the
+        // partial goes and renaming it into place. Not incidental: inode numbers
+        // are reused, so a stand-in that removed the partial first and created a
+        // directory at the same name could be handed the very number this copy
+        // claimed — which is the hole the doc comment on
+        // `discard_partial_destination` owns up to, and would make this test
+        // pass or fail on the filesystem's mood.
+        let theirs = dir.path().join("theirs");
+        fs::create_dir(&theirs).unwrap();
+        fs::write(theirs.join("theirs.txt"), "theirs").unwrap();
         fs::remove_dir_all(&dst).unwrap();
-        fs::create_dir(&dst).unwrap();
-        fs::write(dst.join("theirs.txt"), "theirs").unwrap();
+        fs::rename(&theirs, &dst).unwrap();
 
         failure.discard_partial_destination(&dst).unwrap();
 
