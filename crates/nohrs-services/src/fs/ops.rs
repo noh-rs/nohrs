@@ -25,8 +25,8 @@ pub enum MoveKind {
     CrossVolume,
 }
 
-/// A failed [`copy_path_no_replace`] or [`move_path_no_replace`], carrying
-/// whether the destination had become the operation's own by the time it failed.
+/// A failed [`copy_path_no_replace`] or [`move_path_no_replace`], carrying what
+/// it left at the destination alongside why it failed.
 ///
 /// The error alone cannot say. Every write in a no-replace copy takes its path
 /// with a call that fails if the name is already there, and the kernel reports
@@ -39,39 +39,62 @@ pub enum MoveKind {
 #[derive(Debug)]
 pub struct ClaimFailure {
     error: Error,
-    took_the_destination: bool,
+    leftover: Leftover,
+}
+
+/// What a failed no-replace copy or move left behind, and so what a caller
+/// undoing it may touch. Exactly one of the three licenses a cleanup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leftover {
+    /// The destination was never taken, and the source is as it was. Anything
+    /// at the destination belongs to whoever did take it, and removing it is
+    /// unrecoverable.
+    Nothing,
+    /// The destination is this operation's own half-written work and the source
+    /// it was reading is untouched — nothing writes to a destination before
+    /// claiming it, and nothing removes a source before the copy is whole. This
+    /// is the one case a caller may clear away, and doing so is what lets a
+    /// rollback put the original back.
+    PartialDestination,
+    /// The copy landed whole and only removing the source failed, so the
+    /// destination is a complete copy. `remove_dir_all` is not atomic: the
+    /// source it gave up on may already be a fragment, which would make this the
+    /// only whole copy there is. Neither path is a caller's to touch.
+    WholeDestination,
 }
 
 /// What a no-replace copy or move returns: the outcome, or a [`ClaimFailure`].
 pub type ClaimResult<T> = std::result::Result<T, ClaimFailure>;
 
 impl ClaimFailure {
-    // Failed before the destination was taken: whatever is at that path, if
-    // anything, was not put there by this operation.
-    fn untaken(error: impl Into<Error>) -> Self {
+    fn new(leftover: Leftover, error: impl Into<Error>) -> Self {
         Self {
             error: error.into(),
-            took_the_destination: false,
+            leftover,
         }
     }
 
-    // Failed once the destination was taken: everything at that path is this
-    // operation's own work, whole or partial.
-    fn taken(error: impl Into<Error>) -> Self {
-        Self {
-            error: error.into(),
-            took_the_destination: true,
-        }
+    fn untouched(error: impl Into<Error>) -> Self {
+        Self::new(Leftover::Nothing, error)
     }
 
-    /// Whether the destination was created by the operation that failed.
-    ///
-    /// `true` means what is at the destination now is that operation's own work
-    /// — a tree it only partly wrote, or a whole copy whose source it could not
-    /// remove — so removing it is what undoes the attempt. `false` means the
-    /// operation never got the name, and anything there belongs to whoever did.
-    pub fn took_the_destination(&self) -> bool {
-        self.took_the_destination
+    fn partial(error: impl Into<Error>) -> Self {
+        Self::new(Leftover::PartialDestination, error)
+    }
+
+    fn whole(error: impl Into<Error>) -> Self {
+        Self::new(Leftover::WholeDestination, error)
+    }
+
+    /// What the failed operation left behind.
+    pub fn leftover(&self) -> Leftover {
+        self.leftover
+    }
+
+    /// Whether the destination is this operation's own unfinished work, which
+    /// removing undoes — the one case a caller may clear away.
+    pub fn left_a_partial_destination(&self) -> bool {
+        self.leftover == Leftover::PartialDestination
     }
 
     /// The failure itself, without the claim.
@@ -516,26 +539,26 @@ pub fn move_path(src: &Path, dst: &Path) -> Result<MoveKind> {
 /// check followed by a replacing `rename` would not, which is the very hole this
 /// function exists to close.
 ///
-/// A failure reports whether the destination had become this move's own by then
-/// (see [`ClaimFailure`]), which is what a caller rolling back needs and cannot
-/// get from the error.
+/// A failure reports what it left at the destination (see [`ClaimFailure`]),
+/// which is what a caller rolling back needs and cannot get from the error.
+/// Failing to remove the source is never reported as a partial destination: the
+/// destination holds the whole copy by then, and `remove_dir_all` is not atomic,
+/// so the source it could not finish removing may be a fragment — which would
+/// make that copy the only whole one there is.
 pub fn move_path_no_replace(src: &Path, dst: &Path) -> ClaimResult<MoveKind> {
-    ensure_destination_outside_source(src, dst).map_err(ClaimFailure::untaken)?;
+    ensure_destination_outside_source(src, dst).map_err(ClaimFailure::untouched)?;
     match rename_no_replace(src, dst) {
         Some(Ok(())) => return Ok(MoveKind::Rename),
         // `rename(2)` either moves the entry or leaves everything as it was, so
         // a failure here never took the destination.
         Some(Err(error)) if !is_cross_device(&error) => {
-            return Err(ClaimFailure::untaken(error));
+            return Err(ClaimFailure::untouched(error));
         }
         // Cross-device, or no no-replace rename to be had: copy and delete.
         Some(Err(_)) | None => {}
     }
     copy_path_no_replace(src, dst)?;
-    // The copy is whole and the destination is this move's. A source that cannot
-    // be removed leaves the two side by side, which is not what was asked for —
-    // and what is at the destination is this move's to clear away.
-    delete_permanent(src).map_err(ClaimFailure::taken)?;
+    delete_permanent(src).map_err(ClaimFailure::whole)?;
     Ok(MoveKind::CrossVolume)
 }
 
@@ -578,23 +601,23 @@ fn rename_no_replace(_src: &Path, _dst: &Path) -> Option<std::io::Result<()>> {
 /// first and a name colliding inside a tree this call had already claimed both
 /// come back as, and only the second leaves something a caller may remove.
 pub fn copy_path_no_replace(src: &Path, dst: &Path) -> ClaimResult<()> {
-    ensure_destination_outside_source(src, dst).map_err(ClaimFailure::untaken)?;
+    ensure_destination_outside_source(src, dst).map_err(ClaimFailure::untouched)?;
     if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent).map_err(ClaimFailure::untaken)?;
+        fs::create_dir_all(parent).map_err(ClaimFailure::untouched)?;
     }
-    let metadata = fs::symlink_metadata(src).map_err(ClaimFailure::untaken)?;
+    let metadata = fs::symlink_metadata(src).map_err(ClaimFailure::untouched)?;
     if metadata.is_symlink() {
         // `symlink(2)` takes the name and writes the link in the one call, so it
         // did both or neither: a failure never leaves the destination ours.
-        return copy_symlink(src, dst, Existing::Refuse).map_err(ClaimFailure::untaken);
+        return copy_symlink(src, dst, Existing::Refuse).map_err(ClaimFailure::untouched);
     }
     if metadata.is_dir() {
-        claim_dir(dst, Existing::Refuse).map_err(ClaimFailure::untaken)?;
-        return fill_dir(src, dst, Existing::Refuse).map_err(ClaimFailure::taken);
+        claim_dir(dst, Existing::Refuse).map_err(ClaimFailure::untouched)?;
+        return fill_dir(src, dst, Existing::Refuse).map_err(ClaimFailure::partial);
     }
-    let source = fs::File::open(src).map_err(ClaimFailure::untaken)?;
-    let destination = claim_file(dst).map_err(ClaimFailure::untaken)?;
-    fill_file(src, dst, source, destination).map_err(ClaimFailure::taken)
+    let source = fs::File::open(src).map_err(ClaimFailure::untouched)?;
+    let destination = claim_file(dst).map_err(ClaimFailure::untouched)?;
+    fill_file(src, dst, source, destination).map_err(ClaimFailure::partial)
 }
 
 // Recreates a symlink to `target` at `link`, failing if `link` is taken.
@@ -995,8 +1018,9 @@ mod tests {
         fs::write(dst.join("nested").join("deep.txt"), "theirs").unwrap();
 
         let failure = copy_path_no_replace(&source, &dst).unwrap_err();
-        assert!(
-            !failure.took_the_destination(),
+        assert_eq!(
+            failure.leftover(),
+            Leftover::Nothing,
             "a destination this copy never created is not its to remove"
         );
         assert_eq!(
@@ -1029,8 +1053,9 @@ mod tests {
 
         let dst = dir.path().join("dst");
         let failure = copy_path_no_replace(&source, &dst).unwrap_err();
-        assert!(
-            failure.took_the_destination(),
+        assert_eq!(
+            failure.leftover(),
+            Leftover::PartialDestination,
             "a copy that got past creating the destination owns what is there"
         );
         assert!(
@@ -1204,8 +1229,9 @@ mod tests {
 
         let failure = move_path_no_replace(&src, &dst).unwrap_err();
 
-        assert!(
-            !failure.took_the_destination(),
+        assert_eq!(
+            failure.leftover(),
+            Leftover::Nothing,
             "the move never got the name, so what is there is not its to remove"
         );
         let error = failure.into_error();

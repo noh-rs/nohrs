@@ -529,17 +529,22 @@ fn occupied_destination(error: Error) -> Error {
     }
 }
 
-// Turns a failed restore into what the CLI reports, clearing away a destination
-// the move had already made its own.
+// Turns a failed restore into what the CLI reports, clearing away a half-written
+// tree the restore itself left at the original path.
 //
-// The item is still in the trash, so a half-written tree left at the original
-// path is not a copy of anything: it stands exactly where the user will look for
-// the file, and it is what makes the retry fail as "occupied". Nothing that got
-// that far was refused for being occupied either, so those are the wrong words
-// for it — an `AlreadyExists` on this side of the claim named a path *inside*
-// what the restore was writing, not the destination.
+// The item is still in the trash, so that tree is not a copy of anything: it
+// stands exactly where the user will look for the file, and it is what makes the
+// retry fail as "occupied". Nothing that got that far was refused for being
+// occupied either, so those are the wrong words for it — an `AlreadyExists` on
+// this side of the claim named a path *inside* what the restore was writing, not
+// the destination.
+//
+// Only a half-written one. A restore that copied everything and then failed to
+// empty the trash entry leaves a whole file at the original path and possibly a
+// fragment in the trash, so removing it would be the one deletion that loses
+// data; `left_a_partial_destination` is what keeps the two apart.
 fn restore_failure(failure: ops::ClaimFailure, destination: &Path) -> Error {
-    if !failure.took_the_destination() {
+    if !failure.left_a_partial_destination() {
         return occupied_destination(failure.into());
     }
     if let Err(error) = ops::delete_permanent(destination) {

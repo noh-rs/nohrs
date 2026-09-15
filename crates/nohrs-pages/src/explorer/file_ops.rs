@@ -265,9 +265,16 @@ fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Re
         // the kernel reports a collision *at* `dst` and one below it alike, and
         // reading the first as the second deletes a stranger's directory.
         drop_claimed(&failure, dst);
-        match mode {
-            ClipMode::Cut => restore_staged(src, staged),
-            ClipMode::Copy => drop_staged(staged),
+        // `WholeDestination` is not a failure to undo. The data reached `dst`
+        // intact and only clearing `staged` afterwards failed, so what is left
+        // at `staged` is whatever a partway `remove_dir_all` spared. Putting
+        // that back where a cut's source was would stand a fragment exactly
+        // where the user expects their file, next to the whole copy at `dst`.
+        if failure.leftover() != ops::Leftover::WholeDestination {
+            match mode {
+                ClipMode::Cut => restore_staged(src, staged),
+                ClipMode::Copy => drop_staged(staged),
+            }
         }
         return Err(failure.into());
     }
@@ -304,15 +311,16 @@ fn drop_staged(staged: &Path) {
 }
 
 // Clears away what a failed no-replace write left at the path it was writing to
-// — and only when that path had become the write's own.
+// — and only when that is the write's own half-written work.
 //
 // The decision comes from the operation rather than from what happens to occupy
-// the path now, because the two cases are indistinguishable afterwards and cost
-// very different things: a name the write never took holds someone else's entry,
-// and removing one of those cannot be undone.
+// the path now, because the cases are indistinguishable afterwards and cost very
+// different things. A name the write never took holds someone else's entry; a
+// whole copy whose source deletion failed may be the only copy left, since
+// `remove_dir_all` gives up partway through. Removing either cannot be undone.
 fn drop_claimed(failure: &ops::ClaimFailure, dst: &Path) {
     use nohrs_core::telemetry::LogErr as _;
-    if failure.took_the_destination() {
+    if failure.left_a_partial_destination() {
         ops::delete_permanent(dst).log_err();
     }
 }
