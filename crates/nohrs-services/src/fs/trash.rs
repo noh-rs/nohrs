@@ -181,7 +181,9 @@ impl Store for LedgerStore {
         // `free_destination` reports an occupied path in the words the CLI
         // wants; this makes the move itself refuse one, so nothing that appears
         // between the two is overwritten.
-        ops::move_path_no_replace(&source, &destination).map_err(occupied_destination)?;
+        if let Err(failure) = ops::move_path_no_replace(&source, &destination) {
+            return Err(restore_failure(failure, &destination));
+        }
         self.forget(item, row)
     }
 
@@ -525,6 +527,29 @@ fn occupied_destination(error: Error) -> Error {
         }
         _ => error,
     }
+}
+
+// Turns a failed restore into what the CLI reports, clearing away a destination
+// the move had already made its own.
+//
+// The item is still in the trash, so a half-written tree left at the original
+// path is not a copy of anything: it stands exactly where the user will look for
+// the file, and it is what makes the retry fail as "occupied". Nothing that got
+// that far was refused for being occupied either, so those are the wrong words
+// for it — an `AlreadyExists` on this side of the claim named a path *inside*
+// what the restore was writing, not the destination.
+fn restore_failure(failure: ops::ClaimFailure, destination: &Path) -> Error {
+    if !failure.took_the_destination() {
+        return occupied_destination(failure.into());
+    }
+    if let Err(error) = ops::delete_permanent(destination) {
+        tracing::warn!(
+            path = %destination.display(),
+            %error,
+            "could not clear away what a failed restore left at the original path"
+        );
+    }
+    failure.into()
 }
 
 /// Where a restore should land: the original path, refusing to overwrite
