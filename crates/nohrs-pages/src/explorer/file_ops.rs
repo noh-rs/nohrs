@@ -244,15 +244,26 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
 // was there to the backup.
 fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Result<()> {
     if let Err(failure) = apply_one(mode, src, staged) {
-        // A failure here never took the source away, whatever else it did: a
-        // rename that fails moves nothing, and the copy-and-delete fallback
-        // deletes the source only once the copy is complete. So anything this
-        // attempt left at `staged` is a fragment the source outlived — which is
-        // what makes this provable rather than a guess from whether `src`
-        // happens to be occupied now, and something else may have re-created it
-        // since. What it did not write there is not ours to remove, and the
-        // failure is the only thing that knows which of the two it is.
+        // Anything a *partial* failure left at `staged` is a fragment the source
+        // outlived: a rename that fails moves nothing, and the copy-and-delete
+        // fallback deletes the source only once the copy is whole. That is what
+        // makes it provable rather than a guess from whether `src` happens to be
+        // occupied now, when something else may have re-created it since — and
+        // what the failure did not write there is not ours to remove.
         drop_claimed(&failure, staged);
+        // One failure does take the source away, and it is the reason the
+        // sentence above says "partial": a cut whose copy to `staged` landed and
+        // whose removal of `src` then gave up partway. `staged` holds the whole
+        // original and `src` holds whatever `remove_dir_all` spared, so the one
+        // thing that must not happen is the whole copy going quietly — it is at
+        // a hidden scratch path nobody would think to look at.
+        if failure.leftover() == ops::Leftover::WholeDestination {
+            tracing::error!(
+                "{} could not be cleared after copying it aside; the whole copy is at {}",
+                src.display(),
+                staged.display(),
+            );
+        }
         return Err(failure.into());
     }
     // Past here `apply_one` returned `Ok`, which for a cut is what says the
@@ -265,16 +276,25 @@ fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Re
         // the kernel reports a collision *at* `dst` and one below it alike, and
         // reading the first as the second deletes a stranger's directory.
         drop_claimed(&failure, dst);
-        // `WholeDestination` is not a failure to undo. The data reached `dst`
-        // intact and only clearing `staged` afterwards failed, so what is left
-        // at `staged` is whatever a partway `remove_dir_all` spared. Putting
-        // that back where a cut's source was would stand a fragment exactly
-        // where the user expects their file, next to the whole copy at `dst`.
-        if failure.leftover() != ops::Leftover::WholeDestination {
-            match mode {
-                ClipMode::Cut => restore_staged(src, staged),
-                ClipMode::Copy => drop_staged(staged),
-            }
+        // `WholeDestination` is not a failure to undo, or to report as one. The
+        // replacement reached `dst` intact — which is the whole of what the user
+        // asked for — and only clearing `staged` afterwards gave up partway.
+        // Rolling back from here would take a finished overwrite apart, and a
+        // cut would put whatever `remove_dir_all` spared where the user expects
+        // their file, next to the whole copy. What is left is litter at a
+        // scratch path, so it is logged the way a trashed item's unwritten
+        // ledger row is, and the operation stands.
+        if failure.leftover() == ops::Leftover::WholeDestination {
+            tracing::warn!(
+                "{} was replaced, but the staging copy at {} could not be cleared: {failure}",
+                dst.display(),
+                staged.display(),
+            );
+            return Ok(());
+        }
+        match mode {
+            ClipMode::Cut => restore_staged(src, staged),
+            ClipMode::Copy => drop_staged(staged),
         }
         return Err(failure.into());
     }

@@ -41,9 +41,10 @@ pub struct ClaimFailure {
     error: Error,
     leftover: Leftover,
     // The entry the destination was when this operation claimed it, so a
-    // cleanup can tell it is still removing its own. `None` where there is
-    // nothing to compare — no claim was taken, or the platform has no entry
-    // identity to read.
+    // cleanup can tell it is still removing its own. Only meaningful alongside
+    // [`Leftover::PartialDestination`]. `None` where the identity could not be
+    // read — failing to read back what was just created is itself a sign
+    // something reached the destination in between, so it permits nothing.
     claimed: Option<EntryIdentity>,
 }
 
@@ -51,6 +52,14 @@ pub struct ClaimFailure {
 // entry at the same name after something swaps it.
 type EntryIdentity = (u64, u64);
 
+// Whether this platform exposes an entry identity at all. Where it does not
+// there is nothing to compare, and a cleanup has only the path it was given to
+// go on; withholding it there instead would leave every partial destination
+// standing, which is the failure this whole mechanism exists to stop.
+const ENTRY_IDENTITIES_AVAILABLE: bool = cfg!(unix);
+
+// The entry at `path` now — and, read straight after a claim, the entry that
+// claim created.
 #[cfg(unix)]
 fn entry_identity(path: &Path) -> Option<EntryIdentity> {
     use std::os::unix::fs::MetadataExt;
@@ -61,6 +70,20 @@ fn entry_identity(path: &Path) -> Option<EntryIdentity> {
 
 #[cfg(not(unix))]
 fn entry_identity(_path: &Path) -> Option<EntryIdentity> {
+    None
+}
+
+// The same through an open handle. `fstat` names the entry this call created
+// whatever happens to the path afterwards, where a second `stat` by path could
+// pick up something that replaced it in between.
+#[cfg(unix)]
+fn handle_identity(file: &fs::File) -> Option<EntryIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata().ok().map(|entry| (entry.dev(), entry.ino()))
+}
+
+#[cfg(not(unix))]
+fn handle_identity(_file: &fs::File) -> Option<EntryIdentity> {
     None
 }
 
@@ -146,7 +169,10 @@ impl ClaimFailure {
         if self.leftover != Leftover::PartialDestination {
             return Ok(());
         }
-        if self.claimed.is_some() && entry_identity(dst) != self.claimed {
+        // A `claimed` of `None` on a platform that has identities fails this
+        // comparison against anything real, which is the conservative answer:
+        // the operation could not establish what it made, so it removes nothing.
+        if ENTRY_IDENTITIES_AVAILABLE && entry_identity(dst) != self.claimed {
             return Ok(());
         }
         delete_permanent(dst)
@@ -670,13 +696,18 @@ pub fn copy_path_no_replace(src: &Path, dst: &Path) -> ClaimResult<()> {
         claim_dir(dst, Existing::Refuse).map_err(ClaimFailure::untouched)?;
         // Read straight after the claim, so what a cleanup compares against is
         // the entry this call created rather than whatever ends up at the name.
+        // `mkdir` hands back no handle, so this one is a `stat` by path and
+        // carries the gap the cleanup's doc comment owns up to.
         let claimed = entry_identity(dst);
         return fill_dir(src, dst, Existing::Refuse)
             .map_err(|error| ClaimFailure::partial(error, claimed));
     }
     let source = fs::File::open(src).map_err(ClaimFailure::untouched)?;
     let destination = claim_file(dst).map_err(ClaimFailure::untouched)?;
-    let claimed = entry_identity(dst);
+    // Through the handle rather than the path: this is the entry `create_new`
+    // itself made, so nothing that takes the name in between can be recorded as
+    // the claim and later deleted as though it were.
+    let claimed = handle_identity(&destination);
     fill_file(src, dst, source, destination).map_err(|error| ClaimFailure::partial(error, claimed))
 }
 
