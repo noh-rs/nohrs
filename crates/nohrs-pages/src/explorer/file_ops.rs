@@ -216,6 +216,18 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
     let backup = scratch_path(dst, "old");
     if let Err(failure) = ops::move_path_no_replace(dst, &backup) {
         drop_claimed(&failure, &backup);
+        // The same stranding the staging step can suffer, one step earlier: the
+        // copy to `backup` landed and only clearing `dst` gave up partway, so
+        // the whole original is at a hidden scratch path and `dst` holds what
+        // the removal spared. Nothing else in this function reaches `backup`
+        // from here, so this message is the only record of where it went.
+        if failure.leftover() == ops::Leftover::WholeDestination {
+            tracing::error!(
+                "{} could not be cleared after copying it aside; the whole original is at {}",
+                dst.display(),
+                backup.display(),
+            );
+        }
         return Err(failure.into());
     }
     let staged = scratch_path(dst, "new");
