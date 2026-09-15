@@ -23,7 +23,7 @@ jobs:
           persist-credentials: false
 
       - name: Install cargo-machete
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
           tool: cargo-machete
 
