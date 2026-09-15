@@ -547,7 +547,7 @@ fn restore_failure(failure: ops::ClaimFailure, destination: &Path) -> Error {
     if !failure.left_a_partial_destination() {
         return occupied_destination(failure.into());
     }
-    if let Err(error) = ops::delete_permanent(destination) {
+    if let Err(error) = failure.discard_partial_destination(destination) {
         tracing::warn!(
             path = %destination.display(),
             %error,

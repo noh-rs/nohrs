@@ -320,9 +320,7 @@ fn drop_staged(staged: &Path) {
 // `remove_dir_all` gives up partway through. Removing either cannot be undone.
 fn drop_claimed(failure: &ops::ClaimFailure, dst: &Path) {
     use nohrs_core::telemetry::LogErr as _;
-    if failure.left_a_partial_destination() {
-        ops::delete_permanent(dst).log_err();
-    }
+    failure.discard_partial_destination(dst).log_err();
 }
 
 // A sibling path of `dst` that does not yet exist, for one side of an overwrite
