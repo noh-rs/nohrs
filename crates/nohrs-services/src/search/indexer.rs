@@ -158,25 +158,26 @@ impl IndexManager {
                         ) {
                             tracing::warn!("Failed to index file {:?}: {}", path, e);
                         }
-                    } else if path.is_dir() {
-                        if let Err(e) = self.index_single_directory(
+                    } else if path.is_dir()
+                        && let Err(e) = self.index_single_directory(
                             path,
                             &mut writer_guard,
                             path_field,
                             filename_field,
                             content_field,
                             is_directory_field,
-                        ) {
-                            tracing::warn!("Failed to index directory {:?}: {}", path, e);
-                        }
+                        )
+                    {
+                        tracing::warn!("Failed to index directory {:?}: {}", path, e);
                     }
 
                     // Update progress
                     processed += 1;
-                    if let Some(tx) = &mut progress_tx {
-                        if total_files > 0 && processed % 100 == 0 {
-                            *tx.borrow_mut() = processed as f32 / total_files as f32;
-                        }
+                    if let Some(tx) = &mut progress_tx
+                        && total_files > 0
+                        && processed % 100 == 0
+                    {
+                        *tx.borrow_mut() = processed as f32 / total_files as f32;
                     }
                 }
                 Err(err) => tracing::warn!("Walk error: {}", err),
@@ -373,39 +374,39 @@ impl super::backend::SearchBackend for IndexManager {
             // Actually, for OwnedValue, it is an enum.
             // If I import Value trait, I can use .as_str().
 
-            if let Some(path_val) = retrieved_doc.get_first(path_field) {
-                if let Some(path_str) = path_val.as_str() {
-                    let path_buf = PathBuf::from(path_str);
+            if let Some(path_val) = retrieved_doc.get_first(path_field)
+                && let Some(path_str) = path_val.as_str()
+            {
+                let path_buf = PathBuf::from(path_str);
 
-                    match retrieved_doc.get_first(is_directory_field) {
-                        Some(val) if val.as_u64() == Some(1) => {
-                            // Directory match
+                match retrieved_doc.get_first(is_directory_field) {
+                    Some(val) if val.as_u64() == Some(1) => {
+                        // Directory match
+                        results.push(super::SearchResult {
+                            path: path_buf,
+                            line_number: 0,
+                            line_content: String::new(),
+                        });
+                    }
+                    _ => {
+                        // File match
+                        // Find ALL matching lines in file
+                        let match_lines = find_all_match_lines(&path_buf, query_str);
+
+                        if match_lines.is_empty() {
+                            // No content matches, but file matched by filename - add with empty line
                             results.push(super::SearchResult {
                                 path: path_buf,
                                 line_number: 0,
                                 line_content: String::new(),
                             });
-                        }
-                        _ => {
-                            // File match
-                            // Find ALL matching lines in file
-                            let match_lines = find_all_match_lines(&path_buf, query_str);
-
-                            if match_lines.is_empty() {
-                                // No content matches, but file matched by filename - add with empty line
+                        } else {
+                            for (line_number, line_content) in match_lines {
                                 results.push(super::SearchResult {
-                                    path: path_buf,
-                                    line_number: 0,
-                                    line_content: String::new(),
+                                    path: path_buf.clone(),
+                                    line_number,
+                                    line_content,
                                 });
-                            } else {
-                                for (line_number, line_content) in match_lines {
-                                    results.push(super::SearchResult {
-                                        path: path_buf.clone(),
-                                        line_number,
-                                        line_content,
-                                    });
-                                }
                             }
                         }
                     }

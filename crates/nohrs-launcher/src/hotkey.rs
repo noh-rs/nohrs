@@ -241,10 +241,10 @@ fn install_portal(
     .detach();
 
     cx.spawn(async move |cx| {
-        if let Ok(outcome) = bound_receiver.recv().await {
-            if cx.update(|cx| on_outcome(cx, outcome)).is_err() {
-                return;
-            }
+        if let Ok(outcome) = bound_receiver.recv().await
+            && cx.update(|cx| on_outcome(cx, outcome)).is_err()
+        {
+            return;
         }
         // Ends when the sender drops, which is when the portal task has given up.
         while receiver.recv().await.is_ok() {

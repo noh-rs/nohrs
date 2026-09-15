@@ -140,25 +140,25 @@ pub fn render(
                 }))
                 .on_click(
                     cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                        if let gpui::ClickEvent::Mouse(mouse) = event {
-                            if mouse.up.button == gpui::MouseButton::Left {
-                                this.record_click(ix, mouse.up.click_count);
-                                let modifiers = mouse.up.modifiers;
-                                if modifiers.shift {
-                                    this.select_range_to(ix);
-                                } else if modifiers.platform || modifiers.control {
-                                    this.toggle_select(ix);
-                                } else {
-                                    this.select_single(ix);
-                                }
-                                if item_for_preview.kind == "file" {
-                                    this.open_preview(item_for_preview.path.clone(), window, cx);
-                                }
-                                if mouse.up.click_count >= 2 {
-                                    this.activate_entry(item_for_activate.clone(), window, cx);
-                                }
-                                cx.notify();
+                        if let gpui::ClickEvent::Mouse(mouse) = event
+                            && mouse.up.button == gpui::MouseButton::Left
+                        {
+                            this.record_click(ix, mouse.up.click_count);
+                            let modifiers = mouse.up.modifiers;
+                            if modifiers.shift {
+                                this.select_range_to(ix);
+                            } else if modifiers.platform || modifiers.control {
+                                this.toggle_select(ix);
+                            } else {
+                                this.select_single(ix);
                             }
+                            if item_for_preview.kind == "file" {
+                                this.open_preview(item_for_preview.path.clone(), window, cx);
+                            }
+                            if mouse.up.click_count >= 2 {
+                                this.activate_entry(item_for_activate.clone(), window, cx);
+                            }
+                            cx.notify();
                         }
                     }),
                 )
