@@ -169,10 +169,16 @@ impl ClaimFailure {
         if self.leftover != Leftover::PartialDestination {
             return Ok(());
         }
-        // A `claimed` of `None` on a platform that has identities fails this
-        // comparison against anything real, which is the conservative answer:
-        // the operation could not establish what it made, so it removes nothing.
-        if ENTRY_IDENTITIES_AVAILABLE && entry_identity(dst) != self.claimed {
+        // Both sides have to be a real identity, and the same one. `None` on
+        // either — the claim never established, or nothing at the path right
+        // now — proves nothing, and comparing those two as equal would let the
+        // removal run against whatever appears at the name in the moment
+        // between this check and it.
+        if ENTRY_IDENTITIES_AVAILABLE
+            && !self
+                .claimed
+                .is_some_and(|claimed| entry_identity(dst) == Some(claimed))
+        {
             return Ok(());
         }
         delete_permanent(dst)
