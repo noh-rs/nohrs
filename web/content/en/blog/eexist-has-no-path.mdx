@@ -135,7 +135,7 @@ Inferring a situation from an errno gets it wrong: that is this post's subject. 
 
 A no-replace rename is therefore useful where available, but **must not be assumed to exist**. Where it is missing, a fallback is required. The simplest fallback is to **copy, then delete the original.**
 
-This is where a **move** can end up. Worth being precise about, because it is easy to conclude that ext4 and APFS are exempt from everything below: a move **within one volume** does finish in a single rename, and the fallback never runs.
+This is where a **move** can end up. Worth being precise about, because it is easy to conclude that ext4 and APFS are exempt from everything below: on those filesystems a move **within one volume** does finish in a single rename, and the fallback never runs.
 
 A **copy** has no such shortcut. There is no rename that duplicates a tree, so a copy always walks it, claiming every entry as it goes — on ext4 and APFS exactly as anywhere else. So the problem below reaches an ordinary copy-paste everywhere, and reaches a move on `EXDEV` — another volume, or a driver declining the rename as overlayfs does for a lower layer — or where the no-replace rename is missing.
 
@@ -442,13 +442,13 @@ What I did instead was write down what closing it takes, in an issue: `unlinkat`
 
 The central case of this defect cannot be reproduced. It needs another process to create a colliding name inside the destination tree during the seconds the copy is writing it — a race, on someone else's schedule, that a test cannot wait for.
 
-A move changes the conditions. Within one volume it finishes in a single rename and the copying code never runs; across volumes it does run, but CI's temporary directories all sit on one filesystem, so that path is never taken there. What CI does exercise is the `copy_path_no_replace` side — `the_fallback_move_claims_the_destination_before_writing_to_it` among others — and not `move_path_no_replace` dropping into its cross-device fallback. **A test that does not run where it was written is not a test.**
+A move changes the conditions. CI's temporary directories all sit on one ext4 or APFS volume, where a move finishes in a single rename and the copying code never runs — the `EXDEV` that would send it into the fallback never arrives. What CI does exercise is the `copy_path_no_replace` side — `the_fallback_move_claims_the_destination_before_writing_to_it` among others — and not `move_path_no_replace` dropping into its cross-device fallback. **A test that does not run where it was written is not a test.**
 
 In place of the central case, the test pins **the property that determines it** — that a claim is determined by where it failed, never by the kind of error.
 
 A Unix-domain socket is placed in the source. A socket cannot be `open`ed as a file, so the copy always fails — and it stops **at a known point after the destination was created**, the same side of the claim a nested collision falls on. The failure is deterministic and runs on both platforms.
 
-The branch fixed in the second half is subject to the same constraint. Reaching `WholeDestination` needs a `rename` that reports cross-device **and** a copy that completes **and** a `remove_dir_all` that gives up partway. These three conditions cannot be staged together inside a temporary directory.
+The branch fixed in the second half is subject to the same constraint. Reaching `WholeDestination` needs a `rename` that fails with `EXDEV` **and** a copy that completes **and** a `remove_dir_all` that gives up partway. These three conditions cannot be staged together inside a temporary directory.
 
 The range that remained uncovered was recorded in the PR and in the code comments. **"There is no test" and "not knowing there is no test" are different things.** The first is a decision; the second is an accident.
 
