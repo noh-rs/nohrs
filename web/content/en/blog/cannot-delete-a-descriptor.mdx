@@ -1,0 +1,232 @@
+---
+title: You cannot delete a file descriptor
+date: '2026-09-16'
+description: Holding a file open tells the kernel exactly which thing you mean. Deleting it does not use that information, and cannot. What that costs, and what can be done about it.
+author: shuya goto
+tags: ['engineering', 'filesystem']
+canonical: ja
+---
+
+Suppose a program has a file open. It holds a descriptor — the number `open` handed back — and that number identifies, without ambiguity, one particular thing on the disk. Now the program wants to delete that thing.
+
+It cannot. Not because the call is missing, but because **the request does not name anything**. Working out why is a short tour of what a path is, what a descriptor is, and what "delete" turns out to mean.
+
+Everything below was measured on Linux 6.18 rather than recalled, and the output is quoted as it came back.
+
+## Names and bodies
+
+A directory is not a container. It is a table with two columns: a name, and a number.
+
+The number is the inode number. Everything that is actually *about* the file — its size, its permissions, its modification time, and the references to the blocks holding its contents — lives on the inode. The directory holds only the name. An inode does not know its own name, and nothing in it points back to the directory that names it.
+
+<Diagram caption="Two names in one directory, pointing at one inode number. There is one body. Removing either name leaves the other, and the body, untouched.">
+  <svg viewBox="0 0 700 210" role="img" aria-label="A directory table maps two different names to the same inode number, which is where the file's data and metadata live">
+    <defs>
+      <marker id="names-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+    </defs>
+    <text x="24" y="26" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">directory entries of one/</text>
+    <rect x="24" y="40" width="270" height="140" fill="none" stroke="currentColor" strokeOpacity="0.35" />
+    <text x="44" y="68" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55">name</text>
+    <text x="274" y="68" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55" textAnchor="end">inode</text>
+    <line x1="40" y1="80" x2="278" y2="80" stroke="currentColor" strokeOpacity="0.3" />
+    <text x="44" y="112" fontFamily="monospace" fontSize="13" fill="currentColor">a</text>
+    <text x="274" y="112" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">1900547</text>
+    <text x="44" y="152" fontFamily="monospace" fontSize="13" fill="currentColor">b</text>
+    <text x="274" y="152" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">1900547</text>
+    <line x1="300" y1="108" x2="430" y2="122" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#names-arrow)" />
+    <line x1="300" y1="148" x2="430" y2="136" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#names-arrow)" />
+    <rect x="436" y="96" width="240" height="68" fill="none" stroke="currentColor" strokeOpacity="0.55" strokeWidth="1.6" />
+    <text x="456" y="124" fontFamily="monospace" fontSize="13" fill="currentColor">inode 1900547</text>
+    <text x="456" y="147" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.65">size, mode, mtime, blocks</text>
+  </svg>
+</Diagram>
+
+That table is why the system call that deletes a file is called `unlink` rather than `delete`. It removes a link — one row of the table. The body is reclaimed only once nothing refers to it at all: no directory entry anywhere, and no open descriptor or memory mapping held by a running process.
+
+Two names, one body, and a descriptor watching what happens:
+
+```text
+one/a inode=1900547  one/b inode=1900547  same=True
+open fd=3 -> fstat inode=1900547
+
+after unlink('one/a'): one/b exists=True contents='payload'
+the fd still names the body: fstat inode=1900547, read=b'payload'
+```
+
+## Why "delete this descriptor" has no meaning
+
+Now put those two facts together.
+
+A descriptor names a body. `unlink` removes a name. In the run above, the body had two names; after the `unlink` it has one. Had it been asked to "delete the descriptor" instead, the kernel would have had to answer a question nobody asked: **which of the names?**
+
+This is not a gap in the API. It is a request that does not resolve to an action. A body with three names is not "three-quarters deleted" after you remove one, and there is no defensible rule that says removing a descriptor should mean removing all of them — that is a different and much more destructive operation than any caller asked for.
+
+<Callout title="It is not merely absent on Linux">
+FreeBSD does offer `funlinkat`, and it is worth seeing what it actually does: it takes *both* a descriptor and a name, and removes the name only if it still refers to the same file as the descriptor. It is a **verified** unlink, not an unlink by descriptor. The name is still the thing removed.
+
+Linux has no equivalent. `linkat` with `AT_EMPTY_PATH` can give a descriptor a new name, which looks like a way in, but it requires `CAP_DAC_READ_SEARCH` — effectively root — so it is not available to an ordinary program.
+</Callout>
+
+So every removal, on every system, names something. And naming something means resolving a path.
+
+## A path is a route; a descriptor is a hold
+
+Resolving a path is a walk. `work/report` means: look up `work` in the current directory, get an inode, check it is a directory, look up `report` inside it. Each component is a fresh lookup against whatever the filesystem holds *at that instant*.
+
+The kernel does not cache that walk between calls on your behalf. Two successive calls on the same path are two independent walks, and the filesystem is free to change in between.
+
+A descriptor is the opposite. It is a hold on a specific inode, taken once and kept. Nothing done to the names above it moves it.
+
+<Diagram caption="The same target, reached two ways. The path is re-walked on every call and follows whatever the names say now. The descriptor was resolved once and does not move.">
+  <svg viewBox="0 0 720 250" role="img" aria-label="A path is resolved component by component on each call, whereas a file descriptor refers directly to an inode and is unaffected by later renames">
+    <defs>
+      <marker id="route-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+    </defs>
+    <text x="24" y="28" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">by path — walked again on every call</text>
+    <rect x="24" y="44" width="92" height="42" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="70" y="70" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">/</text>
+    <line x1="120" y1="65" x2="156" y2="65" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#route-arrow)" />
+    <rect x="160" y="44" width="110" height="42" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="215" y="70" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">work</text>
+    <line x1="274" y1="65" x2="310" y2="65" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#route-arrow)" />
+    <rect x="314" y="44" width="110" height="42" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="369" y="70" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">report</text>
+    <line x1="428" y1="65" x2="500" y2="102" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#route-arrow)" />
+    <text x="150" y="112" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6">each box is a lookup that can answer differently next time</text>
+    <rect x="506" y="86" width="190" height="60" fill="none" stroke="currentColor" strokeOpacity="0.6" strokeWidth="1.8" />
+    <text x="601" y="112" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="middle">inode 1900550</text>
+    <text x="601" y="133" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.65" textAnchor="middle">the body</text>
+    <text x="24" y="190" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">by descriptor — resolved once, then held</text>
+    <rect x="24" y="204" width="130" height="40" fill="none" stroke="currentColor" strokeOpacity="0.6" strokeWidth="1.8" />
+    <text x="89" y="229" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">fd 3</text>
+    <line x1="158" y1="224" x2="560" y2="152" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#route-arrow)" />
+    <text x="330" y="212" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6" textAnchor="middle">no lookups in between</text>
+  </svg>
+</Diagram>
+
+Hold a descriptor on a directory, then rename that directory out from under the path:
+
+```text
+renamed work -> work2
+  unlink('work/report')        -> ENOENT
+  unlinkat(dirfd,'report')     -> ok
+  work2/report gone            -> True
+```
+
+The path stopped resolving; there is no `work` any more. The descriptor did not care. It was never holding the name `work` — it was holding the directory.
+
+## When somebody else steps into the gap
+
+The rename above only lost the call. Change one detail and it loses data instead: after moving the directory aside, let another program create a new one at the old name.
+
+```text
+  path  w/report  now inode=1900552 contents='THEIRS'
+  dirfd w-moved/report inode=1900550 contents='mine'
+
+  unlink('w/report')           -> ok   <- removed THEIRS
+  their file still there?      -> False
+```
+
+The program asked to delete its own file. The path it used was correct when it looked. By the time `unlink` ran, the same path meant a stranger's file, and that is the one that went.
+
+Nothing here is exotic. The program did not misuse the API; it used the only form of removal the C library offers, and the filesystem moved underneath it. This is the shape of an entire family of bugs — check a path, then act on it, and lose the race in between — and it is why the kernel grew a second way to say what you mean.
+
+## What the `*at` family shortens
+
+`openat`, `unlinkat`, `renameat`, `fstatat`, `mkdirat`: each takes a directory descriptor plus a name, and resolves the name relative to that descriptor instead of from the root.
+
+The gain is exact. Resolving `a/b/c/d/report` by path is five lookups, any of which can be swapped between one call and the next. Holding a descriptor on `a/b/c/d` and asking for `report` is **one**. Every component above the last stops being something an attacker — or an ordinary concurrent program — can redirect.
+
+What it does not do is remove that last lookup. `unlinkat(dirfd, "report", 0)` still resolves the name `report` inside the pinned directory, and something can still replace it in the instant between checking and removing. That is the floor, and it is the same floor as the first section: removal operates on names.
+
+<Diagram caption="Pinning the parent removes every lookup but one. The last one is not an implementation shortcut — it is what removal is.">
+  <svg viewBox="0 0 720 196" role="img" aria-label="Resolving a long path exposes many lookups to concurrent change, while a pinned directory descriptor leaves only the final name lookup exposed">
+    <text x="24" y="28" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">unlink("a/b/c/d/report")</text>
+    <rect x="24" y="42" width="68" height="34" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="58" y="64" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">a</text>
+    <rect x="98" y="42" width="68" height="34" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="132" y="64" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">b</text>
+    <rect x="172" y="42" width="68" height="34" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="206" y="64" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">c</text>
+    <rect x="246" y="42" width="68" height="34" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="280" y="64" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">d</text>
+    <rect x="320" y="42" width="96" height="34" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="368" y="64" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">report</text>
+    <text x="440" y="64" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.7">5 lookups exposed</text>
+    <text x="24" y="126" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">unlinkat(dirfd, "report", 0)</text>
+    <rect x="24" y="140" width="290" height="34" fill="none" stroke="currentColor" strokeOpacity="0.62" strokeWidth="1.8" />
+    <text x="169" y="162" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">dirfd — held, not looked up</text>
+    <rect x="320" y="140" width="96" height="34" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="368" y="162" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">report</text>
+    <text x="440" y="162" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.7">1 lookup exposed</text>
+  </svg>
+</Diagram>
+
+## The asymmetry in `rmdir`
+
+That remaining lookup sounds like it leaves the problem where it was. For directories, it very nearly does not, and the reason is a rule that looks like an inconvenience until you need it.
+
+`rmdir` refuses to remove a directory that has anything in it:
+
+```text
+  rmdir('full')   -> ENOTEMPTY
+  rmdir('empty')  -> ok
+  unlink on a dir -> EISDIR
+```
+
+So a program that wants to remove a tree safely can do this: walk down through descriptors, emptying as it goes — none of which consults the name again — and only at the very end ask `rmdir` for the name. By then the directory it means is empty.
+
+If something has swapped the name in that last instant, `rmdir` can only succeed against **another empty directory**. The worst case went from losing a stranger's populated tree to losing a stranger's empty folder. That is not nothing, but it is a different category of harm, and it comes for free from a rule that was already there.
+
+For a file there is no such rule. `unlink` removes whatever is at the name. The window is two system calls wide and it is real.
+
+<Callout title="Worth stating plainly">
+This is narrowing, not closing. A design that claims to remove only what it created, on Linux, is claiming something the platform does not offer. The honest version says where the floor is — and that is more useful to the next reader than a guarantee that quietly is not one.
+</Callout>
+
+## The flags, and one trap
+
+Opening a directory to use as an anchor is not quite `open(path, O_RDONLY)`. Four flags earn their place:
+
+- `O_DIRECTORY` — fail unless it really is a directory, rather than opening something else and discovering it later.
+- `O_NOFOLLOW` — do not follow a symbolic link at the final component.
+- `O_NONBLOCK` — a FIFO left at the name would otherwise make `open` itself wait for a writer that may never come.
+- `O_CLOEXEC` — do not leak the descriptor into a child process.
+
+The trap is `O_NOFOLLOW`, and it is worth being precise because it looks right in the wrong place.
+
+It belongs on **the entry being removed**, where following a link would let a link stand in for what it points at. It does **not** belong on the parent directory. A user can perfectly well have navigated into a folder reached through a symbolic link; refusing to open it does not protect anything, it just abandons the operation. And following the link there is safe for a different reason — the identity check on the entry only passes when the directory you reached really is the one holding it.
+
+<Callout title="The errno moves when you add a flag">
+While checking that, something turned up that is worth carrying away. The error reported for a symbolic link under `O_NOFOLLOW` depends on whether `O_DIRECTORY` is also set:
+
+| flags | `adir` | `afile` | link to dir | link to file | dangling link |
+| --- | --- | --- | --- | --- | --- |
+| `O_RDONLY` | ok | ok | ok | ok | `ENOENT` |
+| `O_RDONLY\|O_NOFOLLOW` | ok | ok | `ELOOP` | `ELOOP` | `ELOOP` |
+| `O_RDONLY\|O_DIRECTORY` | ok | `ENOTDIR` | ok | `ENOTDIR` | `ENOENT` |
+| `O_RDONLY\|O_DIRECTORY\|O_NOFOLLOW` | ok | `ENOTDIR` | `ENOTDIR` | `ENOTDIR` | `ENOTDIR` |
+
+The same condition — a symbolic link at the name, `O_NOFOLLOW` set — reports `ELOOP` on the second row and `ENOTDIR` on the fourth. `O_DIRECTORY` is checked first and answers before `O_NOFOLLOW` gets to speak.
+
+Code that means "it was a link, so remove it without opening it" therefore has to accept **both**, and a comment that names only one is describing a run it happened to make rather than the rule.
+</Callout>
+
+One more thing not to take on trust: the `d_type` field that `readdir` returns, which says whether an entry is a directory. Several filesystems fill it with `DT_UNKNOWN` and expect you to ask. Passing `O_DIRECTORY` to `openat` asks — and hands back, in the same call, the descriptor a recursive walk needs next.
+
+## Narrowing and closing
+
+The claim in the title is stronger than "Linux is missing a call". "Delete this descriptor" is not a feature request, because a descriptor names a body and deletion acts on names, and one body can have many.
+
+What follows from that is a fair summary of the whole area:
+
+- Every removal resolves a name, so every removal has a window.
+- A held directory descriptor removes every part of the walk except the last component.
+- For directories, `rmdir` refusing a non-empty target shrinks what that last window can cost.
+- For everything else, the window stays, and the useful thing to do about it is to write down where it is.
+
+There is a version of this article that ends by presenting a technique as a solution. It would be more satisfying and less true. The technique is good — descriptor-relative work is strictly better than re-walking a path, and it is what the `*at` calls exist for — but the last lookup is not a detail anyone forgot. It is what deletion is.

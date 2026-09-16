@@ -1,0 +1,232 @@
+---
+title: ファイルディスクリプタは削除できない
+date: '2026-09-16'
+description: ファイルを開いていれば、どの実体を指しているかは一意に定まります。しかし削除という操作はその情報を使いませんし、使うこともできません。その制約が何を要求し、何を許すのかを整理します。
+author: shuya goto
+tags: ['engineering', 'filesystem']
+canonical: ja
+---
+
+あるプログラムがファイルを開いているとします。`open` が返した番号、すなわちディスクリプタを保持しており、その番号はディスク上の特定の一つの実体を曖昧さなく指しています。ここで、そのプログラムが当の実体を削除しようとします。
+
+できません。該当する呼び出しが用意されていないからではなく、<strong>その要求が何も指定していない</strong>からです。理由を辿ると、パスとは何か、ディスクリプタとは何か、そして「削除」が実際には何を対象とする操作なのか、という三点の整理になります。
+
+以下の記述はすべて Linux 6.18 上で実際に測定したものであり、出力はそのまま引用しています。
+
+## 名前と実体
+
+ディレクトリは、ファイルを格納する容器ではありません。名前と番号という二列からなる表です。
+
+この番号を inode 番号と呼びます。ファイルについての実質的な情報——サイズ、パーミッション、更新時刻、そして内容を保持するブロックへの参照——はすべて inode 側にあります。ディレクトリにあるのは名前だけです。inode は自身の名前を知らず、自身を名指しているディレクトリへ遡る手がかりも持ちません。
+
+<Diagram caption="一つのディレクトリ内の二つの名前が、同一の inode 番号を指しています。実体は一つです。どちらの名前を削除しても、もう一方と実体は影響を受けません。">
+  <svg viewBox="0 0 700 210" role="img" aria-label="ディレクトリの表が二つの異なる名前を同一の inode 番号に対応させており、その inode にデータとメタデータが置かれている">
+    <defs>
+      <marker id="names-arrow-ja" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+    </defs>
+    <text x="24" y="26" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">one/ のディレクトリエントリ</text>
+    <rect x="24" y="40" width="270" height="140" fill="none" stroke="currentColor" strokeOpacity="0.35" />
+    <text x="44" y="68" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55">name</text>
+    <text x="274" y="68" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55" textAnchor="end">inode</text>
+    <line x1="40" y1="80" x2="278" y2="80" stroke="currentColor" strokeOpacity="0.3" />
+    <text x="44" y="112" fontFamily="monospace" fontSize="13" fill="currentColor">a</text>
+    <text x="274" y="112" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">1900547</text>
+    <text x="44" y="152" fontFamily="monospace" fontSize="13" fill="currentColor">b</text>
+    <text x="274" y="152" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">1900547</text>
+    <line x1="300" y1="108" x2="430" y2="122" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#names-arrow-ja)" />
+    <line x1="300" y1="148" x2="430" y2="136" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#names-arrow-ja)" />
+    <rect x="436" y="96" width="240" height="68" fill="none" stroke="currentColor" strokeOpacity="0.55" strokeWidth="1.6" />
+    <text x="456" y="124" fontFamily="monospace" fontSize="13" fill="currentColor">inode 1900547</text>
+    <text x="456" y="147" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.65">size, mode, mtime, blocks</text>
+  </svg>
+</Diagram>
+
+ファイルを削除するシステムコールが `delete` ではなく `unlink` と呼ばれるのは、この構造のためです。取り除かれるのはリンク、すなわち表の一行です。実体が回収されるのは、それを参照するものが一つも残らなくなった時点——どのディレクトリにもエントリがなく、かつ実行中のプロセスが開いたディスクリプタもメモリマッピングも保持していない状態——に限られます。
+
+二つの名前、一つの実体、そしてその経過を見ているディスクリプタ:
+
+```text
+one/a inode=1900547  one/b inode=1900547  same=True
+open fd=3 -> fstat inode=1900547
+
+after unlink('one/a'): one/b exists=True contents='payload'
+the fd still names the body: fstat inode=1900547, read=b'payload'
+```
+
+## 「ディスクリプタを削除する」が意味をなさない理由
+
+ここで、上の二つの事実を重ね合わせます。
+
+ディスクリプタが指すのは実体です。`unlink` が取り除くのは名前です。上の実行では実体に二つの名前があり、`unlink` の後は一つになりました。仮に「このディスクリプタを削除せよ」と要求されていたなら、カーネルは誰も指定していない問いに答えねばなりません。<strong>どちらの名前を、という問いです。</strong>
+
+これは API の不足ではありません。<strong>操作として解決しない要求</strong>です。三つの名前を持つ実体は、一つ削除した時点で「四分の三だけ削除された」のではありませんし、ディスクリプタの削除を「すべての名前の削除」と解釈すべき根拠もありません。それは呼び出し元が要求したものとは別の、はるかに破壊的な操作です。
+
+<Callout title="Linux に無いというだけの話ではありません">
+FreeBSD には `funlinkat` があります。ただし、その実際の仕様を見る価値があります。この呼び出しは<strong>ディスクリプタと名前の両方</strong>を取り、その名前がディスクリプタと同一のファイルを指している場合に限り名前を削除します。つまり<strong>検証付きの unlink</strong> であって、ディスクリプタによる unlink ではありません。削除対象はやはり名前です。
+
+Linux に相当するものはありません。`AT_EMPTY_PATH` 付きの `linkat` はディスクリプタに新しい名前を与えられるので抜け道に見えますが、`CAP_DAC_READ_SEARCH`——実質的に root——を要求するため、通常のプログラムからは利用できません。
+</Callout>
+
+したがって、あらゆるシステムにおいて、あらゆる削除は何らかの名前を指定します。そして名前を指定するとは、パスを解決するということです。
+
+## 経路としてのパスと、掴んだ実体としてのディスクリプタ
+
+パスの解決は「歩く」処理です。`work/report` は、現在のディレクトリで `work` を引き、得られた inode がディレクトリであることを確認し、その中で `report` を引く、という手順を意味します。各成分は、<strong>その瞬間のファイルシステムの状態</strong>に対する新規の検索です。
+
+カーネルは呼び出しをまたいでこの歩行結果をキャッシュしてはくれません。同じパスに対する連続した二回の呼び出しは、独立した二回の歩行であり、その間にファイルシステムが変化することは妨げられていません。
+
+ディスクリプタはその逆です。特定の inode を一度掴み、保持し続けます。その上位にある名前に何が起きても、掴んだ先は動きません。
+
+<Diagram caption="同じ対象への二通りの到達経路。パスは呼び出しのたびに歩き直され、その時点の名前が指す先に従います。ディスクリプタは一度だけ解決され、以後は動きません。">
+  <svg viewBox="0 0 720 250" role="img" aria-label="パスは呼び出しごとに成分単位で解決されるのに対し、ファイルディスクリプタは inode を直接参照し後続の rename の影響を受けない">
+    <defs>
+      <marker id="route-arrow-ja" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+    </defs>
+    <text x="24" y="28" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">パス経由 — 呼び出しごとに歩き直す</text>
+    <rect x="24" y="44" width="92" height="42" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="70" y="70" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">/</text>
+    <line x1="120" y1="65" x2="156" y2="65" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#route-arrow-ja)" />
+    <rect x="160" y="44" width="110" height="42" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="215" y="70" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">work</text>
+    <line x1="274" y1="65" x2="310" y2="65" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#route-arrow-ja)" />
+    <rect x="314" y="44" width="110" height="42" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="369" y="70" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">report</text>
+    <line x1="428" y1="65" x2="500" y2="102" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#route-arrow-ja)" />
+    <text x="150" y="112" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6">各箱は次回に別の答えを返しうる検索</text>
+    <rect x="506" y="86" width="190" height="60" fill="none" stroke="currentColor" strokeOpacity="0.6" strokeWidth="1.8" />
+    <text x="601" y="112" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="middle">inode 1900550</text>
+    <text x="601" y="133" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.65" textAnchor="middle">実体</text>
+    <text x="24" y="190" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">ディスクリプタ経由 — 一度解決し、以後保持</text>
+    <rect x="24" y="204" width="130" height="40" fill="none" stroke="currentColor" strokeOpacity="0.6" strokeWidth="1.8" />
+    <text x="89" y="229" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">fd 3</text>
+    <line x1="158" y1="224" x2="560" y2="152" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#route-arrow-ja)" />
+    <text x="330" y="212" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6" textAnchor="middle">途中に検索は無い</text>
+  </svg>
+</Diagram>
+
+ディレクトリに対してディスクリプタを保持したまま、そのディレクトリをパスの下から rename してみます。
+
+```text
+renamed work -> work2
+  unlink('work/report')        -> ENOENT
+  unlinkat(dirfd,'report')     -> ok
+  work2/report gone            -> True
+```
+
+パスは解決しなくなりました。`work` はもう存在しません。ディスクリプタはその影響を受けていません。掴んでいたのは `work` という名前ではなく、ディレクトリそのものだったからです。
+
+## 同じ隙間に他者が入るとき
+
+上の rename が失ったのは呼び出し一回分だけです。条件を一つ変えると、失われるのはデータになります。ディレクトリを退避させた後に、別のプログラムが元の名前で新しいディレクトリを作成した場合です。
+
+```text
+  path  w/report  now inode=1900552 contents='THEIRS'
+  dirfd w-moved/report inode=1900550 contents='mine'
+
+  unlink('w/report')           -> ok   <- removed THEIRS
+  their file still there?      -> False
+```
+
+プログラムが削除しようとしたのは自分のファイルです。使用したパスは、確認した時点では正しいものでした。`unlink` が実行される時点では同じパスが他者のファイルを意味しており、消えたのはそちらです。
+
+ここに特殊な事情は何もありません。プログラムは API を誤用していません。C ライブラリが提供する唯一の削除手段を使っただけで、その足元でファイルシステムが動いたのです。これは<strong>パスを確認してから操作し、その間の競合に負ける</strong>という一群の不具合の典型であり、カーネルに二つ目の指定方法が加わった理由でもあります。
+
+## `*at` ファミリが短縮するもの
+
+`openat`、`unlinkat`、`renameat`、`fstatat`、`mkdirat`。いずれもディレクトリディスクリプタと名前を取り、ルートからではなくそのディスクリプタを基点として名前を解決します。
+
+得られるものは明確です。`a/b/c/d/report` をパスで解決すれば五回の検索が発生し、そのいずれもが呼び出しの合間に差し替えられうる。`a/b/c/d` のディスクリプタを保持して `report` を要求すれば、検索は<strong>一回</strong>です。最後の成分より上のすべてが、攻撃者にとっても——あるいは単に並行して動いている別のプログラムにとっても——差し替えの対象でなくなります。
+
+一方で、その最後の一回は取り除けません。`unlinkat(dirfd, "report", 0)` は、固定されたディレクトリの中で `report` という名前を解決しますし、確認から削除までの一瞬に何かがそれを置き換えることは依然としてありえます。これが下限であり、最初の節と同じ下限です。削除は名前に対する操作だからです。
+
+<Diagram caption="親を固定すると、検索は最後の一回を除いてすべて消えます。その一回は実装上の手抜きではなく、削除という操作の定義そのものです。">
+  <svg viewBox="0 0 720 196" role="img" aria-label="長いパスの解決は多数の検索を並行変更に晒すが、ディレクトリディスクリプタを固定すると最後の名前検索だけが残る">
+    <text x="24" y="28" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">unlink("a/b/c/d/report")</text>
+    <rect x="24" y="42" width="68" height="34" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="58" y="64" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">a</text>
+    <rect x="98" y="42" width="68" height="34" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="132" y="64" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">b</text>
+    <rect x="172" y="42" width="68" height="34" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="206" y="64" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">c</text>
+    <rect x="246" y="42" width="68" height="34" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="280" y="64" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">d</text>
+    <rect x="320" y="42" width="96" height="34" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="368" y="64" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">report</text>
+    <text x="440" y="64" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.7">晒される検索 5 回</text>
+    <text x="24" y="126" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">unlinkat(dirfd, "report", 0)</text>
+    <rect x="24" y="140" width="290" height="34" fill="none" stroke="currentColor" strokeOpacity="0.62" strokeWidth="1.8" />
+    <text x="169" y="162" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">dirfd — 保持済み、検索しない</text>
+    <rect x="320" y="140" width="96" height="34" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="368" y="162" fontFamily="monospace" fontSize="12" fill="currentColor" textAnchor="middle">report</text>
+    <text x="440" y="162" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.7">晒される検索 1 回</text>
+  </svg>
+</Diagram>
+
+## `rmdir` にある非対称性
+
+残った一回の検索によって、問題は結局元のままではないか、と思えます。ディレクトリに関しては、ほぼそうではありません。その理由は、必要になるまでは単なる不便に見える一つの規則にあります。
+
+`rmdir` は、中身のあるディレクトリの削除を拒否します。
+
+```text
+  rmdir('full')   -> ENOTEMPTY
+  rmdir('empty')  -> ok
+  unlink on a dir -> EISDIR
+```
+
+したがって、ツリーを安全に削除したいプログラムは次の手順を取れます。ディスクリプタを辿って降りながら中身を空にし——この過程で名前を参照することはありません——最後にはじめて `rmdir` に名前を渡す。その時点で、対象としているディレクトリは空です。
+
+万一その最後の一瞬に名前が差し替えられていたとしても、`rmdir` が成功しうる相手は<strong>別の空ディレクトリ</strong>だけです。最悪の事態が「他者の中身の詰まったツリーを失う」から「他者の空フォルダを失う」に変わりました。無害ではありませんが被害の種類が異なりますし、これは元から存在した規則から無償で得られるものです。
+
+ファイルにはこれに相当する規則がありません。`unlink` はその名前にあるものを削除します。窓はシステムコール二回分の幅で開いており、実在します。
+
+<Callout title="明記しておくべきこと">
+これは窓を狭める話であって、閉じる話ではありません。「自分が作成したものだけを削除する」と称する設計は、Linux において、プラットフォームが提供していない保証を主張していることになります。誠実な書き方は下限がどこにあるかを述べるものであり、そのほうが、実質を伴わない保証よりも次の読み手の役に立ちます。
+</Callout>
+
+## フラグの選択と、ひとつの落とし穴
+
+基点として使うディレクトリを開く処理は、`open(path, O_RDONLY)` とは少し異なります。四つのフラグがそれぞれ役割を持ちます。
+
+- `O_DIRECTORY` — ディレクトリでなければ失敗させる。別のものを開いてから気づく事態を避けます
+- `O_NOFOLLOW` — 最終成分のシンボリックリンクを辿らない
+- `O_NONBLOCK` — その名前に FIFO が置かれていた場合、`open` 自体が来ないかもしれない書き手を待ち続けるのを防ぎます
+- `O_CLOEXEC` — ディスクリプタを子プロセスへ漏らさない
+
+落とし穴は `O_NOFOLLOW` です。誤った場所に置いても正しく見えるため、正確に述べる価値があります。
+
+これは<strong>削除対象のエントリ</strong>に付けるものです。そこではリンクがその指す先の代わりに立つことを防ぎます。<strong>親ディレクトリに付けるものではありません</strong>。シンボリックリンク経由で到達するフォルダに利用者が入っていることは普通にあり、その親を開くのを拒否しても何も守られず、単に処理が放棄されるだけです。そして、そこでリンクを辿ることが安全なのは別の理由によります。エントリに対する同一性の照合は、到達したディレクトリが実際にそのエントリを保持している場合にしか通らないからです。
+
+<Callout title="フラグを足すと errno が変わる">
+この点を確認する過程で、持ち帰る価値のある事実が出てきました。`O_NOFOLLOW` の下でシンボリックリンクに対して報告されるエラーは、`O_DIRECTORY` が同時に指定されているかどうかで変わります。
+
+| flags | `adir` | `afile` | ディレクトリへのリンク | ファイルへのリンク | 切れたリンク |
+| --- | --- | --- | --- | --- | --- |
+| `O_RDONLY` | ok | ok | ok | ok | `ENOENT` |
+| `O_RDONLY\|O_NOFOLLOW` | ok | ok | `ELOOP` | `ELOOP` | `ELOOP` |
+| `O_RDONLY\|O_DIRECTORY` | ok | `ENOTDIR` | ok | `ENOTDIR` | `ENOENT` |
+| `O_RDONLY\|O_DIRECTORY\|O_NOFOLLOW` | ok | `ENOTDIR` | `ENOTDIR` | `ENOTDIR` | `ENOTDIR` |
+
+同一の条件——名前にシンボリックリンクがあり、`O_NOFOLLOW` が指定されている——が、二行目では `ELOOP`、四行目では `ENOTDIR` として報告されます。`O_DIRECTORY` が先に判定され、`O_NOFOLLOW` が発言する前に答えてしまうためです。
+
+「リンクだったので開かずに削除する」という意図のコードは、したがって<strong>両方</strong>を受け付ける必要があります。片方しか挙げていないコメントは、規則ではなく、たまたま実行した一例を記述していることになります。
+</Callout>
+
+もう一つ、鵜呑みにすべきでないものがあります。`readdir` が返す `d_type` フィールド、すなわちエントリがディレクトリかどうかを示す値です。いくつかのファイルシステムはここに `DT_UNKNOWN` を入れ、確認は呼び出し側に委ねます。`openat` に `O_DIRECTORY` を渡すことがその確認にあたり、しかも同じ呼び出しで、再帰的な walk が次に必要とするディスクリプタが手に入ります。
+
+## 狭めることと、閉じること
+
+表題の主張は「Linux に呼び出しが一つ足りない」よりも強いものです。「このディスクリプタを削除せよ」は機能要望ではありません。ディスクリプタが指すのは実体であり、削除が作用するのは名前であり、一つの実体は複数の名前を持ちうるからです。
+
+そこから導かれることを整理すると、この領域全体の要約になります。
+
+- あらゆる削除は名前を解決する。したがってあらゆる削除に窓がある
+- ディレクトリディスクリプタの保持は、最終成分を除く歩行のすべてを取り除く
+- ディレクトリについては、`rmdir` が空でない対象を拒否することで、その最後の窓が招きうる被害が小さくなる
+- それ以外については窓は残る。そこで有用なのは、窓がどこにあるかを書き残すことである
+
+この記事には、手法を解決策として提示して締めくくる版もありえました。そのほうが満足感はありますが、真実からは遠のきます。手法自体は良いものです——ディスクリプタを基点とした処理はパスを歩き直すより厳密に優れており、`*at` 系の呼び出しはそのために存在します。ただし最後の検索は、誰かが失念した細部ではありません。それが削除という操作そのものです。
