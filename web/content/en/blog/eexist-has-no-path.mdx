@@ -49,7 +49,7 @@ The number is the inode number. Everything file-like — the contents, the size,
   </svg>
 </Diagram>
 
-This structure is why the system call that deletes a file is named `unlink`. What it removes is the name. The body goes away when **no name points at it any more**.
+This structure is why the system call that deletes a file is named `unlink`. What it removes is the name. The body is reclaimed only once **nothing refers to it at all** — no directory entry, and no open descriptor or mapping held by a running process. A file whose last name is gone while a process still has it open keeps its contents until that process closes it.
 
 Two consequences fall out, and both come back repeatedly below.
 
@@ -88,11 +88,14 @@ The correct sequence writes the whole thing under another name and swaps it in w
 write("notes.txt.tmp", the whole new contents)   <- notes.txt is untouched if this dies
 fsync("notes.txt.tmp")
 rename("notes.txt.tmp", "notes.txt")             <- swaps atomically
+fsync(directory of "notes.txt")                  <- and the swap itself survives a crash
 
 # notes.txt is either the old contents or the new ones. No halfway state exists.
 ```
 
-This works **because `rename` does not refuse to replace**. If it did, the sequence would need a delete first, and a crash in the gap between the delete and the rename would take the file with it.
+The last line is the one most often left out. `rename` is atomic against other processes the moment it returns, but the directory entry it rewrote is not necessarily on disk: without that `fsync`, a crash can come back with the old name still in place. Atomic and durable are separate properties.
+
+All of it works **because `rename` does not refuse to replace**. If it did, the sequence would need a delete first, and a crash in the gap between the delete and the rename would take the file with it.
 
 ### Renames that refuse to replace
 
@@ -104,13 +107,17 @@ So there is a rename that refuses to replace: `renameat2(RENAME_NOREPLACE)` on L
 
 This requires care. The flag travels through the kernel's common layer and ends up at **the individual filesystem's driver**, and the driver does not necessarily implement it.
 
-- **overlayfs** (which is usually what a Docker container's working directory is) → `EINVAL`
-- **Linux kernels older than 4.9** → `ENOSYS`
+- **A kernel with no `renameat2` at all** (Linux before 3.15) → `ENOSYS`
+- **A filesystem whose driver does not take the flag** → `EINVAL`. The syscall has existed since 3.15, but `RENAME_NOREPLACE` reached many filesystems only in 4.9, and overlayfs — which is usually what a Docker container's working directory is — still refuses it.
 - **non-APFS volumes on macOS** → `ENOTSUP`
+
+The distinction matters when reading the errno: `ENOSYS` is the kernel saying the call does not exist, `EINVAL` is a driver saying it will not take that flag.
 
 A no-replace rename is therefore useful where available, but **must not be assumed to exist**. Where it is missing, a fallback is required. The simplest fallback is to **copy, then delete the original.**
 
-Everything that follows happens inside that fallback. On ext4 or APFS the rename succeeds in one call and none of this code runs at all.
+This is where a **move** can end up. Worth being precise about, because it is easy to conclude that ext4 and APFS are exempt from everything below: there, a move finishes in one rename and the fallback never runs.
+
+A **copy** has no such shortcut. There is no rename that duplicates a tree, so a copy always walks it, claiming every entry as it goes — on ext4 and APFS exactly as anywhere else. So the problem below reaches a cross-volume move only where the no-replace rename is missing, and reaches an ordinary copy-paste everywhere.
 
 <Callout title="Note: an operation that is not atomic">
 One further operation is **not** atomic. `remove_dir_all`, which deletes a whole directory tree, removes the files inside one at a time. If it fails partway, **the tree is left partly removed.** This property becomes significant in a later section.
@@ -413,12 +420,9 @@ What I did instead was write down what closing it takes, in an issue: `unlinkat`
 
 ## Handling conditions that cannot be reproduced
 
-The central case of this defect cannot be reproduced. It requires two conditions simultaneously.
+The central case of this defect cannot be reproduced. It needs another process to create a colliding name inside the destination tree during the seconds the copy is writing it — a race, on someone else's schedule, that a test cannot wait for.
 
-- a filesystem that refuses `RENAME_NOREPLACE` (overlayfs, for instance)
-- **and** another process writing into the tree mid-copy
-
-On ext4 or APFS the rename finishes in one call and the code in question never runs. CI is ubuntu and macOS. **A test that does not run where it was written is not a test.**
+For a cross-volume move it needs a second condition on top: a filesystem that refuses `RENAME_NOREPLACE`, such as overlayfs, since on ext4 or APFS the move finishes in one rename and the copying code never runs. CI is ubuntu and macOS, where it does not. **A test that does not run where it was written is not a test.**
 
 In place of the central case, the test pins **the property that determines it** — that a claim is determined by where it failed, never by the kind of error.
 

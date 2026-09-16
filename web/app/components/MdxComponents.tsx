@@ -23,7 +23,11 @@ function Callout({ title, children }: { title?: string; children: ReactNode }) {
 function Diagram({ caption, children }: { caption?: ReactNode; children: ReactNode }) {
   return (
     <figure className="my-9">
-      <div className="overflow-x-auto [&>svg]:h-auto [&>svg]:w-full [&>svg]:min-w-[560px]">
+      {/* Focusable because it scrolls: below 560px the figure outgrows the
+          measure, and a container with no focusable child cannot be reached
+          with the keyboard in Safari, which leaves the right-hand side of the
+          diagram unreachable there. `:focus-visible` in `app.css` draws it. */}
+      <div tabIndex={0} className="overflow-x-auto [&>svg]:h-auto [&>svg]:w-full [&>svg]:min-w-[560px]">
         {children}
       </div>
       {caption ? (
