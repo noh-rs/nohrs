@@ -22,7 +22,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use nohrs_core::errors::{Error, Result};
-use nohrs_services::search::scoped::{self, Options, Outcome, Subject};
+use nohrs_services::search::scoped::{self, Answered, Engine, Options, Outcome, Subject};
 
 /// Operands and flags for the `search` subcommand.
 #[derive(clap::Args, Debug, Default, Clone)]
@@ -72,15 +72,55 @@ pub struct Args {
     #[arg(long)]
     pub no_ignore: bool,
 
+    /// Which engine answers the search.
+    #[arg(long, value_name = "ENGINE", default_value_t = EngineChoice::Auto, value_enum)]
+    pub engine: EngineChoice,
+
     /// Print the matches as JSON, one object per line.
     #[arg(long)]
     pub json: bool,
+}
+
+/// The `--engine` spellings, kept apart from
+/// [`nohrs_services::search::scoped::Engine`] so that the services crate owes
+/// nothing to clap.
+#[derive(clap::ValueEnum, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum EngineChoice {
+    /// Ask the index when it can answer, and read the files when it cannot.
+    #[default]
+    Auto,
+    /// Insist on the index, and fail with the reason when it cannot answer.
+    Index,
+    /// Read the files, whatever the index may know.
+    Walk,
+}
+
+impl std::fmt::Display for EngineChoice {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let spelling = match self {
+            Self::Auto => "auto",
+            Self::Index => "index",
+            Self::Walk => "walk",
+        };
+        formatter.write_str(spelling)
+    }
+}
+
+impl From<EngineChoice> for Engine {
+    fn from(choice: EngineChoice) -> Self {
+        match choice {
+            EngineChoice::Auto => Engine::Auto,
+            EngineChoice::Index => Engine::Index,
+            EngineChoice::Walk => Engine::Walk,
+        }
+    }
 }
 
 impl Args {
     /// The scope and query interpretation these flags ask for.
     pub fn options(&self) -> Options {
         Options {
+            engine: self.engine.into(),
             subject: match (self.name, self.content) {
                 (true, false) => Subject::Names,
                 (false, true) => Subject::Contents,
@@ -161,6 +201,7 @@ pub struct Session<'a> {
     errors: &'a mut dyn Write,
     summary: Summary,
     printed_paths: HashSet<PathBuf>,
+    noted_engine: bool,
 }
 
 impl<'a> Session<'a> {
@@ -176,6 +217,7 @@ impl<'a> Session<'a> {
             errors,
             summary: Summary::default(),
             printed_paths: HashSet::new(),
+            noted_engine: false,
         }
     }
 
@@ -207,6 +249,7 @@ impl<'a> Session<'a> {
             match self.backend.search(&root, &args.query, &options) {
                 Ok(outcome) => {
                     self.summary.truncated |= outcome.truncated;
+                    self.note_engine(&outcome)?;
                     self.report(args, &outcome)?;
                 }
                 Err(error) => {
@@ -234,6 +277,23 @@ impl<'a> Session<'a> {
             writeln!(self.errors, "noh search: no matches")?;
         }
         Ok(self.summary)
+    }
+
+    /// Say once that the index did not answer, and why.
+    ///
+    /// Silently reading every file when the user believes an index is doing the
+    /// work is how a search comes to look mysteriously slow, or mysteriously
+    /// thorough; either way it is a thing they can act on (build the index,
+    /// drop a flag), so it is said rather than logged.
+    fn note_engine(&mut self, outcome: &Outcome) -> io::Result<()> {
+        let Answered::Walk(Some(reason)) = &outcome.answered_by else {
+            return Ok(());
+        };
+        if self.noted_engine {
+            return Ok(());
+        }
+        self.noted_engine = true;
+        writeln!(self.errors, "noh search: read the files: {reason}")
     }
 
     fn report(&mut self, args: &Args, outcome: &Outcome) -> io::Result<()> {
@@ -311,6 +371,7 @@ mod tests {
     use std::cell::RefCell;
 
     use nohrs_services::search::SearchResult;
+    use nohrs_services::search::scoped::NoIndex;
 
     use super::*;
 
@@ -334,6 +395,7 @@ mod tests {
             Self::answering(vec![Ok(Outcome {
                 results,
                 truncated: false,
+                ..Outcome::default()
             })])
         }
     }
@@ -455,6 +517,7 @@ mod tests {
             Ok(Outcome {
                 results: vec![line("docs/notes.md", 1, "a(")],
                 truncated: false,
+                ..Outcome::default()
             }),
         ]);
         let args = Args {
@@ -555,10 +618,12 @@ mod tests {
             Ok(Outcome {
                 results: vec![line("src/a.rs", 1, "needle"), line("src/b.rs", 2, "needle")],
                 truncated: false,
+                ..Outcome::default()
             }),
             Ok(Outcome {
                 results: vec![line("docs/c.md", 3, "needle")],
                 truncated: true,
+                ..Outcome::default()
             }),
         ]);
         let args = Args {
@@ -589,6 +654,7 @@ mod tests {
         let backend = FakeBackend::answering(vec![Ok(Outcome {
             results: vec![line("src/a.rs", 1, "needle")],
             truncated: false,
+            ..Outcome::default()
         })]);
         let args = Args {
             paths: vec![PathBuf::from("src"), PathBuf::from("docs")],
@@ -600,6 +666,42 @@ mod tests {
 
         assert_eq!(backend.asked.borrow().len(), 1, "docs was searched anyway");
         assert!(run.summary.truncated);
+    }
+
+    #[test]
+    fn the_index_standing_aside_is_reported_once_and_not_per_operand() {
+        let aside = || {
+            Ok(Outcome {
+                answered_by: Answered::Walk(Some(NoIndex::NotBuilt)),
+                ..Outcome::default()
+            })
+        };
+        let backend = FakeBackend::answering(vec![aside(), aside()]);
+        let args = Args {
+            paths: vec![PathBuf::from("src"), PathBuf::from("docs")],
+            ..args("needle")
+        };
+
+        let run = run(&backend, &args);
+
+        assert_eq!(
+            run.errors,
+            "noh search: read the files: no index has been built yet\nnoh search: no matches\n"
+        );
+    }
+
+    #[test]
+    fn a_walk_that_was_asked_for_is_not_explained() {
+        let backend = FakeBackend::answering(vec![Ok(Outcome {
+            results: vec![line("src/a.rs", 1, "needle")],
+            ..Outcome::default()
+        })]);
+        let args = Args {
+            engine: EngineChoice::Walk,
+            ..args("needle")
+        };
+
+        assert!(run(&backend, &args).errors.is_empty());
     }
 
     #[test]
@@ -621,6 +723,7 @@ mod tests {
         assert_eq!(
             *options,
             Options {
+                engine: Engine::Auto,
                 subject: Subject::Both,
                 max_depth: Some(2),
                 include_hidden: true,

@@ -7,7 +7,7 @@
 //! so, instead of being handed the one whole-filesystem scan the root scope
 //! needs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use grep::matcher::Matcher;
@@ -16,6 +16,7 @@ use grep::searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch
 use ignore::WalkBuilder;
 
 use super::SearchResult;
+use super::indexer::IndexReader;
 
 /// What the query is matched against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -42,9 +43,81 @@ impl Subject {
     }
 }
 
+/// Which engine answers a search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Engine {
+    /// Let the index answer when it can, and read the files when it cannot.
+    #[default]
+    Auto,
+    /// Insist on the index, failing with the reason when it cannot answer.
+    Index,
+    /// Read the files, whatever the index may know.
+    Walk,
+}
+
+/// Why a search did not use the index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoIndex {
+    /// Nothing has built an index yet.
+    NotBuilt,
+    /// The index exists but holds no documents.
+    Empty,
+    /// The search root is not inside the tree the index covers.
+    OutOfScope {
+        /// The tree the index does cover.
+        covers: PathBuf,
+    },
+    /// The query is a pattern; the index answers plain-text queries.
+    PatternQuery,
+    /// An option was given that only a walk can honour.
+    WalkOnlyOptions,
+    /// The index is there but cannot be read.
+    Unusable(String),
+}
+
+impl std::fmt::Display for NoIndex {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotBuilt => write!(formatter, "no index has been built yet"),
+            Self::Empty => write!(formatter, "the index is empty"),
+            Self::OutOfScope { covers } => {
+                write!(formatter, "the index only covers {}", covers.display())
+            }
+            Self::PatternQuery => write!(
+                formatter,
+                "the query is a pattern, and the index answers plain-text queries"
+            ),
+            Self::WalkOnlyOptions => write!(
+                formatter,
+                "--max-depth, --hidden and --no-ignore bound a walk, and the index \
+                 cannot re-apply the exclusions it was built with"
+            ),
+            Self::Unusable(reason) => write!(formatter, "{reason}"),
+        }
+    }
+}
+
+/// Which engine answered a search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answered {
+    /// The index chose the files, and their lines were matched in them.
+    Index,
+    /// The tree was walked. The reason is present when the index was welcome
+    /// to answer and could not.
+    Walk(Option<NoIndex>),
+}
+
+impl Default for Answered {
+    fn default() -> Self {
+        Self::Walk(None)
+    }
+}
+
 /// How far a search reaches and how its query is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
+    /// Which engine should answer.
+    pub engine: Engine,
     /// Whether to match file contents or the names of the entries walked.
     pub subject: Subject,
     /// How many directories below the root to descend; `None` for no limit.
@@ -64,6 +137,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            engine: Engine::default(),
             subject: Subject::default(),
             max_depth: None,
             include_hidden: false,
@@ -84,11 +158,14 @@ pub struct Outcome {
     /// exhausted. It says the search stopped early, not that more matches
     /// certainly exist: a limit reached by the very last match also sets it.
     pub truncated: bool,
+    /// Which engine produced the results, and why it was not the index.
+    pub answered_by: Answered,
 }
 
-/// Walks `root` and returns what `query` matched there.
+/// Searches `root` for `query` with whichever engine [`Options::engine`] allows.
 ///
-/// Fails only when `query` is not a pattern the matcher can build. A root that
+/// Fails when `query` is not a pattern the matcher can build, and when
+/// [`Engine::Index`] was insisted on and the index cannot answer. A root that
 /// cannot be read, or an individual file that cannot be searched, is reported
 /// through `tracing` and skipped: one unreadable directory in a large tree is
 /// normal and must not throw away the rest of the results.
@@ -97,15 +174,37 @@ pub struct Outcome {
     name = "search.scan",
     level = "debug",
     skip_all,
-    fields(root = %root.display(), subject = ?options.subject)
+    fields(root = %root.display(), subject = ?options.subject, engine = ?options.engine)
 )]
 pub fn search(root: &Path, query: &str, options: &Options) -> Result<Outcome> {
     let matcher = build_matcher(query, options)?;
-    let mut outcome = Outcome::default();
     if options.limit == Some(0) {
-        return Ok(outcome);
+        return Ok(Outcome::default());
     }
 
+    match options.engine {
+        Engine::Walk => Ok(walk(root, &matcher, options, Answered::Walk(None))),
+        Engine::Index => match usable_index(root, query, options) {
+            Ok(index) => from_index(&index, query, &matcher, options),
+            Err(reason) => Err(anyhow::anyhow!(
+                "the index cannot answer this search: {reason}"
+            )),
+        },
+        Engine::Auto => match usable_index(root, query, options) {
+            Ok(index) => from_index(&index, query, &matcher, options),
+            // The index not being able to answer is not a failure: the files
+            // themselves are still there to be read, which is slower and right.
+            Err(reason) => Ok(walk(root, &matcher, options, Answered::Walk(Some(reason)))),
+        },
+    }
+}
+
+/// Walks the tree below `root`, matching every entry it reaches.
+fn walk(root: &Path, matcher: &RegexMatcher, options: &Options, answered_by: Answered) -> Outcome {
+    let mut outcome = Outcome {
+        answered_by,
+        ..Outcome::default()
+    };
     let respect_ignore_files = options.respect_ignore_files;
     let walker = WalkBuilder::new(root)
         .max_depth(options.max_depth)
@@ -117,13 +216,7 @@ pub fn search(root: &Path, query: &str, options: &Options) -> Result<Outcome> {
         .parents(respect_ignore_files)
         .build();
 
-    let mut searcher = SearcherBuilder::new()
-        // A match in a binary file is a line the caller cannot show — it would
-        // put control bytes on a terminal — so stop at the first NUL byte, the
-        // way ripgrep does by default.
-        .binary_detection(BinaryDetection::quit(b'\x00'))
-        .line_number(true)
-        .build();
+    let mut searcher = line_searcher();
 
     for entry in walker {
         let entry = match entry {
@@ -142,47 +235,229 @@ pub fn search(root: &Path, query: &str, options: &Options) -> Result<Outcome> {
             continue;
         }
 
-        let path = entry.path();
-        if options.subject.includes_names() {
-            // A name that is not UTF-8 cannot be matched against the query, and
-            // is skipped rather than matched by accident.
-            if let Some(name) = entry.file_name().to_str() {
-                if matcher.is_match(name.as_bytes()).unwrap_or(false) {
-                    outcome.results.push(SearchResult {
-                        path: path.to_path_buf(),
-                        line_number: 0,
-                        line_content: String::new(),
-                    });
-                }
-            }
-        }
-
-        let room = remaining(options.limit, outcome.results.len());
-        if options.subject.includes_contents()
-            && room != Some(0)
-            && entry.file_type().is_some_and(|kind| kind.is_file())
-        {
-            let sink = Collector {
-                path,
-                results: &mut outcome.results,
-                room,
-            };
-            if let Err(error) = searcher.search_path(&matcher, path, sink) {
-                // Unreadable or undecodable files are expected in a walk of
-                // someone's filesystem; ripgrep skips them too.
-                tracing::debug!("cannot search {}: {error}", path.display());
-            }
-        }
-
-        if let Some(limit) = options.limit {
-            if outcome.results.len() >= limit {
-                outcome.truncated = true;
-                break;
-            }
+        collect_from(
+            entry.path(),
+            is_dir,
+            matcher,
+            &mut searcher,
+            options,
+            &mut outcome,
+        );
+        if reached_limit(options, &mut outcome) {
+            break;
         }
     }
 
+    outcome
+}
+
+/// Matches `path` — its name, the lines inside it, or both — into `outcome`.
+fn collect_from(
+    path: &Path,
+    is_dir: bool,
+    matcher: &RegexMatcher,
+    searcher: &mut Searcher,
+    options: &Options,
+    outcome: &mut Outcome,
+) {
+    if options.subject.includes_names() {
+        // A name that is not UTF-8 cannot be matched against the query, and is
+        // skipped rather than matched by accident.
+        let name = path.file_name().and_then(|name| name.to_str());
+        if name.is_some_and(|name| matcher.is_match(name.as_bytes()).unwrap_or(false)) {
+            outcome.results.push(SearchResult {
+                path: path.to_path_buf(),
+                line_number: 0,
+                line_content: String::new(),
+            });
+        }
+    }
+
+    let room = remaining(options.limit, outcome.results.len());
+    if options.subject.includes_contents() && room != Some(0) && !is_dir {
+        let sink = Collector {
+            path,
+            results: &mut outcome.results,
+            room,
+        };
+        if let Err(error) = searcher.search_path(matcher, path, sink) {
+            // Unreadable or undecodable files are expected in a walk of
+            // someone's filesystem; ripgrep skips them too.
+            tracing::debug!("cannot search {}: {error}", path.display());
+        }
+    }
+}
+
+/// Whether the search has collected all the caller asked for, marking the
+/// outcome truncated when it has.
+fn reached_limit(options: &Options, outcome: &mut Outcome) -> bool {
+    match options.limit {
+        Some(limit) if outcome.results.len() >= limit => {
+            outcome.truncated = true;
+            true
+        }
+        _ => false,
+    }
+}
+
+fn line_searcher() -> Searcher {
+    SearcherBuilder::new()
+        // A match in a binary file is a line the caller cannot show — it would
+        // put control bytes on a terminal — so stop at the first NUL byte, the
+        // way ripgrep does by default.
+        .binary_detection(BinaryDetection::quit(b'\x00'))
+        .line_number(true)
+        .build()
+}
+
+/// How many candidate files the index is asked for.
+///
+/// The index ranks by relevance, so a cap keeps the pool to the documents worth
+/// opening; the caller's own limit counts matches, of which one file can hold
+/// many, and so cannot be used here.
+const INDEX_CANDIDATE_POOL: usize = 10_000;
+
+/// The index, and the search root resolved against the paths it stores.
+struct UsableIndex {
+    reader: IndexReader,
+    /// The root as the filesystem canonically names it, which is how indexed
+    /// paths are spelled.
+    canonical_root: PathBuf,
+    /// The root as the caller wrote it, which is how results are reported: a
+    /// search of `.` should not start answering in absolute paths because the
+    /// index happened to take the query.
+    given_root: PathBuf,
+}
+
+/// Whether the index can answer this search, and if not, why not.
+fn usable_index(
+    root: &Path,
+    query: &str,
+    options: &Options,
+) -> std::result::Result<UsableIndex, NoIndex> {
+    // The index answers term queries; a regular expression means something else
+    // to it entirely, and `-F` literals may still carry characters its query
+    // parser reads as syntax. Both belong to the files themselves.
+    if !is_plain_text(query) {
+        return Err(NoIndex::PatternQuery);
+    }
+    if options.max_depth.is_some() || options.include_hidden || !options.respect_ignore_files {
+        // These bound a walk. The index was built with its own exclusions and
+        // cannot re-apply them, so honouring the flags means reading the files.
+        return Err(NoIndex::WalkOnlyOptions);
+    }
+
+    let reader = match IndexReader::open_default() {
+        Ok(Some(reader)) => reader,
+        Ok(None) => return Err(NoIndex::NotBuilt),
+        Err(error) => return Err(NoIndex::Unusable(format!("{error:#}"))),
+    };
+    match reader.document_count() {
+        Ok(0) => return Err(NoIndex::Empty),
+        Ok(_) => {}
+        Err(error) => return Err(NoIndex::Unusable(format!("{error:#}"))),
+    }
+
+    // Both sides are canonicalized: either may reach the same directory through
+    // a symlink, and a prefix comparison of two different spellings is a "no".
+    let covers = reader
+        .content_root()
+        .canonicalize()
+        .unwrap_or_else(|_| reader.content_root().to_path_buf());
+    let canonical_root = root.canonicalize().map_err(|_| NoIndex::OutOfScope {
+        covers: covers.clone(),
+    })?;
+    if !canonical_root.starts_with(&covers) {
+        return Err(NoIndex::OutOfScope { covers });
+    }
+
+    Ok(UsableIndex {
+        reader,
+        canonical_root,
+        given_root: root.to_path_buf(),
+    })
+}
+
+/// Lets the index choose which files to open, then matches them itself.
+///
+/// The index knows which documents hold the query's terms, not where in the
+/// file they are, so the lines still come from the files — which also means a
+/// document the index has not caught up with contributes nothing rather than a
+/// stale line.
+fn from_index(
+    index: &UsableIndex,
+    query: &str,
+    matcher: &RegexMatcher,
+    options: &Options,
+) -> Result<Outcome> {
+    let candidates = index
+        .reader
+        .candidates(query, INDEX_CANDIDATE_POOL)
+        .context("the index could not be queried")?;
+
+    let mut outcome = Outcome {
+        answered_by: Answered::Index,
+        ..Outcome::default()
+    };
+    let mut searcher = line_searcher();
+    for candidate in candidates {
+        if !candidate.starts_with(&index.canonical_root) {
+            continue;
+        }
+        // The index holds dot-files; a walk hides them unless asked. Keeping the
+        // two engines' defaults apart would make `--engine` change the answer.
+        if !options.include_hidden && has_hidden_component(&candidate, &index.canonical_root) {
+            continue;
+        }
+        let Ok(metadata) = candidate.symlink_metadata() else {
+            // Indexed, then deleted. Reporting it would be answering from a
+            // record of a file rather than from the file.
+            continue;
+        };
+        let path = as_given(&candidate, &index.canonical_root, &index.given_root);
+        collect_from(
+            &path,
+            metadata.is_dir(),
+            matcher,
+            &mut searcher,
+            options,
+            &mut outcome,
+        );
+        if reached_limit(options, &mut outcome) {
+            break;
+        }
+    }
     Ok(outcome)
+}
+
+/// Re-spells an indexed absolute path the way the caller named its root, so
+/// that which engine answered does not change what the paths look like.
+fn as_given(path: &Path, canonical_root: &Path, given_root: &Path) -> PathBuf {
+    match path.strip_prefix(canonical_root) {
+        Ok(relative) => given_root.join(relative),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+/// Whether any component below `root` is a dot-file.
+fn has_hidden_component(path: &Path, root: &Path) -> bool {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .any(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .is_some_and(|name| name.starts_with('.'))
+        })
+}
+
+/// Whether a query is plain text, rather than something only a regex engine or
+/// a query parser gives meaning to.
+fn is_plain_text(query: &str) -> bool {
+    query
+        .chars()
+        .all(|character| character.is_alphanumeric() || matches!(character, ' ' | '_' | '-' | '\''))
 }
 
 /// How many more matches the caller will accept.
@@ -236,8 +511,6 @@ fn trim_line_terminator(line: &[u8]) -> &[u8] {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::disallowed_methods)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
 
     fn write(root: &Path, relative: &str, contents: &[u8]) -> PathBuf {
@@ -478,6 +751,98 @@ mod tests {
                 .results
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_search_outside_what_the_index_covers_reads_the_files_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes.txt", b"needle\n");
+
+        // A temporary directory is never inside the indexed tree, so `auto`
+        // has to fall back — whether or not this machine has an index at all.
+        let outcome = run(dir.path(), "needle", &Options::default());
+
+        assert_eq!(outcome.results.len(), 1);
+        assert!(
+            matches!(outcome.answered_by, Answered::Walk(Some(_))),
+            "unexpected engine: {:?}",
+            outcome.answered_by
+        );
+    }
+
+    #[test]
+    fn asking_for_the_walk_does_not_blame_the_index_for_answering() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes.txt", b"needle\n");
+
+        let walked = Options {
+            engine: Engine::Walk,
+            ..Options::default()
+        };
+        assert_eq!(
+            run(dir.path(), "needle", &walked).answered_by,
+            Answered::Walk(None)
+        );
+    }
+
+    #[test]
+    fn insisting_on_the_index_fails_with_the_reason_it_cannot_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes.txt", b"needle\n");
+
+        let indexed = Options {
+            engine: Engine::Index,
+            ..Options::default()
+        };
+        let error = search(dir.path(), "needle", &indexed).unwrap_err();
+        assert!(
+            error.to_string().contains("the index cannot answer"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_pattern_and_the_walk_only_flags_keep_the_index_out_of_it() {
+        assert!(is_plain_text("report 2024"));
+        assert!(is_plain_text("O'Brien"));
+        assert!(!is_plain_text("fn\\s+\\w+"));
+        assert!(!is_plain_text("ext:rs"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let bounded = Options {
+            engine: Engine::Index,
+            max_depth: Some(1),
+            ..Options::default()
+        };
+        let error = search(dir.path(), "needle", &bounded).unwrap_err();
+        assert!(
+            error.to_string().contains("bound a walk"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn an_indexed_path_is_reported_the_way_the_caller_named_its_root() {
+        let indexed = Path::new("/home/me/Documents/project/src/main.rs");
+        let canonical = Path::new("/home/me/Documents/project");
+
+        assert_eq!(
+            as_given(indexed, canonical, Path::new(".")),
+            PathBuf::from("./src/main.rs")
+        );
+        // A path the root does not cover is left as it is rather than mangled.
+        assert_eq!(
+            as_given(Path::new("/elsewhere/x"), canonical, Path::new(".")),
+            PathBuf::from("/elsewhere/x")
+        );
+    }
+
+    #[test]
+    fn a_dot_directory_below_the_root_counts_as_hidden_but_the_root_does_not() {
+        let root = Path::new("/home/me/.nohrs/work");
+        assert!(!has_hidden_component(&root.join("src/main.rs"), root));
+        assert!(has_hidden_component(&root.join(".env"), root));
+        assert!(has_hidden_component(&root.join(".cache/blob"), root));
     }
 
     #[test]
