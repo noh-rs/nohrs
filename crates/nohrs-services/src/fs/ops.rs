@@ -1562,6 +1562,26 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_removal_that_lost_the_race_is_not_a_failure() {
+        // The race itself cannot be staged: producing `ENOENT` at the `unlinkat`
+        // needs another process to remove the entry in the two syscalls since
+        // this call opened it, and every test above deliberately runs alone. But
+        // what to do when it happens is a decision, not a race, so the decision
+        // is pinned here rather than left to the one branch no test reaches.
+        assert!(already_gone_is_fine(Ok(())).is_ok());
+        assert!(
+            already_gone_is_fine(Err(rustix::io::Errno::NOENT)).is_ok(),
+            "gone is the outcome this call wanted; something else got there first"
+        );
+        // And `ENOTEMPTY` is not the same shape of news: an entry created inside
+        // a directory after this call emptied it means the partial is still
+        // standing, and reporting that as done would be untrue.
+        let error = already_gone_is_fine(Err(rustix::io::Errno::NOTEMPTY)).unwrap_err();
+        assert!(matches!(error, Error::Io(_)), "got: {error:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_claim_that_never_read_its_identity_removes_nothing() {
         // `None` is not "no check to run", it is "the check could not be made".
         // Failing to read back what was just created is itself a sign something
