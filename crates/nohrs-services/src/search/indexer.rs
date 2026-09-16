@@ -1,28 +1,32 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tantivy::TantivyDocument;
 use tantivy::schema::{FAST, Field, STORED, STRING, Schema, TEXT, Term, Value};
 use tantivy::{Index, IndexWriter}; // Import trait for add_text etc? No, TantivyDocument implements it.
 
+/// How much heap tantivy's writer may use while indexing.
+const WRITER_HEAP_BYTES: usize = 50_000_000;
+
 /// Owns the tantivy index and its writer, and performs full and incremental indexing.
 pub struct IndexManager {
     index: Index,
-    _index_path: PathBuf,
+    index_path: PathBuf,
     content_root: PathBuf,
-    writer: Arc<Mutex<IndexWriter>>,
+    // Opened by the first write and kept afterwards, never by construction:
+    // tantivy allows a single writer across all processes, so taking one up
+    // front would deny it to `noh index build` and to a second window for as
+    // long as this process lives — including when it never writes at all.
+    // Readers ([`IndexReader`]) need no lock and are unaffected either way.
+    writer: Mutex<Option<IndexWriter>>,
 }
 
 impl IndexManager {
     /// Opens (or creates) the default index under `~/.nohrs/index` rooted at `~/Documents`.
     pub fn new() -> Result<Self> {
-        let home_dir = dirs::home_dir().context("Could not determine home directory")?;
-        let nohrs_dir = home_dir.join(".nohrs");
-        let index_path = nohrs_dir.join("index");
-
-        let documents_dir = home_dir.join("Documents");
-        Self::new_internal(index_path, documents_dir)
+        let (index_path, content_root) = Self::default_location()?;
+        Self::new_internal(index_path, content_root)
     }
 
     /// Internal constructor for testing or custom paths
@@ -61,14 +65,39 @@ impl IndexManager {
             Index::create_in_dir(&index_path, schema)?
         };
 
-        let writer = index.writer(50_000_000)?;
-
         Ok(Self {
             index,
-            _index_path: index_path,
+            index_path,
             content_root,
-            writer: Arc::new(Mutex::new(writer)),
+            writer: Mutex::new(None),
         })
+    }
+
+    /// Runs `work` against the index writer, opening one if this process does
+    /// not hold it yet.
+    ///
+    /// Failing to open it means another process is writing — the app while
+    /// `noh index build` runs, or the other way round — which is a thing to
+    /// say plainly rather than a bug to report.
+    fn with_writer<R>(&self, work: impl FnOnce(&mut IndexWriter) -> Result<R>) -> Result<R> {
+        let mut guard = self
+            .writer
+            .lock()
+            .map_err(|error| anyhow::anyhow!("Poisoned lock: {}", error))?;
+        if guard.is_none() {
+            let writer = self.index.writer(WRITER_HEAP_BYTES).with_context(|| {
+                format!(
+                    "the index at {} is being written by another nohrs process; \
+                     tantivy allows one writer at a time",
+                    self.index_path.display()
+                )
+            })?;
+            *guard = Some(writer);
+        }
+        let writer = guard
+            .as_mut()
+            .context("the index writer went missing after it was opened")?;
+        work(writer)
     }
 
     fn create_schema() -> Schema {
@@ -101,11 +130,15 @@ impl IndexManager {
         level = "debug",
         skip_all
     )]
-    pub fn index_home(&self, mut progress_tx: Option<postage::watch::Sender<f32>>) -> Result<()> {
-        let mut writer_guard = self
-            .writer
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Poisoned lock: {}", e))?;
+    pub fn index_home(&self, progress_tx: Option<postage::watch::Sender<f32>>) -> Result<()> {
+        self.with_writer(|writer| self.index_home_with(writer, progress_tx))
+    }
+
+    fn index_home_with(
+        &self,
+        writer: &mut IndexWriter,
+        mut progress_tx: Option<postage::watch::Sender<f32>>,
+    ) -> Result<()> {
         let schema = self.index.schema();
         let path_field = schema
             .get_field("path")
@@ -150,7 +183,7 @@ impl IndexManager {
                     if path.is_file() {
                         if let Err(e) = self.index_single_file(
                             path,
-                            &mut writer_guard,
+                            writer,
                             path_field,
                             filename_field,
                             content_field,
@@ -161,7 +194,7 @@ impl IndexManager {
                     } else if path.is_dir() {
                         if let Err(e) = self.index_single_directory(
                             path,
-                            &mut writer_guard,
+                            writer,
                             path_field,
                             filename_field,
                             content_field,
@@ -187,7 +220,7 @@ impl IndexManager {
             *tx.borrow_mut() = 1.0; // Done
         }
 
-        writer_guard.commit()?;
+        writer.commit()?;
         Ok(())
     }
 
@@ -269,19 +302,16 @@ impl IndexManager {
     /// Removes the document for `path` from the index and commits.
     #[tracing::instrument(target = "nohrs::op", name = "index.remove", level = "debug", skip_all, fields(path = %path.display()))]
     pub fn remove_file(&self, path: &Path) -> Result<()> {
-        let mut writer_guard = self
-            .writer
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Poisoned lock: {}", e))?;
         let schema = self.index.schema();
         let path_field = schema.get_field("path").context("Schema error")?;
 
-        // Remove document with matching path
-        let path_str = path.to_string_lossy();
-        writer_guard.delete_term(Term::from_field_text(path_field, &path_str));
-        writer_guard.commit()?;
-
-        Ok(())
+        self.with_writer(|writer| {
+            // Remove document with matching path
+            let path_str = path.to_string_lossy();
+            writer.delete_term(Term::from_field_text(path_field, &path_str));
+            writer.commit()?;
+            Ok(())
+        })
     }
 
     /// Returns a reference to the underlying tantivy index.
@@ -292,10 +322,10 @@ impl IndexManager {
     /// Re-indexes or removes each of `paths` (depending on existence) and commits once.
     #[tracing::instrument(target = "nohrs::op", name = "index.process_changes", level = "debug", skip_all, fields(paths = paths.len()))]
     pub fn process_changes(&self, paths: &[PathBuf]) -> Result<()> {
-        let mut writer_guard = self
-            .writer
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Poisoned lock: {}", e))?;
+        self.with_writer(|writer| self.process_changes_with(writer, paths))
+    }
+
+    fn process_changes_with(&self, writer: &mut IndexWriter, paths: &[PathBuf]) -> Result<()> {
         let schema = self.index.schema();
         let path_field = schema.get_field("path").context("Schema error")?;
         let filename_field = schema.get_field("filename").context("Schema error")?;
@@ -306,7 +336,7 @@ impl IndexManager {
             if path.exists() {
                 if let Err(e) = self.index_single_file(
                     path,
-                    &mut writer_guard,
+                    writer,
                     path_field,
                     filename_field,
                     content_field,
@@ -316,11 +346,11 @@ impl IndexManager {
                 }
             } else {
                 let path_str = path.to_string_lossy();
-                writer_guard.delete_term(Term::from_field_text(path_field, &path_str));
+                writer.delete_term(Term::from_field_text(path_field, &path_str));
             }
         }
 
-        if let Err(e) = writer_guard.commit() {
+        if let Err(e) = writer.commit() {
             tracing::error!("Failed to commit index updates: {}", e);
             return Err(e.into());
         }
@@ -562,4 +592,63 @@ fn find_all_match_lines(path: &Path, query: &str) -> Vec<(usize, String)> {
         );
     }
     matches
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::disallowed_methods)]
+mod tests {
+    use super::*;
+
+    /// A manager over a temporary index, plus the tree it covers.
+    fn staged() -> (tempfile::TempDir, IndexManager) {
+        let dir = tempfile::tempdir().unwrap();
+        let index_path = dir.path().join("index");
+        let content_root = dir.path().join("content");
+        std::fs::create_dir_all(&content_root).unwrap();
+        std::fs::write(content_root.join("notes.txt"), "a needle in here\n").unwrap();
+        let manager = IndexManager::new_with_path(index_path, content_root).unwrap();
+        (dir, manager)
+    }
+
+    #[test]
+    fn what_a_manager_builds_a_reader_can_read() {
+        let (dir, manager) = staged();
+        manager.index_home(None).unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), dir.path().join("content"))
+            .unwrap()
+            .expect("an index that was just built");
+
+        assert!(reader.document_count().unwrap() > 0);
+        let candidates = reader.candidates("needle", 10).unwrap();
+        assert_eq!(candidates, vec![dir.path().join("content/notes.txt")]);
+    }
+
+    #[test]
+    fn a_reader_can_be_opened_while_a_writer_is_held() {
+        let (dir, manager) = staged();
+        manager.index_home(None).unwrap();
+        // `manager` still owns the writer here; opening for reading must not
+        // wait on it, which is what lets `noh search` run beside the app.
+        let reader = IndexReader::open(dir.path().join("index"), dir.path().join("content"))
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(reader.document_count().unwrap() > 0);
+    }
+
+    #[test]
+    fn opening_a_reader_never_creates_an_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("index");
+
+        assert!(
+            IndexReader::open(missing.clone(), dir.path().to_path_buf())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !missing.exists(),
+            "reading brought an empty index into being"
+        );
+    }
 }
