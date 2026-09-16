@@ -5,13 +5,10 @@ use gpui_component::{Icon, IconName};
 /// What a footer status message is claiming, which decides the color it is
 /// painted in.
 ///
-/// Three rather than two, because an operation has three outcomes and only two
-/// of them are "it worked" and "it did not". The third is an operation that did
-/// what the user asked and could not finish clearing up after itself: the thing
-/// they wanted is where they wanted it, and something of the operation's own is
-/// still sitting somewhere they would never think to look. Reporting that as
-/// success hides it; reporting it as failure invites a retry of work that is
-/// already done.
+/// Three rather than two: an operation can also do what was asked and leave
+/// something of its own behind. Why that needs a reading of its own belongs to
+/// whoever produced the message — this crate knows nothing about file
+/// operations — so here it is only a third color.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum StatusTone {
     /// It worked, and there is nothing left over.

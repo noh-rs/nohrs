@@ -574,13 +574,20 @@ impl ExplorerPane {
             async move {
                 let (report, outcome) = task.await;
                 cx.update(|cx| on_complete(outcome, cx)).log_err();
-                this.update(&mut cx, |pane, cx| {
+                // Before the update, not inside it: this is what writes the
+                // failures to the log, and a batch can outlive the pane that
+                // started it. Computed in there, a closed pane would take the
+                // whole record of what went wrong with it.
+                let (level, text) = report.footer(total, &success_label);
+                if let Err(error) = this.update(&mut cx, |pane, cx| {
                     pane.reload();
-                    let (level, text) = report.footer(total, &success_label);
                     pane.set_status(level, text);
                     cx.notify();
-                })
-                .ok();
+                }) {
+                    // Not a failure: the work happened and is logged. There is
+                    // just no longer a status bar to put the outcome in.
+                    tracing::debug!("the pane a file operation was started from is gone: {error}");
+                }
             }
         })
         .detach();
