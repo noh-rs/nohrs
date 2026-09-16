@@ -69,7 +69,15 @@ FreeBSD does offer `funlinkat`, and it is worth seeing what it actually does: it
 Linux has no equivalent. `linkat` with `AT_EMPTY_PATH` can give a descriptor a new name, which looks like a way in, but it requires `CAP_DAC_READ_SEARCH` — effectively root — so it is not available to an ordinary program.
 </Callout>
 
-So every removal, on every system, names something. And naming something means resolving a path.
+So on a Unix-like system every removal names something. And naming something means resolving a path.
+
+<Callout title="Windows answers the question rather than declining it">
+The hedge in that sentence is doing real work, and the exception is worth knowing. Windows does let a program delete through an already-open handle: `SetFileInformationByHandle` with `FileDispositionInfo` takes no path at all, only a handle opened with `DELETE` access.
+
+That is not a counterexample so much as the other available answer. The ambiguity is just as real there — NTFS has hard links too — and Windows settles it by having the handle carry the name it was opened through, so "delete this handle" means "delete that name". POSIX declines to record that association, which is exactly why the request has no referent here and does have one there. It is a design choice, not a law of filesystems.
+
+(Documented behaviour rather than measured: everything else in this article was run on Linux 6.18, and this was not.)
+</Callout>
 
 ## A path is a route; a descriptor is a hold
 
@@ -190,14 +198,16 @@ This is narrowing, not closing. A design that claims to remove only what it crea
 
 ## The flags, and one trap
 
-Opening a directory to use as an anchor is not quite `open(path, O_RDONLY)`. Four flags earn their place:
+Opening an entry through this machinery is not quite `open(path, O_RDONLY)`. Four flags come into it:
 
 - `O_DIRECTORY` — fail unless it really is a directory, rather than opening something else and discovering it later.
-- `O_NOFOLLOW` — do not follow a symbolic link at the final component.
-- `O_NONBLOCK` — a FIFO left at the name would otherwise make `open` itself wait for a writer that may never come.
 - `O_CLOEXEC` — do not leak the descriptor into a child process.
+- `O_NOFOLLOW` — do not follow a symbolic link at the final component.
+- `O_NONBLOCK` — return from `open` rather than waiting on the thing being opened.
 
-The trap is `O_NOFOLLOW`, and it is worth being precise because it looks right in the wrong place.
+The first two are unconditional. The other two are the interesting ones, because both look as though they belong on the anchor open and neither does — and they are wrong there for opposite reasons. `O_NOFOLLOW` on the anchor breaks something that works; `O_NONBLOCK` on the anchor does nothing at all.
+
+Start with `O_NOFOLLOW`, which is worth being precise about because it looks right in the wrong place.
 
 It belongs on **the entry being removed**, where following a link would let a link stand in for what it points at. It does **not** belong on the parent directory. A user can perfectly well have navigated into a folder reached through a symbolic link; refusing to open it does not protect anything, it just abandons the operation. And following the link there is safe for a different reason — the identity check on the entry only passes when the directory you reached really is the one holding it.
 
@@ -215,6 +225,21 @@ The same condition — a symbolic link at the name, `O_NOFOLLOW` set — reports
 
 Code that means "it was a link, so remove it without opening it" therefore has to accept **both**, and a comment that names only one is describing a run it happened to make rather than the rule.
 </Callout>
+
+`O_NONBLOCK` goes wrong the other way. The reasoning for putting it on the anchor is plausible: a FIFO sitting at the name would make `open` itself wait for a writer that may never arrive, and an operation that hangs forever is worse than one that fails. The reasoning is sound and the conclusion is still wrong, because `O_DIRECTORY` is already there:
+
+| flags | a FIFO with no writer |
+| --- | --- |
+| `O_RDONLY` | blocks indefinitely |
+| `O_RDONLY\|O_NONBLOCK` | opens |
+| `O_RDONLY\|O_DIRECTORY` | `ENOTDIR`, immediately |
+| `O_RDONLY\|O_DIRECTORY\|O_NONBLOCK` | `ENOTDIR`, immediately |
+
+The first row is the hazard, the second is the fix, and the third shows the fix was already applied by something else. `O_DIRECTORY` rejects the FIFO before it can block, so on an open that carries it, `O_NONBLOCK` has nothing left to prevent.
+
+Where the flag does earn its place is the open of **the entry being removed** — the same open `O_NOFOLLOW` belongs on. That one cannot carry `O_DIRECTORY`, and the reason is the point of the whole exercise: the entry may be a file, a directory or a FIFO, and which it is *is what the open is there to find out*. `O_DIRECTORY` would answer the question by refusing the ones that are not directories. So the protection has to come from `O_NONBLOCK` instead, and there it is the only thing between the caller and an `open` that never returns.
+
+Both flags end up on the same side, then, and for the same underlying reason: the anchor is a directory and known to be one, while the entry is unknown until it is open. Guard the unknown.
 
 One more thing not to take on trust: the `d_type` field that `readdir` returns, which says whether an entry is a directory. Several filesystems fill it with `DT_UNKNOWN` and expect you to ask. Passing `O_DIRECTORY` to `openat` asks — and hands back, in the same call, the descriptor a recursive walk needs next.
 
