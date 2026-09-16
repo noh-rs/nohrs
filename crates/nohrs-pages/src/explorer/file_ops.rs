@@ -200,6 +200,45 @@ fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> ops::ClaimResult<()> {
     }
 }
 
+// [`apply_one`] to a name nothing else is waiting on, clearing away its own
+// half-written work if it cannot finish.
+//
+// A partial left at a fresh name is not a rollback problem — nothing is waiting
+// to come back to it — but it is still the wrong thing to leave. It appears in
+// the listing as an ordinary folder with no sign that it is incomplete, and it
+// takes the name: `free_destination` numbers around it, so the retry lands at
+// `report (2)` and the wreckage keeps `report` for good.
+//
+// Removing it costs only the time already spent, never data:
+// `Leftover::PartialDestination` is the one case that comes with the source
+// intact, and `discard_partial_destination` refuses anything else — a name this
+// call never took, or a whole copy whose source deletion is what failed.
+//
+// That last one is not reported as a failure at all. A cross-volume cut whose
+// copy landed and whose removal of the source then gave up partway has put the
+// whole entry under the name the user asked for, so this returns `Ok` and logs
+// the removal it could not finish. Reporting it would hand the source back to
+// the retry, and the retry would number around the name this very call just
+// took — the same `report (2)` as above, this time beside a finished `report`.
+fn apply_to_free_name(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
+    let Err(failure) = apply_one(mode, src, dst) else {
+        return Ok(());
+    };
+    if failure.leftover() == ops::Leftover::WholeDestination {
+        // `warn!` rather than the `error!` the strandings in `overwrite_apply`
+        // get: what is left sits at `src`, in the listing, rather than at a
+        // hidden scratch path where this line would be the only record of it.
+        tracing::warn!(
+            "{} was copied to {}, but the original could not be fully removed: {failure}",
+            src.display(),
+            dst.display(),
+        );
+        return Ok(());
+    }
+    drop_claimed(&failure, dst);
+    Err(failure.into())
+}
+
 // Overwrites `dst` with `src` without risking data loss on failure: the existing
 // destination is moved aside first, and only deleted once the paste succeeds;
 // if the paste fails, the original is rolled back into place. Staging aside (vs.
@@ -211,7 +250,7 @@ fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> ops::ClaimResult<()> {
 fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
     use nohrs_core::telemetry::LogErr as _;
     if !ops::would_conflict(dst) {
-        return Ok(apply_one(mode, src, dst)?);
+        return apply_to_free_name(mode, src, dst);
     }
     let backup = scratch_path(dst, "old");
     if let Err(failure) = ops::move_path_no_replace(dst, &backup) {
@@ -702,7 +741,7 @@ impl ExplorerPane {
                             continue;
                         }
                     };
-                    if let Err(error) = apply_one(mode, &src, &dst) {
+                    if let Err(error) = apply_to_free_name(mode, &src, &dst) {
                         errors.push(format!("{}: {error}", src.display()));
                         failed.push(src);
                     }
@@ -715,7 +754,7 @@ impl ExplorerPane {
                         // Filtered out above; kept for exhaustiveness without panicking.
                         ConflictResolution::Skip => continue,
                         ConflictResolution::Rename => free_destination(&dest_dir, &name)
-                            .and_then(|dst| apply_one(mode, &src, &dst).map_err(Error::from)),
+                            .and_then(|dst| apply_to_free_name(mode, &src, &dst)),
                         ConflictResolution::Overwrite => ops::destination_in(&dest_dir, &name)
                             .and_then(|dst| overwrite_apply(mode, &src, &dst)),
                     };
@@ -892,7 +931,9 @@ impl ExplorerPane {
 // a test binary to keep responsive.
 #[allow(clippy::unwrap_used, clippy::disallowed_methods)]
 mod overwrite_recovery_tests {
-    use super::{ClipMode, drop_claimed, drop_staged, overwrite_apply, restore_staged};
+    use super::{
+        ClipMode, apply_to_free_name, drop_claimed, drop_staged, overwrite_apply, restore_staged,
+    };
     use nohrs_services::fs::ops;
 
     // A directory holding something a copy cannot read, so a no-replace copy of
@@ -905,6 +946,55 @@ mod overwrite_recovery_tests {
         std::fs::create_dir(at).unwrap();
         std::fs::write(at.join("page.txt"), "new").unwrap();
         std::os::unix::net::UnixListener::bind(at.join("ipc")).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_paste_to_a_free_name_does_not_leave_its_half_copy_behind() {
+        // Nothing is waiting to be restored to this name, so the partial blocks
+        // no rollback — but it stands in the listing looking like a finished
+        // folder, and it keeps the name, so the retry is numbered around it and
+        // the wreckage stays for good.
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("report");
+        let _socket = uncopyable_tree(&source);
+
+        let work = dir.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        let dst = work.join("report");
+
+        assert!(apply_to_free_name(ClipMode::Copy, &source, &dst).is_err());
+
+        assert!(!dst.exists(), "the half-copy has to go");
+        assert!(
+            source.join("page.txt").is_file(),
+            "and it is only ever the copy that goes — the source is intact"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_paste_whose_name_was_taken_first_leaves_that_alone() {
+        // The same call, the other side of the claim. `free_destination` looked
+        // and the name was free; by the time the copy reached for it someone
+        // else had it. What is there was never this paste's to remove.
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("report");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("page.txt"), "mine").unwrap();
+
+        let work = dir.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        let dst = work.join("report");
+        std::fs::create_dir(&dst).unwrap();
+        std::fs::write(dst.join("theirs.txt"), "theirs").unwrap();
+
+        assert!(apply_to_free_name(ClipMode::Copy, &source, &dst).is_err());
+
+        assert_eq!(
+            std::fs::read_to_string(dst.join("theirs.txt")).unwrap(),
+            "theirs"
+        );
     }
 
     #[cfg(unix)]
