@@ -13,7 +13,7 @@ Implement it properly and you hit a question: **when it fails partway, what may 
 
 What follows is a record of dealing with that in Nohrs, but the substance is general — you do not need to know this product to read it. Every prerequisite is built up below.
 
-## A file has a name and a body, and they are separate
+## The separation of name and body
 
 First premise. A directory is *not a box holding files*. A directory is nothing but **a table of name → number**.
 
@@ -58,17 +58,17 @@ Two consequences fall out, and both come back repeatedly below.
 
 The second one is the heavy one. **A path is a name, not the identity of what it names.** There is a step later where an entry's identity is checked before deleting it; this is where that requirement comes from.
 
-## rename is atomic, and it replaces silently
+## The atomicity of rename(2) and its silent replacement
 
 `rename(2)` is the system call that moves a file. Given the section above, though, all it does is **rewrite the table**. Not one byte of data moves. That is why a 100GB file moves instantly — within one filesystem.
 
 What matters is that the rewrite is **atomic**. No other process ever observes a halfway state. The name points at the old number or at the new one, and there is nothing in between.
 
-### Replacing silently is a feature, not a flaw
+### Why silent replacement is specified behaviour
 
-`rename` replaces whatever is already at the destination without asking. That looks reckless, but it is deliberate, and something important depends on it.
+`rename` replaces whatever is already at the destination without asking. This appears hazardous, but it is deliberate, and an important mechanism depends on it.
 
-Think about how a text editor saves over a file. The naive way: open `notes.txt`, empty it, write the new contents.
+Consider how a text editor saves over a file. The simplest procedure is to open `notes.txt`, empty it, and write the new contents.
 
 ```text
 # The naive overwrite. If the power goes out partway...
@@ -94,31 +94,31 @@ rename("notes.txt.tmp", "notes.txt")             <- swaps atomically
 
 This works **because `rename` does not refuse to replace**. If it did, the sequence would need a delete first, and a crash in the gap between the delete and the rename would take the file with it.
 
-### And yet, sometimes you do not want to replace
+### Renames that refuse to replace
 
-There are also cases where replacing is exactly wrong. Restoring from the trash must not quietly flatten whatever now sits at the original location. Neither must a paste to a name that was supposed to be free.
+There are also cases in which replacing is precisely the wrong behaviour. Restoring from the trash must not quietly flatten whatever now sits at the original location. Neither must a paste to a name that was supposed to be free.
 
 So there is a rename that refuses to replace: `renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS. "Move if the destination is free, fail with `EEXIST` if it is taken" — atomically.
 
-### But there is a driver wall
+### Constraints imposed by the filesystem driver
 
-Here is the awkward part. The flag travels through the kernel's common layer and ends up at **the individual filesystem's driver**, and the driver does not necessarily implement it.
+This requires care. The flag travels through the kernel's common layer and ends up at **the individual filesystem's driver**, and the driver does not necessarily implement it.
 
 - **overlayfs** (which is usually what a Docker container's working directory is) → `EINVAL`
 - **Linux kernels older than 4.9** → `ENOSYS`
 - **non-APFS volumes on macOS** → `ENOTSUP`
 
-So a no-replace rename is nice to have but **must not be assumed**. Where it is missing, a fallback is required. The naive one: **copy, then delete the original.**
+A no-replace rename is therefore useful where available, but **must not be assumed to exist**. Where it is missing, a fallback is required. The simplest fallback is to **copy, then delete the original.**
 
 Everything that follows happens inside that fallback. On ext4 or APFS the rename succeeds in one call and none of this code runs at all.
 
-<Callout title="Remember this">
-One more thing that is **not** atomic. `remove_dir_all`, which deletes a whole directory tree, removes the files inside one at a time. If it fails partway, **the tree is left partly removed.** This grows teeth later.
+<Callout title="Note: an operation that is not atomic">
+One further operation is **not** atomic. `remove_dir_all`, which deletes a whole directory tree, removes the files inside one at a time. If it fails partway, **the tree is left partly removed.** This property becomes significant in a later section.
 </Callout>
 
-## Do not check and then write — claim
+## Claiming in place of check-then-write
 
-There is a shape of code everyone writes first.
+The following is the shape of code written first.
 
 ```rust
 if !dst.exists() {        // <- check
@@ -130,7 +130,7 @@ if !dst.exists() {        // <- check
 
 This is TOCTOU — time-of-check to time-of-use — a classic race. It assumes a fact observed at check time still holds at write time.
 
-You might think nobody could slip into so small a gap, but the gap is not necessarily small. In the middle of copying a tree of tens of thousands of files, **that window stays open for seconds or minutes**. Sync clients, backup tools, build scripts, your own other window — there is no shortage of candidates.
+It may appear that no other process could enter so small a gap, but the gap is not necessarily small. In the middle of copying a tree of tens of thousands of files, **that window stays open for seconds or minutes**. Sync clients, backup tools, build scripts, and the application's own second window are all candidates.
 
 The fix is to stop checking. Use calls that **succeed if they took the name and fail if it was taken** instead.
 
@@ -142,9 +142,9 @@ In each, "look whether it exists" and "create it" are one thing inside the kerne
 
 Every no-replace copy and move in Nohrs is written this way. And it claims **every entry in the tree**, not just the root — because during the seconds it takes to write a tree, somebody can create a colliding name inside it.
 
-## The problem: one EEXIST, two situations
+## The problem: a single EEXIST representing two situations
 
-That is the groundwork. Now the actual subject. An overwriting paste goes like this.
+That completes the groundwork. An overwriting paste proceeds as follows.
 
 <Diagram caption="Step 3, the one-shot swap, is meant to be a single no-replace rename. Where that is unavailable it degrades to copy-and-delete. The bug lives in there.">
   <svg viewBox="0 0 760 236" role="img" aria-label="The four steps of an overwriting paste and the rollback path that restores the staged original on failure">
@@ -222,9 +222,9 @@ Why can they not be told apart? Because errno is **just an integer**. `EEXIST` i
 
 Rust's `std::io::Error` carries no path either, when it comes from `std::fs`. Passing errors upward with `?` for convenience, **the information about where it failed has been thrown away**.
 
-### The cost of misreading is asymmetric
+### The asymmetry of the misreading cost
 
-What happens if you confuse the two?
+Confusing the two produces the following results.
 
 - **Reading (b) as (a)** — which is what the code did — leaves our own half-copy in place as "somebody else's". The rollback then fails because something is in the way, and the user is left with **a broken destination and their original at a hidden path**. No data is lost, but there is no way to tell that from looking.
 - **Reading (a) as (b)** — deletes a directory somebody else created, **contents and all**. There is no undoing that.
@@ -233,9 +233,9 @@ Which is why the naive fix — always delete the destination on failure — fixe
 
 > A recoverable mess and an unrecoverable deletion are not equivalent.
 
-## The implementation: carry the information back before it is gone
+## Implementation: preserving the point of failure
 
-There is only one way out. **Stop looking at what the error says.** Decide on **where it failed** instead — something the operation itself knows, and was throwing away.
+Only one approach is available: **stop inspecting what the error says.** Decide on **where it failed** instead — something the operation itself knows, and was throwing away.
 
 So the copy is split into a **claim** stage and a **fill** stage. Fail before the claiming call — `create_dir` / `create_new` / `symlink` — and the destination never became ours. Fail after it, and what is there is our own half-written work. The test depends on position alone, and not at all on the kind of error.
 
@@ -281,23 +281,23 @@ pub enum Leftover {
   </svg>
 </Diagram>
 
-### Why three values — the bug a bool hid
+### The rationale for three values
 
-The first implementation was a bool: did we take the destination or not. I thought that was enough. In review, CodeRabbit and cubic both pointed at the same place.
+The first implementation was a bool — whether the destination had been taken. I considered that sufficient. In review, CodeRabbit and cubic both pointed at the same place.
 
-Back to the thing to remember. The fallback move is copy-then-delete-the-original, and the `remove_dir_all` doing that deleting **is not atomic**. Fail partway and **the source is already partly gone**.
+The property noted earlier now applies. The fallback move is copy-then-delete-the-original, and the `remove_dir_all` performing that deletion **is not atomic**. Fail partway and **the source is already partly gone**.
 
-I was reporting that failure as "the destination is ours". So the cleanup I had just added would go and delete that destination — **the only complete copy there was**. The source full of holes, the copy deleted.
+I was reporting that failure as "the destination is ours". So the cleanup I had just added would go and delete that destination — **the only complete copy there was**. The result is a source with parts missing and a deleted copy.
 
-<Callout title="A regression of my own making">
+<Callout title="A regression introduced by the change itself">
 Inside a change whose purpose was to avoid unrecoverable deletions, I had created an unrecoverable deletion by another route — having written out that exact reasoning one commit earlier.
 </Callout>
 
-What this showed is that **"hands off" has two reasons**. `Nothing` is somebody else's. `WholeDestination` is the only complete copy. The reasons are opposites, so a bool collapses them. Hence three values.
+This showed that **"hands off" has two distinct reasons**. `Nothing` is somebody else's. `WholeDestination` is the only complete copy. The reasons are opposites, so a bool collapses them. Hence three values.
 
-I renamed the predicate at the same time: not `took_the_destination()` but `left_a_partial_destination()`. **Name the condition that permits the deletion, not the thing that happened.** The old name is what let me miss this, and I know it.
+I renamed the predicate at the same time: not `took_the_destination()` but `left_a_partial_destination()`. **Name the condition that permits the deletion, not the thing that happened.** The earlier name is what allowed the oversight, and I regard it as the cause.
 
-### Do not delete by pathname — check identity
+### Verification by entry identity rather than pathname
 
 `PartialDestination` is still not enough. What may be removed is not "whatever is at that path" but **the entry we claimed**. The second consequence from the first section — the same path can name a different file — bites here.
 
@@ -310,19 +310,19 @@ So the `dev`/`ino` pair is recorded right after the claim and compared before de
 - **The check and the removal are separate calls.** Anything aimed at the gap gets through. Nothing in `std` removes a directory tree through an already-open handle.
 - **Inode numbers get reused.** Remove the half-copy and recreate it under the same name, and the same number can come back. Then the two are indistinguishable.
 
-<Callout title="The test failed 5 times in 30">
-My own test taught me the second one. It played the other process as remove-then-create at the same name — and the recreation sometimes got handed the very number that had been claimed. A 20% failure rate.
+<Callout title="What the intermittent test failure indicated">
+The second was established by my own test. It played the other process as remove-then-create at the same name — and the recreation sometimes got handed the very number that had been claimed. A 20% failure rate.
 
-I changed the test to build the replacement elsewhere while the half-copy is still alive and `rename` it into place. That can never land on the same number, and it is also what a real process does. Thirty runs, stable.
+I changed the test to build the replacement elsewhere while the half-copy is still alive and `rename` it into place. That can never land on the same number, and it is also what a real process does. Thirty consecutive runs were stable.
 
-And because **the flakiness was a report about the limits of the check itself**, it went into the documentation. Fixing the test and going quiet would have been the worst outcome.
+And because **the flakiness was a report about the limits of the check itself**, it went into the documentation. Correcting the test and saying nothing would have been the worst outcome.
 </Callout>
 
 For the file branch, `create_new` — the call that claims — **returns an open handle**, so the identity is read with `fstat` through that handle rather than by `stat`ing the path again. That one is exact: the handle names the entry this call created. The directory branch gets no handle from `mkdir`, so the path-shaped window remains there. That it remains is written in the comment.
 
-### "Not proven" and "proven" are different things
+### The distinction between unproven and proven
 
-One more review finding. The comparison was written like this.
+One further review finding. The comparison was written as follows.
 
 ```rust
 if ENTRY_IDENTITIES_AVAILABLE && entry_identity(dst) != self.claimed {
@@ -333,7 +333,7 @@ delete_permanent(dst)
 
 If `claimed` is `None` (unreadable at claim time) and the current identity is also `None` (nothing is there), then `None != None` is false. The condition is slipped past and the deletion proceeds.
 
-I had noticed this and decided it was harmless: nothing is there, so the deletion just fails with `NotFound`. **That holds only while the path stays empty.** The check and the deletion are separate calls, so if somebody creates something in between, that is what gets deleted — with the claim never once proven.
+I had noticed this and judged it harmless: nothing is there, so the deletion merely fails with `NotFound`. **That holds only while the path stays empty.** The check and the deletion are separate calls, so if somebody creates something in between, that is what gets deleted — with the claim never once proven.
 
 Rewritten:
 
@@ -348,28 +348,28 @@ delete_permanent(dst)
 
 Write what is **required**, not what is rejected. Both sides must be real identities, and they must match. Everything else falls on the do-not-delete side.
 
-The double `None` could hide because of the first form. A condition that enumerates dangerous combinations and rejects them **lets through whatever you forgot to enumerate**. A condition that demands a safe one be met puts everything unanticipated on the rejected side. The same function taught me this twice.
+The double `None` could hide because of the first form. A condition that enumerates dangerous combinations and rejects them **lets through whatever you forgot to enumerate**. A condition that demands a safe one be met puts everything unanticipated on the rejected side. The same function demonstrated this twice.
 
-## Once you may delete it — should you?
+## Permission to delete, and the decision to delete
 
 What was answered above is **may this be deleted**. **Should it** is a different question, and three call sites were deliberately left alone in the first fix: the paths that write to a *fresh* name — one nothing is waiting on.
 
 A half-copy left there breaks nothing, because no rollback is waiting to come back to that name. So it is not a correctness question but **a policy one**: what should happen to a failed paste's own output?
 
-Keeping it loses the argument.
+There is insufficient reason to keep it.
 
 - It **appears in the listing as an ordinary folder**, with nothing anywhere to say it stopped partway.
 - And it **takes the name.** Paste the same thing again and the numbering steps around what is sitting there, so it lands at `report (2)` — and `report` belongs to the wreckage from then on.
 
 Removing it costs only the time already spent. **There is no resume**, so keeping it does not save the retry a single byte of work. Finder and GNOME Files both remove it.
 
-### The three values were answering two questions
+### Two questions answered by one value
 
-And here the same place caught me again.
+At this point the same location produced a second error of the same kind.
 
 When I added the cleanup, I thought about `WholeDestination` purely in terms of **visibility**: the destination is the name the user asked for, so unlike a hidden scratch path nothing has gone missing, and therefore no logging earns its place.
 
-That is true, and it stops one step short. Returning it as an error also means the source **goes back into the retry queue**. And the retry finds the destination name taken — **by the entry this very call just wrote.**
+That reasoning is correct, but it stops one step short. Returning it as an error also means the source **goes back into the retry queue**. And the retry finds the destination name taken — **by the entry this very call just wrote.**
 
 <Diagram caption="The same failure, the same three values. What differs is the question that was asked. WholeDestination means &quot;do not delete&quot; and &quot;this is finished&quot; at once; read only the first and the remains of the source get duplicated next to a complete copy.">
   <svg viewBox="0 0 720 242" role="img" aria-label="A comparison of the final directory state when the same failure is returned as a retryable error versus treated as committed">
@@ -401,53 +401,53 @@ That is true, and it stops one step short. Returning it as an error also means t
 What has to be checked when reusing a classification is **every** question its values can answer — not the one currently in your head.
 </Callout>
 
-The fix is close to one line: treat this failure as committed and log only the removal that could not finish. The same decision was in fact already written on another path. It was there, and I did not carry it across to these three.
+The fix is close to one line: treat this failure as committed and log only the removal that could not finish. The same decision had in fact already been implemented on another path, and was not carried across to these three sites.
 
-### Leaving an unclosed hole unclosed
+### Handling of the remaining race
 
 The identity check still has that window where the `stat` and the deletion are separate calls. Review pointed at it: stop deleting by pathname, and fall back to retaining and reporting instead.
 
-I did not. **Retaining and reporting is exactly what this section just removed.** The wreckage holding the name is a certainty; the window needs another process, having already lost the race for that name once, to take it again in the gap between two system calls. That is **trading a certain regression for a narrow race**.
+The proposal was not adopted. **Retaining and reporting is precisely the behaviour this section removed.** The wreckage holding the name is a certainty; the window needs another process, having already lost the race for that name once, to take it again in the gap between two system calls. This amounts to **trading a certain regression for a narrow race**.
 
-What I did instead was write down what closing it takes, in an issue: `unlinkat` relative to a parent directory fd, and for a directory a hand-written recursion descending through `openat`. `std` offers neither. **Not "it cannot be fixed so say nothing", but "write down how to fix it and leave it there."**
+What I did instead was write down what closing it takes, in an issue: `unlinkat` relative to a parent directory fd, and for a directory a hand-written recursion descending through `openat`. `std` offers neither. The policy is not to omit what cannot be fixed, but to **record how it would be fixed and leave that record in place**.
 
-## What to do with what cannot be tested
+## Handling conditions that cannot be reproduced
 
-The heart of this bug cannot be reproduced. It needs two things at once.
+The central case of this defect cannot be reproduced. It requires two conditions simultaneously.
 
 - a filesystem that refuses `RENAME_NOREPLACE` (overlayfs, for instance)
 - **and** another process writing into the tree mid-copy
 
 On ext4 or APFS the rename finishes in one call and the code in question never runs. CI is ubuntu and macOS. **A test that does not run where it was written is not a test.**
 
-So instead of the heart of it, I pinned **the property that decides it** — that a claim is determined by where it failed, never by the kind of error.
+In place of the central case, the test pins **the property that determines it** — that a claim is determined by where it failed, never by the kind of error.
 
-Put a Unix-domain socket in the source. A socket cannot be `open`ed as a file, so the copy always fails — and it stops **at a known point after the destination was created**, the same side of the claim a nested collision falls on. Deterministic, and it runs on both platforms.
+A Unix-domain socket is placed in the source. A socket cannot be `open`ed as a file, so the copy always fails — and it stops **at a known point after the destination was created**, the same side of the claim a nested collision falls on. The failure is deterministic and runs on both platforms.
 
-The branch fixed in the second half is the same story. Reaching `WholeDestination` needs a `rename` that reports cross-device **and** a copy that completes **and** a `remove_dir_all` that gives up partway. Three conditions cannot be staged together inside a temporary directory.
+The branch fixed in the second half is subject to the same constraint. Reaching `WholeDestination` needs a `rename` that reports cross-device **and** a copy that completes **and** a `remove_dir_all` that gives up partway. These three conditions cannot be staged together inside a temporary directory.
 
-And what stayed uncovered went into the PR and into the code comments. **"There is no test" and "not knowing there is no test" are different things.** The first is a decision; the second is an accident.
+The range that remained uncovered was recorded in the PR and in the code comments. **"There is no test" and "not knowing there is no test" are different things.** The first is a decision; the second is an accident.
 
-## What the decisions were based on
+## The basis for the decisions
 
 The design judgement in one line:
 
 > When the costs are asymmetric, the handling should be too.
 
-A mess can be cleaned up later; a deletion cannot. So when unsure, fall on the side of not touching it.
+An incomplete state can be corrected later; a deletion cannot. Where the judgement is uncertain, the side that does not touch it is chosen.
 
-— except that carrying this far enough stops the rollback from working, which was **the original bug in the first place**. Defaulting to "do not touch" is not sufficient by itself.
+Applied without limit, however, this prevents the rollback from working, which was **the original defect itself**. Defaulting to "do not touch" is not sufficient on its own.
 
-So the answer was not to tune the touch/do-not-touch threshold but to **reduce what is unknown**. Carry the information the decision needs back before it is lost. Stop inferring from the kind of error and make the operation say it.
+The answer was therefore not to tune the threshold between touching and not touching, but to **reduce the region that cannot be decided**. Carry the information the decision needs back before it is lost. Stop inferring from the kind of error and make the operation say it.
 
-And one more, about how things are written.
+Three further points concern how the code is written.
 
 - **Name a predicate after the condition that permits the action.** Not "did we take it" but "may we delete it".
 - **Write conditions as requirements.** Not a shape that rejects danger, but one that proves safety.
 - **When reusing a classification, check every question it answers.** Re-ask only the question currently in your head and another face of the same value walks straight through.
 
-Those three were **the direct cause** of three of the review findings. How the names, the conditions and the classification were written is what decided whether an oversight was possible. Before the design was good or bad, **the writing had created the room for the mistake**.
+These three were **the direct cause** of three of the review findings. How the names, the conditions and the classification were written is what determined whether an oversight was possible. Before the design could be judged sound or unsound, **the writing had created the room for the error**.
 
-One last sentence, possibly the most useful one here. **Code that infers a situation from errno is usually inferring something that cannot be inferred.** The value is a single integer, and most of what you want to know is not in it.
+A final summary of the argument. **Code that infers a situation from errno is usually inferring something that cannot be inferred.** The value is a single integer, and most of the required information is not contained in it.
 
 The code is at [noh-rs/nohrs](https://github.com/noh-rs/nohrs) — this change is in `crates/nohrs-services/src/fs/ops.rs` and `crates/nohrs-pages/src/explorer/file_ops.rs`.
