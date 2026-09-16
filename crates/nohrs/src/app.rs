@@ -125,10 +125,10 @@ impl NohrsApp {
                     // Kick off initial indexing on GPUI's background executor, which
                     // is a thread pool (replacing tokio::task::spawn_blocking;
                     // async-runtime.md §2).
-                    if let Some(service) = &search_service {
-                        if let Some(job) = service.take_initial_indexing_job() {
-                            cx.background_spawn(async move { job.run() }).detach();
-                        }
+                    if let Some(service) = &search_service
+                        && let Some(job) = service.take_initial_indexing_job()
+                    {
+                        cx.background_spawn(async move { job.run() }).detach();
                     }
 
                     let view = cx.new(|cx| {

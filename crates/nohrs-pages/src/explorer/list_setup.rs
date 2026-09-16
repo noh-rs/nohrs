@@ -19,21 +19,20 @@ impl ExplorerPane {
                 |this, _list, event: &ListEvent, window, cx| match event {
                     ListEvent::Select(ix) => {
                         this.select_single(ix.row);
-                        if let Some(item) = this.filtered_entries.get(ix.row).cloned() {
-                            if item.kind == "file" {
-                                this.open_preview(item.path, window, cx);
-                            }
+                        if let Some(item) = this.filtered_entries.get(ix.row).cloned()
+                            && item.kind == "file"
+                        {
+                            this.open_preview(item.path, window, cx);
                         }
                     }
                     ListEvent::Confirm(ix) => {
-                        if let Some(info) = this.last_click_info.as_ref() {
-                            if info.row == ix.row
-                                && info.timestamp.elapsed() < config::CONFIRM_SUPPRESS_WINDOW
-                                && info.click_count >= 2
-                            {
-                                this.last_click_info = None;
-                                return;
-                            }
+                        if let Some(info) = this.last_click_info.as_ref()
+                            && info.row == ix.row
+                            && info.timestamp.elapsed() < config::CONFIRM_SUPPRESS_WINDOW
+                            && info.click_count >= 2
+                        {
+                            this.last_click_info = None;
+                            return;
                         }
                         this.last_click_info = None;
                         this.select_single(ix.row);
