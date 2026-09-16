@@ -60,8 +60,10 @@ pub struct LastClickInfo {
 /// cross-volume cut whose copy landed and whose removal of the source gave up
 /// partway, or an overwrite whose staging copy could not be cleared. Calling
 /// that [`Self::Info`] says "1 item(s) moved" while part of the source is still
-/// there; calling it [`Self::Error`] puts the source back on the clipboard and
-/// has the retry land beside the copy that already succeeded.
+/// there; calling it [`Self::Error`] hands a cut's source back to the clipboard
+/// — whenever the clipboard is still the one that batch left behind, which is
+/// the ordinary case — and has the retry land beside the copy that already
+/// succeeded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusLevel {
     /// Done, with nothing left over.

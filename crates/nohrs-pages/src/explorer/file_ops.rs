@@ -308,10 +308,14 @@ impl OpReport {
             // the user to the log instead would be the thing this level exists
             // to stop: a leftover nobody can find is what the `warn!` alone
             // already was.
+            //
+            // The count is of places, and says so: one overwrite can strand two
+            // of them, so counting it against `success_label`'s items would read
+            // as "1 item(s) pasted — 2 left something behind".
             many => (
                 StatusLevel::Warning,
                 format!(
-                    "{success_label} — {} left something behind, at {}",
+                    "{success_label} — left something behind in {} places: {}",
                     many.len(),
                     many.iter()
                         .map(|left| left.at.display().to_string())
@@ -354,10 +358,14 @@ fn apply_to_free_name(mode: ClipMode, src: &Path, dst: &Path) -> Result<Applied>
             src.display(),
             dst.display(),
         );
-        // `warn!` rather than the `error!` the strandings in `overwrite_apply`
-        // get: what is left sits at `src`, in the listing, rather than at a
-        // hidden scratch path. The log is the durable copy of a message the
-        // footer shows once and then drops.
+        // Logged here because a leftover is the one outcome `footer` does not
+        // write out: it shows the message once and then drops it, so without
+        // this line there would be no durable record. The strandings in
+        // `overwrite_apply` need no such line — they become failures, and
+        // `footer` logs every one of those itself.
+        //
+        // `warn!` rather than `error!` because what is left sits at `src`, in
+        // the listing, rather than at a hidden scratch path.
         tracing::warn!("{message}");
         return Ok(Applied::leftover(message, src.to_path_buf()));
     }
@@ -398,7 +406,6 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<Applied> {
                 dst.display(),
                 backup.display(),
             );
-            tracing::error!("{message}");
             return Err(Error::Other(format!("{failure} — {message}")));
         }
         return Err(failure.into());
@@ -440,7 +447,6 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<Applied> {
             dst.display(),
             backup.display(),
         );
-        tracing::error!("{message}");
         // The overwrite's own error is what went wrong first, but this is the
         // one the user has to act on: their original is not at `dst` and not in
         // the listing at all. Reported together rather than in place of, so the
@@ -479,7 +485,6 @@ fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Re
                 src.display(),
                 staged.display(),
             );
-            tracing::error!("{message}");
             return Err(Error::Other(format!("{failure} — {message}")));
         }
         return Err(failure.into());
@@ -1390,6 +1395,11 @@ mod op_report_tests {
             !text.contains("was replaced, but"),
             "the sentences are what gets dropped, not the paths: {text}"
         );
+        // One item, two leftovers: the count belongs to the places, and saying
+        // it against the items read as "1 item(s) pasted — 2 left something
+        // behind".
+        assert!(text.contains("in 2 places"), "got: {text}");
+        assert!(text.starts_with("1 item(s) pasted"), "got: {text}");
     }
 
     #[test]
