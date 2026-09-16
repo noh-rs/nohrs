@@ -14,6 +14,25 @@ function Callout({ title, children }: { title?: string; children: ReactNode }) {
   )
 }
 
+/**
+ * A hand-authored SVG figure. The diagram draws in `currentColor` so it follows
+ * the theme, and a `min-width` keeps its labels at a readable size on a phone —
+ * which means it can outgrow the measure, so the scroll container sits on the
+ * wrapper rather than the figure and leaves the caption where it is.
+ */
+function Diagram({ caption, children }: { caption?: ReactNode; children: ReactNode }) {
+  return (
+    <figure className="my-9">
+      <div className="overflow-x-auto [&>svg]:h-auto [&>svg]:w-full [&>svg]:min-w-[560px]">
+        {children}
+      </div>
+      {caption ? (
+        <figcaption className="mt-3 font-mono text-xs text-muted">{caption}</figcaption>
+      ) : null}
+    </figure>
+  )
+}
+
 function Screenshot({ src, alt, caption }: { src: string; alt: string; caption?: string }) {
   return (
     <figure className="my-9">
@@ -100,4 +119,4 @@ function YouTube({ id, title }: { id: string; title: string }) {
   )
 }
 
-export const mdxComponents = { Callout, Screenshot, CodeTabs, YouTube }
+export const mdxComponents = { Callout, Diagram, Screenshot, CodeTabs, YouTube }

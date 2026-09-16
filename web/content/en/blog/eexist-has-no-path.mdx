@@ -1,0 +1,453 @@
+---
+title: EEXIST has no path
+date: '2026-09-16'
+description: Pasting a folder over another one runs into two failures the OS cannot tell apart. Trying to tell them apart, I wrote the same class of bug twice.
+author: shuya goto
+tags: ['engineering', 'filesystem']
+canonical: ja
+---
+
+In a file manager, you paste a folder onto another folder with the same name. It asks whether to replace, and you say yes. Someone does this every day, in Finder and in Explorer alike.
+
+Implement it properly and you hit a question: **when it fails partway, what may be deleted and what must not be?** And because of how the OS is built, the information needed to answer it **is already gone by the time the failure reaches you**.
+
+What follows is a record of dealing with that in Nohrs, but the substance is general — you do not need to know this product to read it. Every prerequisite is built up below.
+
+## A file has a name and a body, and they are separate
+
+First premise. A directory is *not a box holding files*. A directory is nothing but **a table of name → number**.
+
+The number is the inode number. Everything file-like — the contents, the size, the modification time, the permissions — lives on the inode. Only the name lives in the directory. Which means, from the other side: **an inode does not know its own name**.
+
+<Diagram caption="Two names pointing at one number (a hard link). There is only one body. The reverse also happens: the same name can come to point at a different number, if somebody removes it and creates it again.">
+  <svg viewBox="0 0 700 246" role="img" aria-label="A directory is a table mapping names to inode numbers, and two names can point at the same inode number">
+    <defs>
+      <marker id="dentry-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+    </defs>
+    <text x="24" y="26" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">directory entries of work/</text>
+    <rect x="24" y="40" width="270" height="176" fill="none" stroke="currentColor" strokeOpacity="0.35" />
+    <text x="44" y="68" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55">name</text>
+    <text x="274" y="68" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55" textAnchor="end">inode</text>
+    <line x1="40" y1="80" x2="278" y2="80" stroke="currentColor" strokeOpacity="0.3" />
+    <text x="44" y="112" fontFamily="monospace" fontSize="13" fill="currentColor">notes.txt</text>
+    <text x="274" y="112" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">4021</text>
+    <text x="44" y="152" fontFamily="monospace" fontSize="13" fill="currentColor">also-notes.txt</text>
+    <text x="274" y="152" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">4021</text>
+    <text x="44" y="192" fontFamily="monospace" fontSize="13" fill="currentColor">report/</text>
+    <text x="274" y="192" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">4099</text>
+    <line x1="300" y1="108" x2="430" y2="118" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#dentry-arrow)" />
+    <line x1="300" y1="148" x2="430" y2="132" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#dentry-arrow)" />
+    <line x1="300" y1="188" x2="430" y2="190" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#dentry-arrow)" />
+    <text x="352" y="98" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6" textAnchor="middle">points at</text>
+    <rect x="436" y="92" width="240" height="64" fill="none" stroke="currentColor" strokeOpacity="0.55" strokeWidth="1.6" />
+    <text x="456" y="118" fontFamily="monospace" fontSize="13" fill="currentColor">inode 4021</text>
+    <text x="456" y="140" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.65">data, size, mtime</text>
+    <rect x="436" y="170" width="240" height="44" fill="none" stroke="currentColor" strokeOpacity="0.55" strokeWidth="1.6" />
+    <text x="456" y="197" fontFamily="monospace" fontSize="13" fill="currentColor">inode 4099</text>
+  </svg>
+</Diagram>
+
+This structure is why the system call that deletes a file is named `unlink`. What it removes is the name. The body goes away when **no name points at it any more**.
+
+Two consequences fall out, and both come back repeatedly below.
+
+- **Different paths can name the same file.** "The source and the destination have different paths, so this is safe" does not hold.
+- **The same path can name a different file.** The path you looked at a moment ago and the path you are about to write to are not necessarily the same thing.
+
+The second one is the heavy one. **A path is a name, not the identity of what it names.** There is a step later where an entry's identity is checked before deleting it; this is where that requirement comes from.
+
+## rename is atomic, and it replaces silently
+
+`rename(2)` is the system call that moves a file. Given the section above, though, all it does is **rewrite the table**. Not one byte of data moves. That is why a 100GB file moves instantly — within one filesystem.
+
+What matters is that the rewrite is **atomic**. No other process ever observes a halfway state. The name points at the old number or at the new one, and there is nothing in between.
+
+### Replacing silently is a feature, not a flaw
+
+`rename` replaces whatever is already at the destination without asking. That looks reckless, but it is deliberate, and something important depends on it.
+
+Think about how a text editor saves over a file. The naive way: open `notes.txt`, empty it, write the new contents.
+
+```text
+# The naive overwrite. If the power goes out partway...
+open("notes.txt", O_WRONLY|O_TRUNC)   <- the contents are gone at this instant
+write("first half of the new text")   <- ★ stops here
+
+# What is left: "first half of the new text", and nothing else.
+# Neither the old contents nor the new ones exist anywhere.
+```
+
+`O_TRUNC` empties the file as it opens it. The old contents are already lost before a single byte of the new ones is written.
+
+The correct sequence writes the whole thing under another name and swaps it in with `rename`.
+
+```text
+# Atomic save. Stopping anywhere leaves nothing broken.
+write("notes.txt.tmp", the whole new contents)   <- notes.txt is untouched if this dies
+fsync("notes.txt.tmp")
+rename("notes.txt.tmp", "notes.txt")             <- swaps atomically
+
+# notes.txt is either the old contents or the new ones. No halfway state exists.
+```
+
+This works **because `rename` does not refuse to replace**. If it did, the sequence would need a delete first, and a crash in the gap between the delete and the rename would take the file with it.
+
+### And yet, sometimes you do not want to replace
+
+There are also cases where replacing is exactly wrong. Restoring from the trash must not quietly flatten whatever now sits at the original location. Neither must a paste to a name that was supposed to be free.
+
+So there is a rename that refuses to replace: `renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS. "Move if the destination is free, fail with `EEXIST` if it is taken" — atomically.
+
+### But there is a driver wall
+
+Here is the awkward part. The flag travels through the kernel's common layer and ends up at **the individual filesystem's driver**, and the driver does not necessarily implement it.
+
+- **overlayfs** (which is usually what a Docker container's working directory is) → `EINVAL`
+- **Linux kernels older than 4.9** → `ENOSYS`
+- **non-APFS volumes on macOS** → `ENOTSUP`
+
+So a no-replace rename is nice to have but **must not be assumed**. Where it is missing, a fallback is required. The naive one: **copy, then delete the original.**
+
+Everything that follows happens inside that fallback. On ext4 or APFS the rename succeeds in one call and none of this code runs at all.
+
+<Callout title="Remember this">
+One more thing that is **not** atomic. `remove_dir_all`, which deletes a whole directory tree, removes the files inside one at a time. If it fails partway, **the tree is left partly removed.** This grows teeth later.
+</Callout>
+
+## Do not check and then write — claim
+
+There is a shape of code everyone writes first.
+
+```rust
+if !dst.exists() {        // <- check
+    write(dst, data);     // <- use
+}
+```
+
+**Between** those two lines, another process can create `dst`. And `write` will flatten it.
+
+This is TOCTOU — time-of-check to time-of-use — a classic race. It assumes a fact observed at check time still holds at write time.
+
+You might think nobody could slip into so small a gap, but the gap is not necessarily small. In the middle of copying a tree of tens of thousands of files, **that window stays open for seconds or minutes**. Sync clients, backup tools, build scripts, your own other window — there is no shortage of candidates.
+
+The fix is to stop checking. Use calls that **succeed if they took the name and fail if it was taken** instead.
+
+- `open(O_CREAT|O_EXCL)` — create a file; `EEXIST` if it exists
+- `mkdir` — create a directory; `EEXIST` if it exists
+- `symlink` — create a symlink; `EEXIST` if it exists
+
+In each, "look whether it exists" and "create it" are one thing inside the kernel, with no room to interleave. Call that **claiming**.
+
+Every no-replace copy and move in Nohrs is written this way. And it claims **every entry in the tree**, not just the root — because during the seconds it takes to write a tree, somebody can create a colliding name inside it.
+
+## The problem: one EEXIST, two situations
+
+That is the groundwork. Now the actual subject. An overwriting paste goes like this.
+
+<Diagram caption="Step 3, the one-shot swap, is meant to be a single no-replace rename. Where that is unavailable it degrades to copy-and-delete. The bug lives in there.">
+  <svg viewBox="0 0 760 236" role="img" aria-label="The four steps of an overwriting paste and the rollback path that restores the staged original on failure">
+    <defs>
+      <marker id="paste-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+    </defs>
+    <rect x="16" y="40" width="156" height="86" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="30" y="30" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6">1 · stage aside</text>
+    <text x="30" y="70" fontFamily="monospace" fontSize="11.5" fill="currentColor">work/report</text>
+    <text x="30" y="90" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">↓</text>
+    <text x="30" y="110" fontFamily="monospace" fontSize="11.5" fill="currentColor">.report.nohrs-old</text>
+    <line x1="176" y1="83" x2="204" y2="83" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#paste-arrow)" />
+    <rect x="208" y="40" width="156" height="86" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="222" y="30" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6">2 · build</text>
+    <text x="222" y="70" fontFamily="monospace" fontSize="11.5" fill="currentColor">.report.nohrs-new</text>
+    <text x="222" y="92" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">the replacement,</text>
+    <text x="222" y="110" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">built whole</text>
+    <line x1="368" y1="83" x2="396" y2="83" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#paste-arrow)" />
+    <rect x="400" y="40" width="156" height="86" fill="none" stroke="var(--tan-ink)" strokeWidth="1.8" />
+    <text x="414" y="30" fontFamily="monospace" fontSize="11" fill="var(--tan-ink)">3 · commit</text>
+    <text x="414" y="70" fontFamily="monospace" fontSize="11.5" fill="currentColor">.nohrs-new</text>
+    <text x="414" y="90" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">↓ in one shot</text>
+    <text x="414" y="110" fontFamily="monospace" fontSize="11.5" fill="currentColor">work/report</text>
+    <line x1="560" y1="83" x2="588" y2="83" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#paste-arrow)" />
+    <rect x="592" y="40" width="152" height="86" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="606" y="30" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6">4 · clean up</text>
+    <text x="606" y="80" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">delete what was</text>
+    <text x="606" y="100" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">staged aside</text>
+    <path d="M 478 130 L 478 172 L 94 172 L 94 130" fill="none" stroke="currentColor" strokeOpacity="0.75" strokeDasharray="5 4" markerEnd="url(#paste-arrow)" />
+    <text x="286" y="192" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.7" textAnchor="middle">on failure: put the staged original back (rollback)</text>
+    <text x="478" y="222" fontFamily="monospace" fontSize="11" fill="var(--tan-ink)" textAnchor="middle">this is where the fallback runs</text>
+  </svg>
+</Diagram>
+
+When the fallback runs, the inside of step 3 looks like this: claim the destination with `mkdir`, then write the contents, claiming each one. And in the middle of that, another process creates a file inside the destination.
+
+<Diagram caption="Two situations demanding opposite responses arrive at the caller as one indistinguishable error. This is the core of the article.">
+  <svg viewBox="0 0 720 312" role="img" aria-label="A comparison showing that a destination that was already someone else's and a collision inside a tree this call created both arrive as the same AlreadyExists">
+    <defs>
+      <marker id="collide-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+    </defs>
+    <text x="20" y="22" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.75">(a) the destination was already theirs</text>
+    <line x1="20" y1="32" x2="340" y2="32" stroke="currentColor" strokeOpacity="0.3" />
+    <text x="20" y="62" fontFamily="monospace" fontSize="12" fill="currentColor">create_dir(work/report)</text>
+    <text x="340" y="62" fontFamily="monospace" fontSize="12" fill="var(--tan-ink)" fontWeight="700" textAnchor="end">EEXIST</text>
+    <text x="20" y="96" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">someone got there first.</text>
+    <text x="20" y="116" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">we wrote nothing.</text>
+    <text x="20" y="150" fontFamily="monospace" fontSize="12" fill="currentColor" fontWeight="700">→ must not delete</text>
+    <text x="20" y="170" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6">deleting takes their data with it</text>
+    <line x1="360" y1="20" x2="360" y2="196" stroke="currentColor" strokeOpacity="0.2" />
+    <text x="380" y="22" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.75">(b) a collision inside our own tree</text>
+    <line x1="380" y1="32" x2="700" y2="32" stroke="currentColor" strokeOpacity="0.3" />
+    <text x="380" y="62" fontFamily="monospace" fontSize="12" fill="currentColor">create_dir(work/report)</text>
+    <text x="700" y="62" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.5" textAnchor="end">ok</text>
+    <text x="392" y="82" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.7">copy page1.txt</text>
+    <text x="700" y="82" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.5" textAnchor="end">ok</text>
+    <text x="392" y="102" fontFamily="monospace" fontSize="12" fill="currentColor">create_new(…/notes.txt)</text>
+    <text x="700" y="102" fontFamily="monospace" fontSize="12" fill="var(--tan-ink)" fontWeight="700" textAnchor="end">EEXIST</text>
+    <text x="380" y="136" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">we made the destination, and</text>
+    <text x="380" y="156" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">what is in it is our half-copy.</text>
+    <text x="380" y="180" fontFamily="monospace" fontSize="12" fill="currentColor" fontWeight="700">→ should delete</text>
+    <path d="M 180 200 L 180 226 L 300 226 L 300 246" fill="none" stroke="currentColor" strokeOpacity="0.6" markerEnd="url(#collide-arrow)" />
+    <path d="M 540 200 L 540 226 L 420 226 L 420 246" fill="none" stroke="currentColor" strokeOpacity="0.6" markerEnd="url(#collide-arrow)" />
+    <rect x="252" y="250" width="216" height="38" fill="none" stroke="var(--tan-ink)" strokeWidth="1.8" />
+    <text x="360" y="274" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="middle">Err(AlreadyExists)</text>
+    <text x="360" y="306" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.75" textAnchor="middle">the same value either way. which path it happened at is not in it.</text>
+  </svg>
+</Diagram>
+
+Why can they not be told apart? Because errno is **just an integer**. `EEXIST` is 17. "Failure number 17 occurred" is the whole of what comes back from the kernel. Which path it happened at is nowhere in it.
+
+Rust's `std::io::Error` carries no path either, when it comes from `std::fs`. Passing errors upward with `?` for convenience, **the information about where it failed has been thrown away**.
+
+### The cost of misreading is asymmetric
+
+What happens if you confuse the two?
+
+- **Reading (b) as (a)** — which is what the code did — leaves our own half-copy in place as "somebody else's". The rollback then fails because something is in the way, and the user is left with **a broken destination and their original at a hidden path**. No data is lost, but there is no way to tell that from looking.
+- **Reading (a) as (b)** — deletes a directory somebody else created, **contents and all**. There is no undoing that.
+
+Which is why the naive fix — always delete the destination on failure — fixes the first bug and **opens a worse one**.
+
+> A recoverable mess and an unrecoverable deletion are not equivalent.
+
+## The implementation: carry the information back before it is gone
+
+There is only one way out. **Stop looking at what the error says.** Decide on **where it failed** instead — something the operation itself knows, and was throwing away.
+
+So the copy is split into a **claim** stage and a **fill** stage. Fail before the claiming call — `create_dir` / `create_new` / `symlink` — and the destination never became ours. Fail after it, and what is there is our own half-written work. The test depends on position alone, and not at all on the kind of error.
+
+And a failure now returns what it left behind, alongside the error.
+
+```rust
+pub enum Leftover {
+    Nothing,             // never taken — someone else's entry
+    PartialDestination,  // our half-written work; the source is intact
+    WholeDestination,    // the copy landed; only removing the source failed
+}
+```
+
+<Diagram caption="Two of the three say &quot;hands off&quot;, for opposite reasons. Nothing is someone else's. WholeDestination may be the only complete copy left. Only PartialDestination may be removed.">
+  <svg viewBox="0 0 720 244" role="img" aria-label="The three Leftover states, what the destination and the source hold in each, and whether it may be deleted">
+    <rect x="16" y="28" width="216" height="200" fill="none" stroke="currentColor" strokeOpacity="0.3" strokeDasharray="5 4" />
+    <text x="32" y="58" fontFamily="monospace" fontSize="13" fill="currentColor">Nothing</text>
+    <line x1="32" y1="70" x2="216" y2="70" stroke="currentColor" strokeOpacity="0.2" />
+    <text x="32" y="96" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.55">destination</text>
+    <text x="32" y="116" fontFamily="monospace" fontSize="12" fill="currentColor">someone else's</text>
+    <text x="32" y="146" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.55">source</text>
+    <text x="32" y="166" fontFamily="monospace" fontSize="12" fill="currentColor">intact</text>
+    <text x="32" y="206" fontFamily="monospace" fontSize="12.5" fill="currentColor" opacity="0.8" fontWeight="700">hands off</text>
+
+    <rect x="252" y="28" width="216" height="200" fill="none" stroke="var(--tan-ink)" strokeWidth="1.8" />
+    <rect x="252" y="28" width="216" height="4" fill="var(--tan-ink)" />
+    <text x="268" y="58" fontFamily="monospace" fontSize="13" fill="currentColor">PartialDestination</text>
+    <line x1="268" y1="70" x2="452" y2="70" stroke="currentColor" strokeOpacity="0.2" />
+    <text x="268" y="96" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.55">destination</text>
+    <text x="268" y="116" fontFamily="monospace" fontSize="12" fill="currentColor">our half-copy</text>
+    <text x="268" y="146" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.55">source</text>
+    <text x="268" y="166" fontFamily="monospace" fontSize="12" fill="currentColor">intact</text>
+    <text x="268" y="206" fontFamily="monospace" fontSize="12.5" fill="var(--tan-ink)" fontWeight="700">safe to remove (only this)</text>
+
+    <rect x="488" y="28" width="216" height="200" fill="none" stroke="currentColor" strokeOpacity="0.3" strokeDasharray="5 4" />
+    <text x="504" y="58" fontFamily="monospace" fontSize="13" fill="currentColor">WholeDestination</text>
+    <line x1="504" y1="70" x2="688" y2="70" stroke="currentColor" strokeOpacity="0.2" />
+    <text x="504" y="96" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.55">destination</text>
+    <text x="504" y="116" fontFamily="monospace" fontSize="12" fill="currentColor">a complete copy</text>
+    <text x="504" y="146" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.55">source</text>
+    <text x="504" y="166" fontFamily="monospace" fontSize="12" fill="currentColor">possibly partly gone</text>
+    <text x="504" y="206" fontFamily="monospace" fontSize="12.5" fill="currentColor" opacity="0.8" fontWeight="700">hands off</text>
+  </svg>
+</Diagram>
+
+### Why three values — the bug a bool hid
+
+The first implementation was a bool: did we take the destination or not. I thought that was enough. In review, CodeRabbit and cubic both pointed at the same place.
+
+Back to the thing to remember. The fallback move is copy-then-delete-the-original, and the `remove_dir_all` doing that deleting **is not atomic**. Fail partway and **the source is already partly gone**.
+
+I was reporting that failure as "the destination is ours". So the cleanup I had just added would go and delete that destination — **the only complete copy there was**. The source full of holes, the copy deleted.
+
+<Callout title="A regression of my own making">
+Inside a change whose purpose was to avoid unrecoverable deletions, I had created an unrecoverable deletion by another route — having written out that exact reasoning one commit earlier.
+</Callout>
+
+What this showed is that **"hands off" has two reasons**. `Nothing` is somebody else's. `WholeDestination` is the only complete copy. The reasons are opposites, so a bool collapses them. Hence three values.
+
+I renamed the predicate at the same time: not `took_the_destination()` but `left_a_partial_destination()`. **Name the condition that permits the deletion, not the thing that happened.** The old name is what let me miss this, and I know it.
+
+### Do not delete by pathname — check identity
+
+`PartialDestination` is still not enough. What may be removed is not "whatever is at that path" but **the entry we claimed**. The second consequence from the first section — the same path can name a different file — bites here.
+
+During the seconds it takes to write a tree, another process can delete our half-copy and put its own thing at that name. Delete by pathname and we delete theirs. Which is the very thing this change exists to prevent.
+
+So the `dev`/`ino` pair is recorded right after the claim and compared before deleting. No match, no deletion.
+
+**This narrows the window without closing it, though,** and that needs writing down too.
+
+- **The check and the removal are separate calls.** Anything aimed at the gap gets through. Nothing in `std` removes a directory tree through an already-open handle.
+- **Inode numbers get reused.** Remove the half-copy and recreate it under the same name, and the same number can come back. Then the two are indistinguishable.
+
+<Callout title="The test failed 5 times in 30">
+My own test taught me the second one. It played the other process as remove-then-create at the same name — and the recreation sometimes got handed the very number that had been claimed. A 20% failure rate.
+
+I changed the test to build the replacement elsewhere while the half-copy is still alive and `rename` it into place. That can never land on the same number, and it is also what a real process does. Thirty runs, stable.
+
+And because **the flakiness was a report about the limits of the check itself**, it went into the documentation. Fixing the test and going quiet would have been the worst outcome.
+</Callout>
+
+For the file branch, `create_new` — the call that claims — **returns an open handle**, so the identity is read with `fstat` through that handle rather than by `stat`ing the path again. That one is exact: the handle names the entry this call created. The directory branch gets no handle from `mkdir`, so the path-shaped window remains there. That it remains is written in the comment.
+
+### "Not proven" and "proven" are different things
+
+One more review finding. The comparison was written like this.
+
+```rust
+if ENTRY_IDENTITIES_AVAILABLE && entry_identity(dst) != self.claimed {
+    return Ok(());   // no match -> do not delete
+}
+delete_permanent(dst)
+```
+
+If `claimed` is `None` (unreadable at claim time) and the current identity is also `None` (nothing is there), then `None != None` is false. The condition is slipped past and the deletion proceeds.
+
+I had noticed this and decided it was harmless: nothing is there, so the deletion just fails with `NotFound`. **That holds only while the path stays empty.** The check and the deletion are separate calls, so if somebody creates something in between, that is what gets deleted — with the claim never once proven.
+
+Rewritten:
+
+```rust
+if ENTRY_IDENTITIES_AVAILABLE
+    && !self.claimed.is_some_and(|claimed| entry_identity(dst) == Some(claimed))
+{
+    return Ok(());
+}
+delete_permanent(dst)
+```
+
+Write what is **required**, not what is rejected. Both sides must be real identities, and they must match. Everything else falls on the do-not-delete side.
+
+The double `None` could hide because of the first form. A condition that enumerates dangerous combinations and rejects them **lets through whatever you forgot to enumerate**. A condition that demands a safe one be met puts everything unanticipated on the rejected side. The same function taught me this twice.
+
+## Once you may delete it — should you?
+
+What was answered above is **may this be deleted**. **Should it** is a different question, and three call sites were deliberately left alone in the first fix: the paths that write to a *fresh* name — one nothing is waiting on.
+
+A half-copy left there breaks nothing, because no rollback is waiting to come back to that name. So it is not a correctness question but **a policy one**: what should happen to a failed paste's own output?
+
+Keeping it loses the argument.
+
+- It **appears in the listing as an ordinary folder**, with nothing anywhere to say it stopped partway.
+- And it **takes the name.** Paste the same thing again and the numbering steps around what is sitting there, so it lands at `report (2)` — and `report` belongs to the wreckage from then on.
+
+Removing it costs only the time already spent. **There is no resume**, so keeping it does not save the retry a single byte of work. Finder and GNOME Files both remove it.
+
+### The three values were answering two questions
+
+And here the same place caught me again.
+
+When I added the cleanup, I thought about `WholeDestination` purely in terms of **visibility**: the destination is the name the user asked for, so unlike a hidden scratch path nothing has gone missing, and therefore no logging earns its place.
+
+That is true, and it stops one step short. Returning it as an error also means the source **goes back into the retry queue**. And the retry finds the destination name taken — **by the entry this very call just wrote.**
+
+<Diagram caption="The same failure, the same three values. What differs is the question that was asked. WholeDestination means &quot;do not delete&quot; and &quot;this is finished&quot; at once; read only the first and the remains of the source get duplicated next to a complete copy.">
+  <svg viewBox="0 0 720 242" role="img" aria-label="A comparison of the final directory state when the same failure is returned as a retryable error versus treated as committed">
+    <rect x="16" y="30" width="330" height="196" fill="none" stroke="currentColor" strokeOpacity="0.3" strokeDasharray="5 4" />
+    <text x="32" y="60" fontFamily="monospace" fontSize="13" fill="currentColor">returned as Err</text>
+    <line x1="32" y1="72" x2="330" y2="72" stroke="currentColor" strokeOpacity="0.2" />
+    <text x="32" y="98" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55">Documents/</text>
+    <text x="46" y="124" fontFamily="monospace" fontSize="12.5" fill="currentColor">report/</text>
+    <text x="160" y="124" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.7">a complete copy</text>
+    <text x="46" y="150" fontFamily="monospace" fontSize="12.5" fill="var(--tan-ink)" fontWeight="700">report (2)/</text>
+    <text x="176" y="150" fontFamily="monospace" fontSize="11" fill="var(--tan-ink)">what the source had left</text>
+    <text x="32" y="188" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.75">the retry stepped around the</text>
+    <text x="32" y="208" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.75">taken name and grew one beside it</text>
+
+    <rect x="374" y="30" width="330" height="196" fill="none" stroke="currentColor" strokeWidth="1.8" />
+    <text x="390" y="60" fontFamily="monospace" fontSize="13" fill="currentColor">treated as committed</text>
+    <line x1="390" y1="72" x2="688" y2="72" stroke="currentColor" strokeOpacity="0.2" />
+    <text x="390" y="98" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55">Documents/</text>
+    <text x="404" y="124" fontFamily="monospace" fontSize="12.5" fill="currentColor">report/</text>
+    <text x="518" y="124" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.7">a complete copy</text>
+    <text x="390" y="176" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.7">warn: the original could not be</text>
+    <text x="390" y="194" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.7">      fully removed: /Volumes/A/report</text>
+  </svg>
+</Diagram>
+
+<Callout title="One value, two questions">
+`WholeDestination` answers "may this be deleted" with no. At the same time it answers "is this operation finished" with yes. I reused a classification built for the first question at a new call site and **only re-asked the first question**.
+
+What has to be checked when reusing a classification is **every** question its values can answer — not the one currently in your head.
+</Callout>
+
+The fix is close to one line: treat this failure as committed and log only the removal that could not finish. The same decision was in fact already written on another path. It was there, and I did not carry it across to these three.
+
+### Leaving an unclosed hole unclosed
+
+The identity check still has that window where the `stat` and the deletion are separate calls. Review pointed at it: stop deleting by pathname, and fall back to retaining and reporting instead.
+
+I did not. **Retaining and reporting is exactly what this section just removed.** The wreckage holding the name is a certainty; the window needs another process, having already lost the race for that name once, to take it again in the gap between two system calls. That is **trading a certain regression for a narrow race**.
+
+What I did instead was write down what closing it takes, in an issue: `unlinkat` relative to a parent directory fd, and for a directory a hand-written recursion descending through `openat`. `std` offers neither. **Not "it cannot be fixed so say nothing", but "write down how to fix it and leave it there."**
+
+## What to do with what cannot be tested
+
+The heart of this bug cannot be reproduced. It needs two things at once.
+
+- a filesystem that refuses `RENAME_NOREPLACE` (overlayfs, for instance)
+- **and** another process writing into the tree mid-copy
+
+On ext4 or APFS the rename finishes in one call and the code in question never runs. CI is ubuntu and macOS. **A test that does not run where it was written is not a test.**
+
+So instead of the heart of it, I pinned **the property that decides it** — that a claim is determined by where it failed, never by the kind of error.
+
+Put a Unix-domain socket in the source. A socket cannot be `open`ed as a file, so the copy always fails — and it stops **at a known point after the destination was created**, the same side of the claim a nested collision falls on. Deterministic, and it runs on both platforms.
+
+The branch fixed in the second half is the same story. Reaching `WholeDestination` needs a `rename` that reports cross-device **and** a copy that completes **and** a `remove_dir_all` that gives up partway. Three conditions cannot be staged together inside a temporary directory.
+
+And what stayed uncovered went into the PR and into the code comments. **"There is no test" and "not knowing there is no test" are different things.** The first is a decision; the second is an accident.
+
+## What the decisions were based on
+
+The design judgement in one line:
+
+> When the costs are asymmetric, the handling should be too.
+
+A mess can be cleaned up later; a deletion cannot. So when unsure, fall on the side of not touching it.
+
+— except that carrying this far enough stops the rollback from working, which was **the original bug in the first place**. Defaulting to "do not touch" is not sufficient by itself.
+
+So the answer was not to tune the touch/do-not-touch threshold but to **reduce what is unknown**. Carry the information the decision needs back before it is lost. Stop inferring from the kind of error and make the operation say it.
+
+And one more, about how things are written.
+
+- **Name a predicate after the condition that permits the action.** Not "did we take it" but "may we delete it".
+- **Write conditions as requirements.** Not a shape that rejects danger, but one that proves safety.
+- **When reusing a classification, check every question it answers.** Re-ask only the question currently in your head and another face of the same value walks straight through.
+
+Those three were **the direct cause** of three of the review findings. How the names, the conditions and the classification were written is what decided whether an oversight was possible. Before the design was good or bad, **the writing had created the room for the mistake**.
+
+One last sentence, possibly the most useful one here. **Code that infers a situation from errno is usually inferring something that cannot be inferred.** The value is a single integer, and most of what you want to know is not in it.
+
+The code is at [noh-rs/nohrs](https://github.com/noh-rs/nohrs) — this change is in `crates/nohrs-services/src/fs/ops.rs` and `crates/nohrs-pages/src/explorer/file_ops.rs`.
