@@ -10,10 +10,26 @@
 # Exit codes:
 #   0  green   -> all checks passed AND no unresolved AI review threads
 #   1  blocked -> at least one check failing/pending OR unresolved threads remain
-#   2  error   -> could not query GitHub (no PR for branch, auth, etc.)
+#   2  error   -> could not query GitHub (no PR for branch, auth, gh missing)
+#
+# Requires the `gh` CLI. Remote Claude Code sessions do not have it; there the
+# gate is read with the GitHub MCP tools (see SKILL.md, "Environment").
 #
 # The bots we treat as the AI review gate. Extend if more reviewers are added.
 set -uo pipefail
+
+if ! command -v gh >/dev/null 2>&1; then
+  cat >&2 <<'MSG'
+error: `gh` is not installed, so this script cannot read the gate.
+       You are most likely in a remote Claude Code session. Read the same two
+       signals with the GitHub MCP tools instead:
+         - pull_request_read (method: "get_check_runs")      -> CI status
+         - pull_request_read (method: "get_review_comments") -> review threads
+       See the "Environment" section of
+       .claude/skills/pull-request/SKILL.md for the full mapping.
+MSG
+  exit 2
+fi
 
 REVIEW_BOTS_DEFAULT="coderabbitai[bot] cubic-dev-ai[bot]"
 REVIEW_BOTS="${PR_REVIEW_BOTS:-$REVIEW_BOTS_DEFAULT}"
