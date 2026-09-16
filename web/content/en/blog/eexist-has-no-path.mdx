@@ -108,16 +108,34 @@ So there is a rename that refuses to replace: `renameat2(RENAME_NOREPLACE)` on L
 This requires care. The flag travels through the kernel's common layer and ends up at **the individual filesystem's driver**, and the driver does not necessarily implement it.
 
 - **A kernel with no `renameat2` at all** (Linux before 3.15) → `ENOSYS`
-- **A filesystem whose driver does not take the flag** → `EINVAL`. The syscall has existed since 3.15, but `RENAME_NOREPLACE` reached many filesystems only in 4.9, and overlayfs — which is usually what a Docker container's working directory is — still refuses it.
+- **A filesystem whose driver does not take the flag** → `EINVAL`. The syscall has existed since 3.15, but `RENAME_NOREPLACE` reached many filesystems only in 4.9.
 - **non-APFS volumes on macOS** → `ENOTSUP`
 
 The distinction matters when reading the errno: `ENOSYS` is the kernel saying the call does not exist, `EINVAL` is a driver saying it will not take that flag.
 
+<Callout title="What overlayfs actually does, measured">
+The first draft of this post named overlayfs here as the filesystem that returns `EINVAL`. Review questioned it, so I measured, and it was wrong.
+
+overlayfs presents several directories stacked as one. The lower layer is read-only, writes collect in the upper layer, and the viewer sees only the merged result. Changing a file that lives in the lower layer copies it up to the upper one first (copy-up), and that copy is what is used from then on. This is the relationship between a Docker image and a container, and it is usually what a container's working directory sits on.
+
+Mounting an overlayfs on Linux 6.18 and calling `renameat2(RENAME_NOREPLACE)` directly:
+
+| operation | result |
+| --- | --- |
+| destination free | success |
+| destination taken | `EEXIST` |
+| moving a directory that lives in the lower layer | `EXDEV` |
+
+The first two rows are what ext4 does. The flag is accepted. And the third, `EXDEV`, means "this crosses a filesystem" — an entirely different branch from `EINVAL`. overlayfs does reach the fallback, but **as a cross-device move, not as an unsupported flag**.
+
+Inferring a situation from an errno gets it wrong: that is this post's subject. The post itself got it wrong, in one line written without checking.
+</Callout>
+
 A no-replace rename is therefore useful where available, but **must not be assumed to exist**. Where it is missing, a fallback is required. The simplest fallback is to **copy, then delete the original.**
 
-This is where a **move** can end up. Worth being precise about, because it is easy to conclude that ext4 and APFS are exempt from everything below: there, a move finishes in one rename and the fallback never runs.
+This is where a **move** can end up. Worth being precise about, because it is easy to conclude that ext4 and APFS are exempt from everything below: a move **within one volume** does finish in a single rename, and the fallback never runs.
 
-A **copy** has no such shortcut. There is no rename that duplicates a tree, so a copy always walks it, claiming every entry as it goes — on ext4 and APFS exactly as anywhere else. So the problem below reaches a cross-volume move only where the no-replace rename is missing, and reaches an ordinary copy-paste everywhere.
+A **copy** has no such shortcut. There is no rename that duplicates a tree, so a copy always walks it, claiming every entry as it goes — on ext4 and APFS exactly as anywhere else. So the problem below reaches an ordinary copy-paste everywhere, and reaches a move whenever it crosses a volume (`EXDEV`) or the no-replace rename is missing.
 
 <Callout title="Note: an operation that is not atomic">
 One further operation is **not** atomic. `remove_dir_all`, which deletes a whole directory tree, removes the files inside one at a time. If it fails partway, **the tree is left partly removed.** This property becomes significant in a later section.
@@ -422,7 +440,7 @@ What I did instead was write down what closing it takes, in an issue: `unlinkat`
 
 The central case of this defect cannot be reproduced. It needs another process to create a colliding name inside the destination tree during the seconds the copy is writing it — a race, on someone else's schedule, that a test cannot wait for.
 
-For a cross-volume move it needs a second condition on top: a filesystem that refuses `RENAME_NOREPLACE`, such as overlayfs, since on ext4 or APFS the move finishes in one rename and the copying code never runs. CI is ubuntu and macOS, where it does not. **A test that does not run where it was written is not a test.**
+A move changes the conditions. Within one volume it finishes in a single rename and the copying code never runs; across volumes it does run, but CI's temporary directories all sit on one filesystem, so that path is never taken there. What CI does exercise is the `copy_path_no_replace` side — `the_fallback_move_claims_the_destination_before_writing_to_it` among others — and not `move_path_no_replace` dropping into its cross-device fallback. **A test that does not run where it was written is not a test.**
 
 In place of the central case, the test pins **the property that determines it** — that a claim is determined by where it failed, never by the kind of error.
 
