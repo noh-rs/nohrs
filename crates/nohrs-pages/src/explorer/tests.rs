@@ -183,7 +183,10 @@ async fn status_message_set_and_clear(cx: &mut TestAppContext) {
     window
         .update(cx, |page, _window, _cx| {
             page.set_status(StatusLevel::Error, "boom");
-            assert_eq!(page.status_for_footer(), Some(("boom".to_string(), true)));
+            assert_eq!(
+                page.status_for_footer(),
+                Some(("boom".to_string(), StatusLevel::Error))
+            );
             page.clear_status();
             assert_eq!(page.status_for_footer(), None);
         })
@@ -339,8 +342,8 @@ async fn trigger_search_empty_clears_and_no_service_degrades(cx: &mut TestAppCon
             page.search_query = "needle".into();
             page.trigger_search(window, cx);
             assert!(page.search_results.is_none());
-            let (_, is_error) = page.status_for_footer().expect("degraded status set");
-            assert!(is_error);
+            let (_, level) = page.status_for_footer().expect("degraded status set");
+            assert_eq!(level, StatusLevel::Error);
         })
         .unwrap();
 }
@@ -414,8 +417,8 @@ async fn reload_reports_error_for_unreadable_dir(cx: &mut TestAppContext) {
             page.cwd = "/nonexistent/nohrs/dir".to_string();
             page.loaded = false;
             page.reload();
-            let (_, is_error) = page.status_for_footer().expect("error status set");
-            assert!(is_error);
+            let (_, level) = page.status_for_footer().expect("error status set");
+            assert_eq!(level, StatusLevel::Error);
             assert!(page.entries.is_empty());
         })
         .unwrap();
@@ -1684,8 +1687,8 @@ async fn cut_paste_keeps_failed_sources_on_the_clipboard_as_a_cut(cx: &mut TestA
     cx.run_until_parked();
     window
         .read_with(cx, |pane, _cx| {
-            let (_, is_error) = pane.status_for_footer().expect("the failure is reported");
-            assert!(is_error, "the move failed");
+            let (_, level) = pane.status_for_footer().expect("the failure is reported");
+            assert_eq!(level, StatusLevel::Error, "the move failed");
         })
         .unwrap();
     assert!(!dst.join("x.txt").exists());
@@ -1766,7 +1769,7 @@ async fn copy_selection_reports_status(cx: &mut TestAppContext) {
             pane.copy_selection(cx);
             assert_eq!(
                 pane.status_for_footer(),
-                Some(("1 item(s) copied".to_string(), false))
+                Some(("1 item(s) copied".to_string(), StatusLevel::Info))
             );
         })
         .unwrap();
@@ -1876,8 +1879,8 @@ async fn trash_refuses_when_nothing_can_record_where_the_item_came_from(cx: &mut
     assert!(root.join("a.txt").exists(), "the item must not be trashed");
     window
         .read_with(cx, |pane, _cx| {
-            let (text, is_error) = pane.status_for_footer().expect("a status is reported");
-            assert!(is_error, "{text}");
+            let (text, level) = pane.status_for_footer().expect("a status is reported");
+            assert_eq!(level, StatusLevel::Error, "{text}");
             assert!(text.contains("the database is locked"), "{text}");
         })
         .unwrap();
@@ -1895,8 +1898,8 @@ async fn delete_permanent_reports_failure_in_status(cx: &mut TestAppContext) {
     cx.run_until_parked();
     window
         .read_with(cx, |pane, _cx| {
-            let (text, is_error) = pane.status_for_footer().expect("a status was set");
-            assert!(is_error);
+            let (text, level) = pane.status_for_footer().expect("a status was set");
+            assert_eq!(level, StatusLevel::Error);
             assert!(text.contains("1 of 1"), "got: {text}");
         })
         .unwrap();
@@ -1919,8 +1922,8 @@ async fn rename_to_invalid_name_reports_error(cx: &mut TestAppContext) {
         .unwrap();
     window
         .read_with(cx, |pane, _cx| {
-            let (text, is_error) = pane.status_for_footer().expect("a status was set");
-            assert!(is_error);
+            let (text, level) = pane.status_for_footer().expect("a status was set");
+            assert_eq!(level, StatusLevel::Error);
             assert!(text.contains("Rename failed"), "got: {text}");
         })
         .unwrap();

@@ -8,6 +8,7 @@
 //! launcher window will be a symmetric root in `nohrs-launcher`.
 
 use crate::explorer::ExplorerPage;
+use crate::explorer::StatusLevel;
 use crate::{
     PageKind, extensions::ExtensionsPage, git::GitPage, s3::S3Page, settings::SettingsPage,
 };
@@ -22,7 +23,7 @@ use nohrs_core::telemetry::LogErr;
 use nohrs_services::fs::trash::Ledger as TrashLedger;
 use nohrs_services::search::SearchService;
 use nohrs_store::KvStore;
-use nohrs_ui::components::layout::footer::{FooterProps, footer};
+use nohrs_ui::components::layout::footer::{FooterProps, StatusTone, footer};
 use nohrs_ui::components::layout::unified_toolbar::{
     AccountMenuAction, AccountMenuCommand, UnifiedToolbarProps, unified_toolbar,
 };
@@ -32,6 +33,18 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 use tracing::info;
+
+// The explorer's own status levels, in the terms the footer paints in. Two
+// vocabularies rather than one because `nohrs-ui` knows nothing about file
+// operations and should not: what reaches it is how a message should read, not
+// what produced it.
+fn tone_of(level: StatusLevel) -> StatusTone {
+    match level {
+        StatusLevel::Info => StatusTone::Normal,
+        StatusLevel::Warning => StatusTone::Warning,
+        StatusLevel::Error => StatusTone::Error,
+    }
+}
 
 /// The application root view that hosts the page sidebar, the active page, and
 /// the shared configuration and search state.
@@ -338,11 +351,11 @@ impl Render for RootView {
                 {
                     // A config load error takes precedence over the explorer's
                     // transient status and is always shown as an error.
-                    let (status_message, status_is_error) = match &self.config_status {
-                        Some(message) => (Some(message.clone()), true),
+                    let (status_message, status_tone) = match &self.config_status {
+                        Some(message) => (Some(message.clone()), StatusTone::Error),
                         None => match self.explorer.read(cx).status_for_footer(cx) {
-                            Some((text, is_error)) => (Some(text), is_error),
-                            None => (None, false),
+                            Some((text, level)) => (Some(text), tone_of(level)),
+                            None => (None, StatusTone::Normal),
                         },
                     };
                     let (selected_count, total_count) = self.explorer.read(cx).selection_counts(cx);
@@ -353,7 +366,7 @@ impl Render for RootView {
                         current_path,
                         indexing_progress: self.indexing_progress,
                         status_message,
-                        status_is_error,
+                        status_tone,
                         ..Default::default()
                     };
                     footer(props, cx)
