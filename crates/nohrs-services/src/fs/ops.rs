@@ -52,12 +52,6 @@ pub struct ClaimFailure {
 // entry at the same name after something swaps it.
 type EntryIdentity = (u64, u64);
 
-// Whether this platform exposes an entry identity at all. Where it does not
-// there is nothing to compare, and a cleanup has only the path it was given to
-// go on; withholding it there instead would leave every partial destination
-// standing, which is the failure this whole mechanism exists to stop.
-const ENTRY_IDENTITIES_AVAILABLE: bool = cfg!(unix);
-
 // The entry at `path` now — and, read straight after a claim, the entry that
 // claim created.
 #[cfg(unix)]
@@ -85,6 +79,158 @@ fn handle_identity(file: &fs::File) -> Option<EntryIdentity> {
 #[cfg(not(unix))]
 fn handle_identity(_file: &fs::File) -> Option<EntryIdentity> {
     None
+}
+
+// Removes `dst` while it is still the entry `claimed` names, reaching it through
+// descriptors rather than by resolving the path a second time. Backs
+// [`ClaimFailure::discard_partial_destination`], whose doc comment carries the
+// reasoning and the two gaps this narrows without closing.
+//
+// A `None` claim permits nothing. It means the identity could not be read back
+// straight after the claim, and failing to read back what was just created is
+// itself a sign that something reached the destination in between.
+#[cfg(unix)]
+fn discard_claimed(dst: &Path, claimed: Option<EntryIdentity>) -> Result<()> {
+    use rustix::fs::{AtFlags, unlinkat};
+    let Some(claimed) = claimed else {
+        return Ok(());
+    };
+    let (parent, name) = parent_and_name(dst)?;
+    // Opened once and held for the rest of the call. Every step below names its
+    // target relative to this descriptor, which is the directory itself rather
+    // than a route to it, so nothing that happens to `parent` as a path in the
+    // meantime is followed.
+    let parent = fs::File::open(parent)?;
+    let Some(entry) = open_claimed(&parent, name, claimed)? else {
+        return Ok(());
+    };
+    if entry.metadata()?.is_dir() {
+        // Emptied through `entry`, so the recursion below never consults the
+        // name again and cannot be steered out of the tree it is clearing.
+        empty_dir(&entry)?;
+        // The name is needed once more here, and this is the one place where
+        // that costs nothing: `rmdir` refuses a directory with anything in it,
+        // and the directory this call just emptied is the only empty one that
+        // can be sitting at the name.
+        unlinkat(&parent, name, AtFlags::REMOVEDIR).map_err(std::io::Error::from)?;
+    } else {
+        // Whereas here the name really is resolved a second time, because
+        // `unlink` has no other form. Holding the parent removes every step of
+        // the lookup above this last one.
+        unlinkat(&parent, name, AtFlags::empty()).map_err(std::io::Error::from)?;
+    }
+    Ok(())
+}
+
+// Where there is no entry identity to compare, a cleanup has only the path it
+// was given to go on. Withholding the removal instead would leave every partial
+// destination standing, which is the failure this whole mechanism exists to
+// stop.
+#[cfg(not(unix))]
+fn discard_claimed(dst: &Path, _claimed: Option<EntryIdentity>) -> Result<()> {
+    delete_permanent(dst)
+}
+
+// Splits `path` into the directory to open and the name to look up inside it.
+#[cfg(unix)]
+fn parent_and_name(path: &Path) -> Result<(&Path, &OsStr)> {
+    let name = path.file_name().ok_or_else(|| {
+        Error::Other(format!(
+            "cannot remove a path that names no entry: {}",
+            path.display()
+        ))
+    })?;
+    let parent = match path.parent() {
+        // `Path::parent` reports a bare name's parent as the empty path, which
+        // names nothing and cannot be opened. What a bare name resolves against
+        // is the working directory.
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    Ok((parent, name))
+}
+
+// Opens `name` inside `parent`, and hands it back only while it is still the
+// entry that was claimed.
+//
+// `O_NOFOLLOW` so a symbolic link left at the name cannot stand in for whatever
+// it points at, and `O_NONBLOCK` so a FIFO left there cannot make this wait for
+// a writer that never arrives. Neither could pass the identity check below, but
+// both would have to be opened before it could run.
+#[cfg(unix)]
+fn open_claimed(
+    parent: &fs::File,
+    name: &OsStr,
+    claimed: EntryIdentity,
+) -> Result<Option<fs::File>> {
+    use rustix::fs::{Mode, OFlags, openat};
+    let entry = match openat(
+        parent,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(entry) => fs::File::from(entry),
+        // Nothing at the name, or a symbolic link, which `O_NOFOLLOW` reports as
+        // `ELOOP` rather than opening its target. Neither is what `create_new`
+        // or `mkdir` made, so there is nothing here to undo.
+        Err(rustix::io::Errno::NOENT | rustix::io::Errno::LOOP) => return Ok(None),
+        Err(error) => return Err(Error::Io(error.into())),
+    };
+    // Through the open handle, so what is compared is the entry this call is
+    // holding rather than whatever the name resolves to later on.
+    if handle_identity(&entry) != Some(claimed) {
+        return Ok(None);
+    }
+    Ok(Some(entry))
+}
+
+// Removes everything inside the directory `dir` refers to, leaving the directory
+// itself. Each descent opens its child from the descriptor above it, so the walk
+// stays inside the tree however that tree is rearranged while it runs.
+#[cfg(unix)]
+fn empty_dir(dir: &fs::File) -> Result<()> {
+    use rustix::fs::{AtFlags, Dir, Mode, OFlags, openat, unlinkat};
+    // Read to the end before removing anything. Whether a directory being read
+    // reports entries that are removed from it after the read began is left
+    // unspecified, so the listing is finished first and acted on second.
+    let mut names = Vec::new();
+    for entry in Dir::read_from(dir).map_err(std::io::Error::from)? {
+        let entry = entry.map_err(std::io::Error::from)?;
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        names.push(name.to_owned());
+    }
+    for name in &names {
+        let name = name.as_c_str();
+        // Which of the two removals applies is asked of the kernel rather than
+        // read from `d_type`, which some filesystems leave as `DT_UNKNOWN`.
+        // `O_DIRECTORY` answers it and hands back the descriptor the recursion
+        // needs in the same call.
+        match openat(
+            dir,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(child) => {
+                empty_dir(&fs::File::from(child))?;
+                unlinkat(dir, name, AtFlags::REMOVEDIR).map_err(std::io::Error::from)?;
+            }
+            // Not a directory, or a symbolic link to one — `O_NOFOLLOW` turns
+            // that into `ELOOP` rather than opening the target, which is what
+            // keeps a link inside the tree from taking its target with it.
+            Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
+                unlinkat(dir, name, AtFlags::empty()).map_err(std::io::Error::from)?;
+            }
+            // Gone between the listing and here, so there is nothing to remove.
+            Err(rustix::io::Errno::NOENT) => {}
+            Err(error) => return Err(Error::Io(error.into())),
+        }
+    }
+    Ok(())
 }
 
 /// What a failed no-replace copy or move left behind, and so what a caller
@@ -157,31 +303,31 @@ impl ClaimFailure {
     /// this call created and put its own entry at the same name; deleting by
     /// path alone would take theirs.
     ///
-    /// Narrowing, not closing, in two ways worth naming. The check is a `stat`
-    /// and the removal a separate call, and nothing in `std` removes a directory
-    /// tree through an already-open handle, so a swap timed at that gap still
-    /// gets through. And an entry created at the same name after this one was
-    /// removed can be handed the same inode number, in which case it is
-    /// indistinguishable from the entry that was claimed. What the check does
-    /// rule out is the whole length of the copy, where the replacement exists
-    /// alongside the partial and so cannot share its identity.
+    /// The entry is opened once and everything after that runs against the
+    /// descriptor: the identity is read with `fstat`, and a directory is emptied
+    /// through `openat` and `unlinkat` relative to it. So the path is resolved
+    /// once rather than twice, and nothing done to it afterwards — an ancestor
+    /// renamed, a component swapped for a symbolic link — can steer the removal
+    /// anywhere else.
+    ///
+    /// Two gaps are narrowed rather than closed, and both are worth naming.
+    /// `unlink` takes a name in a directory and never an inode — a body can
+    /// carry several names, so "remove this descriptor" does not exist even in
+    /// principle — which leaves one last lookup of the name in the pinned
+    /// parent. For a directory that lookup can only ever cost the call: the
+    /// contents are already gone by then, and `rmdir` refuses anything but an
+    /// empty directory, so the worst a swap can substitute is another empty one.
+    /// For everything else it is a real window, and a small one. Separately, an
+    /// entry created at the same name after this one was removed can be handed
+    /// the same inode number, in which case it is indistinguishable from what
+    /// was claimed. What the identity does rule out is the whole length of the
+    /// copy, where the replacement exists alongside the partial and so cannot
+    /// share its number.
     pub fn discard_partial_destination(&self, dst: &Path) -> Result<()> {
         if self.leftover != Leftover::PartialDestination {
             return Ok(());
         }
-        // Both sides have to be a real identity, and the same one. `None` on
-        // either — the claim never established, or nothing at the path right
-        // now — proves nothing, and comparing those two as equal would let the
-        // removal run against whatever appears at the name in the moment
-        // between this check and it.
-        if ENTRY_IDENTITIES_AVAILABLE
-            && !self
-                .claimed
-                .is_some_and(|claimed| entry_identity(dst) == Some(claimed))
-        {
-            return Ok(());
-        }
-        delete_permanent(dst)
+        discard_claimed(dst, self.claimed)
     }
 
     /// The failure itself, without the claim.
@@ -656,9 +802,18 @@ fn rename_no_replace(src: &Path, dst: &Path) -> Option<std::io::Result<()>> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
     match renameat_with(CWD, src, CWD, dst, RenameFlags::NOREPLACE) {
         Ok(()) => Some(Ok(())),
-        // The flag reaches the filesystem driver, and not every driver
-        // implements it: overlayfs and some network mounts report `EINVAL`,
-        // a pre-4.9 kernel `ENOSYS`, a non-APFS macOS volume `ENOTSUP`.
+        // The flag reaches the filesystem driver, and not every driver takes
+        // it: a non-APFS macOS volume reports `ENOTSUP`, a driver that does not
+        // implement it `EINVAL`. `ENOSYS` is the older and separate case of the
+        // kernel having no `renameat2` at all, before Linux 3.15 — the syscall
+        // has existed since then, and 4.9 is only when `RENAME_NOREPLACE`
+        // reached many of the filesystems that had been answering `EINVAL`.
+        //
+        // Not overlayfs, which was named here for years and does not belong:
+        // measured on 6.18 it takes the flag and answers `EEXIST` like ext4. It
+        // does reach the fallback, but through `EXDEV` on a lower-layer
+        // directory, which `move_path_no_replace` sends down the cross-device
+        // branch rather than this one.
         Err(rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::NOTSUP) => {
             None
         }
@@ -1201,6 +1356,128 @@ mod tests {
             "theirs",
             "the cleanup removed an entry it never created"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_cleanup_clears_a_nested_tree_without_following_a_link_out_of_it() {
+        // The removal walks the tree itself rather than handing a path to
+        // `remove_dir_all`, so what it does at each entry is this module's to
+        // get right: descend into a directory, unlink anything else — and a
+        // symbolic link is anything else. Following one would take a directory
+        // the copy never wrote and the user never named.
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(source.join("ipc")).unwrap();
+
+        let dst = dir.path().join("dst");
+        let failure = copy_path_no_replace(&source, &dst).unwrap_err();
+        assert_eq!(failure.leftover(), Leftover::PartialDestination);
+
+        // Filling the partial out afterwards rather than arranging for the copy
+        // to write it: what a failed copy leaves depends on the order
+        // `read_dir` hands back, and the shape being tested here has to be the
+        // same every run. Adding entries under `dst` leaves `dst` itself the
+        // entry that was claimed.
+        let outside = dir.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), "keep").unwrap();
+        fs::create_dir_all(dst.join("a/b/c")).unwrap();
+        fs::write(dst.join("a/b/c/deep.txt"), "deep").unwrap();
+        std::os::unix::fs::symlink(&outside, dst.join("a").join("link")).unwrap();
+
+        failure.discard_partial_destination(&dst).unwrap();
+
+        assert!(!dst.exists(), "the tree goes, however deep it runs");
+        assert_eq!(
+            fs::read_to_string(outside.join("keep.txt")).unwrap(),
+            "keep",
+            "the link was unlinked, not walked through"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_left_where_the_claim_was_is_not_the_claim() {
+        // `O_NOFOLLOW` is what decides this. Without it the open would succeed
+        // on the directory at the other end of the link, and the only thing
+        // still standing between that directory and the removal would be its
+        // identity.
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(source.join("ipc")).unwrap();
+
+        let dst = dir.path().join("dst");
+        let failure = copy_path_no_replace(&source, &dst).unwrap_err();
+        assert_eq!(failure.leftover(), Leftover::PartialDestination);
+
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::write(elsewhere.join("theirs.txt"), "theirs").unwrap();
+        fs::remove_dir_all(&dst).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &dst).unwrap();
+
+        failure.discard_partial_destination(&dst).unwrap();
+
+        assert!(
+            dst.symlink_metadata().is_ok(),
+            "the link was never this copy's to remove"
+        );
+        assert_eq!(
+            fs::read_to_string(elsewhere.join("theirs.txt")).unwrap(),
+            "theirs",
+            "and neither was what it points at"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_cleanup_removes_a_claimed_file_and_leaves_one_that_replaced_it() {
+        // The file half of the removal, which a failed copy cannot be made to
+        // produce on demand — `fill_file` fails on a read or a `chmod` of
+        // entries this call itself just created, neither of which a test can
+        // arrange — so it is driven directly. `claim_file` is the same call the
+        // copy claims a destination with, and the identity comes off the handle
+        // it returns, exactly as in `copy_path_no_replace`.
+        let dir = tempdir().unwrap();
+        let mine = dir.path().join("note.txt");
+        let claimed = handle_identity(&claim_file(&mine).unwrap());
+        assert!(claimed.is_some(), "the claim read its own handle back");
+        discard_claimed(&mine, claimed).unwrap();
+        assert!(!mine.exists());
+
+        // The other side of it. Built elsewhere and renamed into place, rather
+        // than created at the name after the first one goes: inode numbers are
+        // reused, and a replacement handed the number this claim recorded would
+        // make the assertion below depend on the filesystem's mood.
+        let claimed = handle_identity(&claim_file(&mine).unwrap());
+        let theirs = dir.path().join("theirs.txt");
+        fs::write(&theirs, "theirs").unwrap();
+        fs::remove_file(&mine).unwrap();
+        fs::rename(&theirs, &mine).unwrap();
+
+        discard_claimed(&mine, claimed).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&mine).unwrap(),
+            "theirs",
+            "the removal stopped at an entry it did not claim"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_claim_that_never_read_its_identity_removes_nothing() {
+        // `None` is not "no check to run", it is "the check could not be made".
+        // Failing to read back what was just created is itself a sign something
+        // reached the destination in between, so it permits nothing.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("note.txt");
+        fs::write(&path, "mine").unwrap();
+        discard_claimed(&path, None).unwrap();
+        assert!(path.exists());
     }
 
     #[test]
