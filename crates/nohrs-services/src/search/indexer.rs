@@ -331,6 +331,128 @@ impl IndexManager {
     pub fn update_file(&self, path: &Path) -> Result<()> {
         self.process_changes(&[path.to_path_buf()])
     }
+
+    /// Where the default index lives and what it covers.
+    pub fn default_location() -> Result<(PathBuf, PathBuf)> {
+        let home_dir = dirs::home_dir().context("Could not determine home directory")?;
+        Ok((
+            home_dir.join(".nohrs").join("index"),
+            home_dir.join("Documents"),
+        ))
+    }
+}
+
+/// Read-only access to an index someone else built.
+///
+/// [`IndexManager`] opens a writer, and tantivy's writer takes an exclusive lock
+/// on the index directory: a second process — `noh search` while the app is
+/// running — would be refused one. Answering a query needs no writer, so every
+/// read-only caller goes through this instead and can share the index with a
+/// running GUI.
+pub struct IndexReader {
+    index: Index,
+    index_path: PathBuf,
+    content_root: PathBuf,
+}
+
+impl IndexReader {
+    /// Opens the default index, or `None` when nothing has built one yet.
+    ///
+    /// Deliberately does not create one: an empty index left behind by a reader
+    /// is indistinguishable from a real but useless one, and every later search
+    /// would answer "no results" from it.
+    pub fn open_default() -> Result<Option<Self>> {
+        let (index_path, content_root) = IndexManager::default_location()?;
+        Self::open(index_path, content_root)
+    }
+
+    /// Opens the index at `index_path`, said to cover `content_root`.
+    ///
+    /// Returns `None` when there is no index there, and an error when there is
+    /// one that cannot answer queries (an index left by an older schema).
+    pub fn open(index_path: PathBuf, content_root: PathBuf) -> Result<Option<Self>> {
+        if !index_path.join("meta.json").exists() {
+            return Ok(None);
+        }
+        let index = Index::open_in_dir(&index_path)
+            .with_context(|| format!("cannot open the index at {}", index_path.display()))?;
+        let schema = index.schema();
+        for field in ["path", "filename", "content"] {
+            schema.get_field(field).with_context(|| {
+                format!(
+                    "the index at {} was built by an older version of nohrs (no `{field}` field); rebuild it",
+                    index_path.display()
+                )
+            })?;
+        }
+        Ok(Some(Self {
+            index,
+            index_path,
+            content_root,
+        }))
+    }
+
+    /// Where the index itself is stored.
+    pub fn index_path(&self) -> &Path {
+        &self.index_path
+    }
+
+    /// The tree the index was built from.
+    pub fn content_root(&self) -> &Path {
+        &self.content_root
+    }
+
+    /// How many documents the index holds. Zero means it exists but has not
+    /// been filled in, which answers no query correctly.
+    pub fn document_count(&self) -> Result<u64> {
+        Ok(self.index.reader()?.searcher().num_docs())
+    }
+
+    /// Whether `path` is inside the tree the index covers.
+    pub fn covers(&self, path: &Path) -> bool {
+        path.starts_with(&self.content_root)
+    }
+
+    /// The paths the index considers the best matches for `query`, best first,
+    /// at most `pool` of them.
+    ///
+    /// These are candidates, not results: the index knows which documents hold
+    /// the query's terms, not where in the file they are, so a caller that wants
+    /// lines matches them itself.
+    pub fn candidates(&self, query: &str, pool: usize) -> Result<Vec<PathBuf>> {
+        let reader = self.index.reader()?;
+        let searcher = reader.searcher();
+        let schema = self.index.schema();
+        let path_field = schema.get_field("path").context("Field not found")?;
+        let filename_field = schema.get_field("filename").context("Field not found")?;
+        let content_field = schema.get_field("content").context("Field not found")?;
+
+        let query_parser = tantivy::query::QueryParser::for_index(
+            &self.index,
+            vec![filename_field, content_field],
+        );
+        let parsed = query_parser
+            .parse_query(query)
+            .with_context(|| format!("the index cannot read `{query}` as a query"))?;
+        // Scored order: this is the BM25 ranking the index exists to provide,
+        // and the caller keeps it, so the best candidates survive a limit.
+        let top_docs = searcher.search(
+            &parsed,
+            &tantivy::collector::TopDocs::with_limit(pool).order_by_score(),
+        )?;
+
+        let mut paths = Vec::with_capacity(top_docs.len());
+        for (_score, address) in top_docs {
+            let document: TantivyDocument = searcher.doc(address)?;
+            if let Some(path) = document
+                .get_first(path_field)
+                .and_then(|value| value.as_str())
+            {
+                paths.push(PathBuf::from(path));
+            }
+        }
+        Ok(paths)
+    }
 }
 
 impl super::backend::SearchBackend for IndexManager {
