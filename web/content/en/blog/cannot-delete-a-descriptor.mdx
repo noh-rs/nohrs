@@ -243,6 +243,41 @@ Both flags end up on the same side, then, and for the same underlying reason: th
 
 One more thing not to take on trust: the `d_type` field that `readdir` returns, which says whether an entry is a directory. Several filesystems fill it with `DT_UNKNOWN` and expect you to ask. Passing `O_DIRECTORY` to `openat` asks — and hands back, in the same call, the descriptor a recursive walk needs next.
 
+## Where this came from
+
+None of the above was theoretical. It came out of [Nohrs](https://github.com/noh-rs/nohrs), the file manager this blog belongs to, and one unglamorous job: clearing up after a paste that failed halfway.
+
+When a copy into a fresh name gives up partway, what it left has to go. Keeping it is not an option — it appears in the listing as an ordinary folder with nothing to say it is incomplete, and it holds the name, so every retry from then on lands at `report (2)`. But the cleanup has to remove **only what this operation created**, never an entry that merely shares the name.
+
+The old version decided and acted in two separate steps: a `stat` to confirm the destination was this operation's own half-finished work, then `remove_dir_all(dst)`, which resolved `dst` by pathname all over again. That is the gap from earlier in this article, sitting in production code. Two walks, one decision, and in between another writer can put something else at that name — the `stat` says "mine", and the removal takes whatever is there now.
+
+The window is narrow. Reaching it needs a second writer to claim the same name in the moment between two syscalls, having already lost that name once. Narrow enough that removing by path anyway was a deliberate choice for a while, because the alternative — keep the partial and report it — is not a race but a certainty.
+
+The fix is the `*at` shape: walk to the parent once, hold it, and do everything else relative to that descriptor.
+
+```rust
+let (parent, name) = parent_and_name(dst)?;
+let parent = open_directory(parent)?;
+// Hands the entry back only while it is still the one that was claimed.
+let Some(entry) = open_claimed(&parent, name, claimed)? else {
+    return Ok(());
+};
+if entry.metadata()?.is_dir() {
+    empty_dir(&entry)?;
+    already_gone_is_fine(unlinkat(&parent, name, AtFlags::REMOVEDIR))?;
+} else {
+    already_gone_is_fine(unlinkat(&parent, name, AtFlags::empty()))?;
+}
+```
+
+Three details in there are consequences of everything above, not choices:
+
+- The identity comparison runs **through the open descriptor**. Checked by name it would be worth nothing — just one more lookup to race.
+- `ENOENT` from the removal is success. The entry is gone, which is what the call wanted, and somebody else got there first; treating it as an error would abandon the cleanup over the very race the cleanup exists to survive.
+- The final `unlinkat` still takes `name`. It resolves one component, against a directory this code is holding and nobody can swap — and that is as far in as this goes.
+
+That last line is why the article ends the way it does.
+
 ## Narrowing and closing
 
 The claim in the title is stronger than "Linux is missing a call". "Delete this descriptor" is not a feature request, because a descriptor names a body and deletion acts on names, and one body can have many.
