@@ -212,15 +212,29 @@ fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> ops::ClaimResult<()> {
 // Removing it costs only the time already spent, never data:
 // `Leftover::PartialDestination` is the one case that comes with the source
 // intact, and `discard_partial_destination` refuses anything else — a name this
-// call never took, or a whole copy whose source deletion is what failed. That
-// last one is left where it is: `dst` is the name the user asked for, so unlike
-// the hidden scratch paths in `overwrite_apply` nothing has gone anywhere
-// surprising, and the failure is reported with both paths visible.
+// call never took, or a whole copy whose source deletion is what failed.
 fn apply_to_free_name(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
-    apply_one(mode, src, dst).map_err(|failure| {
-        drop_claimed(&failure, dst);
-        failure.into()
-    })
+    let Err(failure) = apply_one(mode, src, dst) else {
+        return Ok(());
+    };
+    // That last case is not a failure to report, and above all not one to
+    // retry. A cross-volume cut whose copy landed and whose removal of the
+    // source then gave up partway has put the whole entry under the name the
+    // user asked for; retrying it would copy whatever `remove_dir_all` spared
+    // to `dst (2)` beside the finished one, because `free_destination` numbers
+    // around a name that is now taken. What is left at `src` sits in the
+    // listing where the user can see it, so the paste stands and the removal it
+    // could not finish is logged.
+    if failure.leftover() == ops::Leftover::WholeDestination {
+        tracing::warn!(
+            "{} was copied to {}, but the original could not be fully removed: {failure}",
+            src.display(),
+            dst.display(),
+        );
+        return Ok(());
+    }
+    drop_claimed(&failure, dst);
+    Err(failure.into())
 }
 
 // Overwrites `dst` with `src` without risking data loss on failure: the existing
