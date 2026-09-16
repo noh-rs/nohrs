@@ -32,7 +32,9 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   pulls in a `libsqlite3-sys` whose build script uses `cfg_select!`, stable only
   since 1.95, and the dependency graph separately asks for 1.89. Building on an
   older toolchain already failed — inside that build script, with a message that
-  named neither nohrs nor a version — and now fails as an MSRV error instead.
+  named neither nohrs nor a version — and now fails as an MSRV error instead. A
+  new `msrv` CI job compiles the workspace on exactly the declared version, so
+  the floor cannot drift again without CI saying so.
 - Host KV keys are a `KvKey` rather than a `&str`, so the `<namespace>.<name>`
   convention is enforced instead of merely documented. A literal goes through
   the `kv_key!` macro, whose `const { … }` block forces const evaluation, so a
