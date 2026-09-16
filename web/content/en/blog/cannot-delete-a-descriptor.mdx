@@ -9,7 +9,7 @@ canonical: ja
 
 Suppose a program has a file open. It holds a descriptor — the number `open` handed back — and that number identifies, without ambiguity, one particular thing on the disk. Now the program wants to delete that thing.
 
-It cannot. Not because the call is missing, but because **the request does not name anything**. Working out why is a short tour of what a path is, what a descriptor is, and what "delete" turns out to mean.
+It cannot. Not because the call is missing, but because **the request does not name anything**. Establishing why requires three things: what a path is, what a descriptor is, and what deletion operates on.
 
 Everything below was measured on Linux 6.18 rather than recalled, and the output is quoted as it came back.
 
@@ -34,36 +34,40 @@ One caveat before the inode number starts doing work as an identity below: it is
     <text x="274" y="68" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55" textAnchor="end">inode</text>
     <line x1="40" y1="80" x2="278" y2="80" stroke="currentColor" strokeOpacity="0.3" />
     <text x="44" y="112" fontFamily="monospace" fontSize="13" fill="currentColor">a</text>
-    <text x="274" y="112" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">1900547</text>
+    <text x="274" y="112" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">1908771</text>
     <text x="44" y="152" fontFamily="monospace" fontSize="13" fill="currentColor">b</text>
-    <text x="274" y="152" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">1900547</text>
+    <text x="274" y="152" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">1908771</text>
     <line x1="300" y1="108" x2="430" y2="122" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#names-arrow)" />
     <line x1="300" y1="148" x2="430" y2="136" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#names-arrow)" />
     <rect x="436" y="96" width="240" height="68" fill="none" stroke="currentColor" strokeOpacity="0.55" strokeWidth="1.6" />
-    <text x="456" y="124" fontFamily="monospace" fontSize="13" fill="currentColor">inode 1900547</text>
+    <text x="456" y="124" fontFamily="monospace" fontSize="13" fill="currentColor">inode 1908771</text>
     <text x="456" y="147" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.65">size, mode, mtime, blocks</text>
   </svg>
 </Diagram>
 
 That table is why the system call that deletes a file is called `unlink` rather than `delete`. It removes a link — one row of the table. The body is reclaimed only once nothing refers to it at all: no directory entry anywhere, and no open descriptor or memory mapping held by a running process.
 
-Two names, one body, and a descriptor watching what happens:
+A program creates two names for one body, opens a descriptor on one of them, and removes that name. This is what it printed:
 
 ```text
-one/a inode=1900547  one/b inode=1900547  same=True
-open fd=3 -> fstat inode=1900547
+one/a   inode=1908771
+one/b   inode=1908771
+fd 3    inode=1908771
 
-after unlink('one/a'): one/b exists=True contents='payload'
-the fd still names the body: fstat inode=1900547, read=b'payload'
+unlink('one/a')
+  one/b exists   True
+  one/b contents 'payload'
+  fd 3 inode    1908771
+  fd 3 read     b'payload'
 ```
 
 ## Why "delete this descriptor" has no meaning
 
 Now put those two facts together.
 
-A descriptor names a body. `unlink` removes a name. In the run above, the body had two names; after the `unlink` it has one. Had it been asked to "delete the descriptor" instead, the kernel would have had to answer a question nobody asked: **which of the names?**
+A descriptor names a body. `unlink` removes a name. In the run above, the body had two names; after the `unlink` it has one. Asked instead to "delete the descriptor", the kernel would have to determine **which of the names to remove**, and the request does not supply that.
 
-This is not a gap in the API. It is a request that does not resolve to an action. A body with three names is not "three-quarters deleted" after you remove one, and there is no defensible rule that says removing a descriptor should mean removing all of them — that is a different and much more destructive operation than any caller asked for.
+This is not a gap in the API. It is a request that does not resolve to an action. Removing one of three names does not leave a file partly deleted, and defining the operation as removing all of them would make it a substantially more destructive call than the caller requested.
 
 <Callout title="It is not merely absent on Linux">
 FreeBSD does offer `funlinkat`, and it is worth seeing what it actually does: it takes *both* a descriptor and a name, and removes the name only if it still refers to the same file as the descriptor. It is a **verified** unlink, not an unlink by descriptor. The name is still the thing removed.
@@ -73,21 +77,21 @@ Linux has no equivalent. `linkat` with `AT_EMPTY_PATH` can give a descriptor a n
 
 So on a Unix-like system every removal names something. And naming something means resolving a path.
 
-<Callout title="Windows answers the question rather than declining it">
-The hedge in that sentence is doing real work, and the exception is worth knowing. Windows does let a program delete through an already-open handle: `SetFileInformationByHandle` with `FileDispositionInfo` takes no path at all, only a handle opened with `DELETE` access.
+<Callout title="Windows resolves the ambiguity differently">
+The qualification in that sentence is deliberate, and the exception is worth knowing. Windows does permit deletion through an already-open handle: `SetFileInformationByHandle` with `FileDispositionInfo` takes no path, only a handle opened with `DELETE` access.
 
-That is not a counterexample so much as the other available answer. The ambiguity is just as real there — NTFS has hard links too — and Windows settles it by having the handle carry the name it was opened through, so "delete this handle" means "delete that name". POSIX declines to record that association, which is exactly why the request has no referent here and does have one there. It is a design choice, not a law of filesystems.
+This is not a counterexample but an alternative resolution. The ambiguity exists on Windows as well, since NTFS supports hard links, and Windows resolves it by having the handle retain the name it was opened through, so that deleting through the handle removes that name. POSIX does not record this association, which is why the request has no referent under POSIX and does have one under Windows. The difference is a design decision rather than a property of filesystems in general.
 
 (Documented behaviour rather than measured: everything else in this article was run on Linux 6.18, and this was not.)
 </Callout>
 
-## A path is a route; a descriptor is a hold
+## What a path resolves, and what a descriptor refers to
 
-Resolving a path is a walk. `work/report` means: look up `work` in the current directory, get an inode, check it is a directory, look up `report` inside it. Each component is a fresh lookup against whatever the filesystem holds *at that instant*.
+Resolving a path is a sequence of lookups. `work/report` means: look up `work` in the current directory, obtain an inode, verify it is a directory, then look up `report` inside it. Each component is resolved against whatever the filesystem contains *at that instant*.
 
-The kernel does not cache that walk between calls on your behalf. Two successive calls on the same path are two independent walks, and the filesystem is free to change in between.
+The kernel does not cache that resolution between calls. Two successive calls on the same path perform two independent resolutions, and the filesystem may change in between.
 
-A descriptor is the opposite. It is a hold on a specific inode, taken once and kept. Nothing done to the names above it moves it.
+A descriptor works the other way. It refers to one specific inode, resolved once and retained. Changes to the names above it do not affect what it refers to.
 
 <Diagram caption="The same target, reached two ways. The path is re-walked on every call and follows whatever the names say now. The descriptor was resolved once and does not move.">
   <svg viewBox="0 0 720 250" role="img" aria-label="A path is resolved component by component on each call, whereas a file descriptor refers directly to an inode and is unaffected by later renames">
@@ -108,7 +112,7 @@ A descriptor is the opposite. It is a hold on a specific inode, taken once and k
     <line x1="428" y1="65" x2="500" y2="102" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#route-arrow)" />
     <text x="150" y="112" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6">each box is a lookup that can answer differently next time</text>
     <rect x="506" y="86" width="190" height="60" fill="none" stroke="currentColor" strokeOpacity="0.6" strokeWidth="1.8" />
-    <text x="601" y="112" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="middle">inode 1900550</text>
+    <text x="601" y="112" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="middle">inode 1908802</text>
     <text x="601" y="133" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.65" textAnchor="middle">the body</text>
     <text x="24" y="190" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">by descriptor — resolved once, then held</text>
     <rect x="24" y="204" width="130" height="40" fill="none" stroke="currentColor" strokeOpacity="0.6" strokeWidth="1.8" />
@@ -127,23 +131,24 @@ renamed work -> work2
   work2/report gone            -> True
 ```
 
-The path stopped resolving; there is no `work` any more. The descriptor did not care. It was never holding the name `work` — it was holding the directory.
+The path no longer resolves, because there is no `work` any more. The descriptor is unaffected: it never referred to the name `work`, only to the directory itself.
 
-## When somebody else steps into the gap
+## When another program takes the name
 
-The rename above only lost the call. Change one detail and it loses data instead: after moving the directory aside, let another program create a new one at the old name.
+The rename above only caused the call to fail. Changing one detail causes data loss instead: after the directory is moved aside, another program creates a new directory at the old name.
 
 ```text
-  path  w/report  now inode=1900552 contents='THEIRS'
-  dirfd w-moved/report inode=1900550 contents='mine'
+path  w/report   inode=1908833 'THEIRS'
+dirfd report     inode=1908802 'mine'
 
-  unlink('w/report')           -> ok   <- removed THEIRS
-  their file still there?      -> False
+unlink('w/report')   -> ok
+  removed           'THEIRS'
+  their file left?  False
 ```
 
-The program asked to delete its own file. The path it used was correct when it looked. By the time `unlink` ran, the same path meant a stranger's file, and that is the one that went.
+The program requested the deletion of its own file. The path was correct at the time it was checked. By the time `unlink` executed, the same path referred to another program's file, and that is the file that was removed.
 
-Nothing here is exotic. The program did not misuse the API; it used a path-based removal, and the filesystem moved underneath it. This is the shape of an entire family of bugs — check a path, then act on it, and lose the race in between — and it is why the kernel grew a second way to say what you mean.
+Nothing here depends on unusual conditions. The program did not misuse the API; it used a path-based removal, and the filesystem changed between the check and the call. This is the general form of a large class of defects — check a path, then act on it, and lose the race in between — and it is why the kernel provides a second way to designate the target.
 
 ## What the `*at` family shortens
 
@@ -178,7 +183,7 @@ What it does not do is remove that last lookup. `unlinkat(dirfd, "report", 0)` s
 
 ## The asymmetry in `rmdir`
 
-That remaining lookup sounds like it leaves the problem where it was. For directories, it very nearly does not, and the reason is a rule that looks like an inconvenience until you need it.
+That remaining lookup appears to leave the problem unchanged. For directories it very nearly does not, because of one existing restriction.
 
 `rmdir` refuses to remove a directory that has anything in it:
 
@@ -190,15 +195,15 @@ That remaining lookup sounds like it leaves the problem where it was. For direct
 
 So a program that wants to remove a tree safely can do this: walk down through descriptors, emptying as it goes — none of which consults the name again — and only at the very end ask `rmdir` for the name. By then the directory it means is empty.
 
-If something has swapped the name in that last instant, `rmdir` can only succeed against **another empty directory**. The worst case went from losing a stranger's populated tree to losing a stranger's empty folder. That is not nothing, but it is a different category of harm, and it comes for free from a rule that was already there.
+If something replaces the name in that final instant, `rmdir` can only succeed against **another empty directory**. The worst case changes from removing another program's populated tree to removing another program's empty directory. That is still a loss, but a materially smaller one, and it follows from a restriction that already existed.
 
-For a file there is no such rule. `unlink` removes whatever is at the name. The window is two system calls wide and it is real.
+For a file there is no equivalent restriction. `unlink` removes whatever is at the name. The window is two system calls wide, and it is real.
 
-<Callout title="Worth stating plainly">
-This is narrowing, not closing. A design that claims to remove only what it created, on Linux, is claiming something the platform does not offer. The honest version says where the floor is — and that is more useful to the next reader than a guarantee that quietly is not one.
+<Callout title="Stated precisely">
+This narrows the window; it does not close it. A design that claims to remove only what it created, on Linux, claims a guarantee the platform does not provide. Stating where the remaining exposure lies is more useful to a later reader than asserting a guarantee that does not hold.
 </Callout>
 
-## The flags, and one trap
+## The flags
 
 Opening an entry through this machinery is not quite `open(path, O_RDONLY)`. Four flags come into it:
 
@@ -207,14 +212,14 @@ Opening an entry through this machinery is not quite `open(path, O_RDONLY)`. Fou
 - `O_NOFOLLOW` — do not follow a symbolic link at the final component.
 - `O_NONBLOCK` — return from `open` rather than waiting on the thing being opened.
 
-`O_CLOEXEC` is the only unconditional one — every open here wants it. `O_DIRECTORY` belongs on the anchor and *only* there, since the entry open exists precisely to find out what type the entry is. The other two are the interesting ones, because both look as though they belong on the anchor and neither earns its place there — for opposite reasons. `O_NOFOLLOW` on the anchor breaks something that works; `O_NONBLOCK` on the anchor has nothing left to do.
+`O_CLOEXEC` is the only one that applies unconditionally; every open here requires it. `O_DIRECTORY` applies to the anchor open and only there, since the entry open exists in order to determine the entry's type. The remaining two require more care, because both appear to belong on the anchor open and neither does, for different reasons. `O_NOFOLLOW` on the anchor open prevents a legitimate case; `O_NONBLOCK` on the anchor open has no effect.
 
-Start with `O_NOFOLLOW`, which is worth being precise about because it looks right in the wrong place.
+Consider `O_NOFOLLOW` first, since applying it in the wrong position still appears correct.
 
-It belongs on **the entry being removed**, where following a link would let a link stand in for what it points at. It does **not** belong on the parent directory. A user can perfectly well have navigated into a folder reached through a symbolic link; refusing to open it does not protect anything, it just abandons the operation. And following the link there is safe for a different reason — the identity check on the entry only passes when the directory you reached really is the one holding it.
+It belongs on **the entry being removed**, where following a link would allow a link to substitute for its target. It does **not** belong on the parent directory. A user may legitimately have navigated into a directory reached through a symbolic link, and refusing to open it provides no protection while abandoning the operation. Following the link there is safe for a separate reason: the identity check on the entry passes only when the directory reached is the one that actually holds it.
 
 <Callout title="The errno moves when you add a flag">
-While checking that, something turned up that is worth carrying away. The error reported for a symbolic link under `O_NOFOLLOW` depends on whether `O_DIRECTORY` is also set:
+Verifying the above produced a result worth recording. The error reported for a symbolic link under `O_NOFOLLOW` depends on whether `O_DIRECTORY` is also set:
 
 | flags | `adir` | `afile` | link to dir | link to file | dangling link |
 | --- | --- | --- | --- | --- | --- |
@@ -223,12 +228,12 @@ While checking that, something turned up that is worth carrying away. The error 
 | `O_RDONLY\|O_DIRECTORY` | ok | `ENOTDIR` | ok | `ENOTDIR` | `ENOENT` |
 | `O_RDONLY\|O_DIRECTORY\|O_NOFOLLOW` | ok | `ENOTDIR` | `ENOTDIR` | `ENOTDIR` | `ENOTDIR` |
 
-The same condition — a symbolic link at the name, `O_NOFOLLOW` set — reports `ELOOP` on the second row and `ENOTDIR` on the fourth. `O_DIRECTORY` is checked first and answers before `O_NOFOLLOW` gets to speak.
+The same condition — a symbolic link at the name, with `O_NOFOLLOW` set — reports `ELOOP` on the second row and `ENOTDIR` on the fourth. `O_DIRECTORY` is evaluated first and determines the result before `O_NOFOLLOW` is considered.
 
-Code that means "it was a link, so remove it without opening it" therefore has to accept **both**, and a comment that names only one is describing a run it happened to make rather than the rule.
+Code that treats "it was a link, so remove it without opening it" as a case must therefore accept **both** errors. A comment naming only one describes a particular configuration rather than the rule.
 </Callout>
 
-`O_NONBLOCK` goes wrong the other way. The reasoning for putting it on the anchor is plausible: a FIFO sitting at the name would make `open` itself wait for a writer that may never arrive, and an operation that hangs forever is worse than one that fails. The reasoning is sound and the conclusion is still wrong, because `O_DIRECTORY` is already there:
+`O_NONBLOCK` fails in the other direction. The reasoning for applying it to the anchor open is plausible: a FIFO at that name would cause `open` itself to wait for a writer that may never arrive, and an operation that blocks indefinitely is worse than one that fails. The reasoning is sound, but the conclusion does not follow, because `O_DIRECTORY` is already present:
 
 | flags | a FIFO with no writer |
 | --- | --- |
@@ -237,27 +242,27 @@ Code that means "it was a link, so remove it without opening it" therefore has t
 | `O_RDONLY\|O_DIRECTORY` | `ENOTDIR`, immediately |
 | `O_RDONLY\|O_DIRECTORY\|O_NONBLOCK` | `ENOTDIR`, immediately |
 
-The first row is the hazard, the second is the fix, and the third shows the fix was already applied by something else. `O_DIRECTORY` rejects the FIFO before it can block, so on an open that carries it, `O_NONBLOCK` has nothing left to prevent.
+The first row is the hazard, the second is the fix, and the third shows that the fix is already supplied by another flag. `O_DIRECTORY` rejects the FIFO before it can block, so on an open that carries it, `O_NONBLOCK` has no remaining effect.
 
-Where the flag does earn its place is the open of **the entry being removed** — the same open `O_NOFOLLOW` belongs on. That one cannot carry `O_DIRECTORY`, and the reason is the point of the whole exercise: the entry may be a file, a directory or a FIFO, and which it is *is what the open is there to find out*. `O_DIRECTORY` would answer the question by refusing the ones that are not directories. So the protection has to come from `O_NONBLOCK` instead, and there it is the only thing between the caller and an `open` that never returns.
+The flag does apply to the open of **the entry being removed**, which is also where `O_NOFOLLOW` belongs. That open cannot carry `O_DIRECTORY`, for the reason given above: the entry may be a file, a directory or a FIFO, and determining which is the purpose of the open. `O_DIRECTORY` would resolve that by rejecting everything that is not a directory. The protection must therefore come from `O_NONBLOCK`, which there is the only thing preventing an `open` that does not return.
 
-Both flags end up on the same side, then, and for the same underlying reason: the anchor is a directory and known to be one, while the entry is unknown until it is open. Guard the unknown.
+Both flags thus apply to the same open, for the same reason: the anchor is known to be a directory, whereas the entry's type is unknown until it is opened.
 
-With one honest footnote, since the code at the end of this article is there to be read: the anchor open in Nohrs sets `O_NONBLOCK` anyway. Not by oversight — its comment says "belt and braces" and gives the reason. "Redundant given the flag beside it" and "wrong" are different claims, and the argument above only establishes the first. A redundant flag costs one bit in a bitmask; the thing it would have caught, if the reasoning about ordering were ever wrong, is a file manager that hangs forever on a paste. Cheap insurance against one's own analysis being mistaken is not the same mistake as not having done the analysis.
+One qualification, since the code at the end of this article is quoted in full: the anchor open in Nohrs sets `O_NONBLOCK` regardless. This is deliberate, and its comment records the reason. "Redundant given the flag beside it" and "incorrect" are distinct claims, and the argument above establishes only the first. The cost of a redundant flag is one bit in a bitmask; the failure it would prevent, were the reasoning about evaluation order wrong, is a file manager that blocks indefinitely during a paste.
 
-One more thing not to take on trust: the `d_type` field that `readdir` returns, which says whether an entry is a directory. Several filesystems fill it with `DT_UNKNOWN` and expect you to ask. Passing `O_DIRECTORY` to `openat` asks — and hands back, in the same call, the descriptor a recursive walk needs next.
+One further value not to rely on is the `d_type` field returned by `readdir`, which reports whether an entry is a directory. Several filesystems set it to `DT_UNKNOWN` and require the caller to check. Passing `O_DIRECTORY` to `openat` performs that check and returns, in the same call, the descriptor a recursive walk requires next.
 
-## Where this came from
+## The case this came from
 
-None of the above was theoretical. It came out of [Nohrs](https://github.com/noh-rs/nohrs), the file manager this blog belongs to, and one unglamorous job: clearing up after a paste that failed halfway.
+The preceding sections describe a defect in [Nohrs](https://github.com/noh-rs/nohrs), the file manager this blog belongs to. The affected operation is the cleanup performed after a paste fails partway through.
 
-When a copy into a fresh name gives up partway, what it left has to go. Keeping it is not an option — it appears in the listing as an ordinary folder with nothing to say it is incomplete, and it holds the name, so every retry from then on lands at `report (2)`. But the cleanup has to remove **only what this operation created**, never an entry that merely shares the name.
+When a copy into a new name fails partway, the partial result must be removed. Retaining it is not viable: it appears in the listing as an ordinary directory with no indication that it is incomplete, and it occupies the name, so every subsequent retry is placed at `report (2)`. The cleanup must, however, remove **only what this operation created**, never an entry that merely shares the name.
 
-The old version decided and acted in two separate steps: a `stat` to confirm the destination was this operation's own half-finished work, then `remove_dir_all(dst)`, which resolved `dst` by pathname all over again. That is the gap from earlier in this article, sitting in production code. Two walks, one decision, and in between another writer can put something else at that name — the `stat` says "mine", and the removal takes whatever is there now.
+The previous implementation performed the decision and the removal as two separate steps: a `stat` to confirm that the destination was this operation's own partial result, then `remove_dir_all(dst)`, which resolved `dst` by pathname a second time. This is the gap described earlier in this article, present in shipped code. Two resolutions, one decision, and between them another writer can place a different entry at that name; the `stat` confirms ownership, and the removal then operates on whatever is present at that moment.
 
-The window is narrow. Reaching it needs a second writer to claim the same name in the moment between two syscalls, having already lost that name once. Narrow enough that removing by path anyway was a deliberate choice for a while, because the alternative — keep the partial and report it — is not a race but a certainty.
+The window is narrow. Reaching it requires a second writer to claim the same name between two system calls, having already lost that name once. It was narrow enough that removing by path was a deliberate choice for a period, because the alternative — retaining the partial result and reporting it — is not a race condition but a certainty.
 
-The fix is the `*at` shape: walk to the parent once, hold it, and do everything else relative to that descriptor.
+The fix follows the `*at` pattern: resolve the parent once, retain the descriptor, and perform everything else relative to it.
 
 ```rust
 let (parent, name) = parent_and_name(dst)?;
@@ -274,23 +279,21 @@ if entry.metadata()?.is_dir() {
 }
 ```
 
-Three details in there are consequences of everything above, not choices:
+Three details there follow from the preceding sections rather than from preference:
 
-- The identity comparison runs **through the open descriptor**. Checked by name it would be worth nothing — just one more lookup to race.
-- `ENOENT` from the removal is success. The entry is gone, which is what the call wanted, and somebody else got there first; treating it as an error would abandon the cleanup over the very race the cleanup exists to survive.
-- The final `unlinkat` still takes `name`. It resolves one component, against a directory this code is holding and nobody can swap — and that is as far in as this goes.
-
-That last line is why the article ends the way it does.
+- The identity comparison is performed **through the open descriptor**. Performed by name it would provide nothing, being one further lookup subject to the same race.
+- `ENOENT` from the removal is treated as success. The entry is gone, which is the requested outcome, and another process reached it first; treating it as an error would abandon the cleanup because of the race the cleanup exists to tolerate.
+- The final `unlinkat` still takes `name`. It resolves one component, against a directory this code holds and which cannot be substituted. That is the limit of what the technique provides.
 
 ## Narrowing and closing
 
-The claim in the title is stronger than "Linux is missing a call". "Delete this descriptor" is not a feature request, because a descriptor names a body and deletion acts on names, and one body can have many.
+The claim in the title is stronger than "Linux is missing a call". "Delete this descriptor" is not a feature request, because a descriptor refers to a body, deletion operates on names, and one body may have several.
 
-What follows from that is a fair summary of the whole area:
+The consequences are as follows:
 
 - Every removal resolves a name, so every removal has a window.
-- A held directory descriptor removes every part of the walk except the last component.
-- For directories, `rmdir` refusing a non-empty target shrinks what that last window can cost.
-- For everything else, the window stays, and the useful thing to do about it is to write down where it is.
+- A retained directory descriptor eliminates every part of the resolution except the final component.
+- For directories, `rmdir` refusing a non-empty target limits what that remaining window can cost.
+- For everything else the window remains, and the appropriate response is to record where it is.
 
-There is a version of this article that ends by presenting a technique as a solution. It would be more satisfying and less true. The technique is good — descriptor-relative work is strictly better than re-walking a path, and it is what the `*at` calls exist for — but the last lookup is not a detail anyone forgot. It is what deletion is.
+Presenting the technique as a solution would be inaccurate. Descriptor-relative work is strictly preferable to re-resolving a path, and it is what the `*at` calls exist for, but the final lookup is not an oversight in the interface. It is what deletion consists of.

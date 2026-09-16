@@ -862,11 +862,14 @@
   border-radius: 4px;
 }
 
+/* `--line` rather than `--line-soft`: against the page ground the softer rule
+   left the block reading as a faint tint rather than as a code block, which is
+   the one thing its edge has to convey. */
 .prose pre {
   padding: 16px 18px;
   overflow-x: auto;
   background: var(--surface);
-  border: 1px solid var(--line-soft);
+  border: 1px solid var(--line);
   border-radius: 5px;
   font-size: 0.8125rem;
   line-height: 1.75;
