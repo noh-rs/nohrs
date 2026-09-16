@@ -100,7 +100,7 @@ fn discard_claimed(dst: &Path, claimed: Option<EntryIdentity>) -> Result<()> {
     // target relative to this descriptor, which is the directory itself rather
     // than a route to it, so nothing that happens to `parent` as a path in the
     // meantime is followed.
-    let parent = fs::File::open(parent)?;
+    let parent = open_directory(parent)?;
     let Some(entry) = open_claimed(&parent, name, claimed)? else {
         return Ok(());
     };
@@ -112,14 +112,56 @@ fn discard_claimed(dst: &Path, claimed: Option<EntryIdentity>) -> Result<()> {
         // that costs nothing: `rmdir` refuses a directory with anything in it,
         // and the directory this call just emptied is the only empty one that
         // can be sitting at the name.
-        unlinkat(&parent, name, AtFlags::REMOVEDIR).map_err(std::io::Error::from)?;
+        already_gone_is_fine(unlinkat(&parent, name, AtFlags::REMOVEDIR))?;
     } else {
         // Whereas here the name really is resolved a second time, because
         // `unlink` has no other form. Holding the parent removes every step of
         // the lookup above this last one.
-        unlinkat(&parent, name, AtFlags::empty()).map_err(std::io::Error::from)?;
+        already_gone_is_fine(unlinkat(&parent, name, AtFlags::empty()))?;
     }
     Ok(())
+}
+
+// `ENOENT` from a removal is not a failure: the entry is gone, which is what the
+// call wanted, and something else got there first. Treating it as one would
+// abort a cleanup over the very race the cleanup is written to survive, leaving
+// the partial destination standing.
+//
+// Anything else is a real failure, `ENOTEMPTY` included: an entry created inside
+// a directory after this call emptied it means the partial is still there, and
+// reporting that as done would be untrue.
+#[cfg(unix)]
+fn already_gone_is_fine(result: rustix::io::Result<()>) -> Result<()> {
+    match result {
+        Ok(()) | Err(rustix::io::Errno::NOENT) => Ok(()),
+        Err(error) => Err(Error::Io(error.into())),
+    }
+}
+
+// Opens `path` as a directory, for use as the base of `openat` and `unlinkat`.
+//
+// `O_DIRECTORY` so nothing else can be opened by mistake, and `O_NONBLOCK` so a
+// FIFO left at the name cannot make this wait for a writer that never comes —
+// belt and braces, since `O_DIRECTORY` is refused before a FIFO's open would
+// block, but the cost is nothing and the failure mode is a hung file operation.
+//
+// Deliberately *not* `O_NOFOLLOW`, which review suggested and which belongs on
+// the entry rather than here. A parent whose last component is a symbolic link
+// to a directory is an ordinary thing for a user to have navigated into, and
+// refusing it would abandon the partial rather than clear it. Nor does following
+// one endanger anything: what decides the removal is the identity check on the
+// entry, and it only passes when `parent` is the directory actually holding the
+// claimed inode.
+#[cfg(unix)]
+fn open_directory(path: &Path) -> Result<fs::File> {
+    use rustix::fs::{Mode, OFlags, open};
+    let directory = open(
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(std::io::Error::from)?;
+    Ok(fs::File::from(directory))
 }
 
 // Where there is no entry identity to compare, a cleanup has only the path it
@@ -217,13 +259,13 @@ fn empty_dir(dir: &fs::File) -> Result<()> {
         ) {
             Ok(child) => {
                 empty_dir(&fs::File::from(child))?;
-                unlinkat(dir, name, AtFlags::REMOVEDIR).map_err(std::io::Error::from)?;
+                already_gone_is_fine(unlinkat(dir, name, AtFlags::REMOVEDIR))?;
             }
             // Not a directory, or a symbolic link to one — `O_NOFOLLOW` turns
             // that into `ELOOP` rather than opening the target, which is what
             // keeps a link inside the tree from taking its target with it.
             Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
-                unlinkat(dir, name, AtFlags::empty()).map_err(std::io::Error::from)?;
+                already_gone_is_fine(unlinkat(dir, name, AtFlags::empty()))?;
             }
             // Gone between the listing and here, so there is nothing to remove.
             Err(rustix::io::Errno::NOENT) => {}
@@ -310,19 +352,35 @@ impl ClaimFailure {
     /// renamed, a component swapped for a symbolic link — can steer the removal
     /// anywhere else.
     ///
-    /// Two gaps are narrowed rather than closed, and both are worth naming.
+    /// Two gaps are narrowed rather than closed, so read the sentence above as
+    /// what this aims at rather than a guarantee it can keep.
+    ///
     /// `unlink` takes a name in a directory and never an inode — a body can
     /// carry several names, so "remove this descriptor" does not exist even in
-    /// principle — which leaves one last lookup of the name in the pinned
-    /// parent. For a directory that lookup can only ever cost the call: the
-    /// contents are already gone by then, and `rmdir` refuses anything but an
-    /// empty directory, so the worst a swap can substitute is another empty one.
-    /// For everything else it is a real window, and a small one. Separately, an
-    /// entry created at the same name after this one was removed can be handed
-    /// the same inode number, in which case it is indistinguishable from what
-    /// was claimed. What the identity does rule out is the whole length of the
-    /// copy, where the replacement exists alongside the partial and so cannot
-    /// share its number.
+    /// principle, on this platform or any other — which leaves one last lookup
+    /// of the name in the pinned parent. For a directory that lookup can only
+    /// ever cost the call: the contents are already gone by then, and `rmdir`
+    /// refuses anything but an empty directory, so the worst a swap can
+    /// substitute is another empty one. For everything else it is a real
+    /// window, of two syscalls rather than the whole path resolution it
+    /// replaces. Separately, an entry created at the same name after this one
+    /// was removed can be handed the same inode number, in which case it is
+    /// indistinguishable from what was claimed. What the identity does rule out
+    /// is the whole length of the copy, where the replacement exists alongside
+    /// the partial and so cannot share its number.
+    ///
+    /// Refusing to remove anything where that cannot be guaranteed is not the
+    /// safer choice it looks like: leaving the partial standing is not a race
+    /// but a certainty on every failed write, and it is what #277 removed.
+    ///
+    /// One more thing this does *not* do: inside a destination it claimed, it
+    /// removes everything, including entries another writer created there while
+    /// the copy ran. Those are what the nested `EEXIST` above is about. They are
+    /// under a name this call created with `mkdir` and owns, and sparing them
+    /// would leave the directory non-empty, fail the `rmdir`, and block the
+    /// rollback that the whole claim exists to make possible — stranding the
+    /// caller's original at a scratch path to save a file that arrived
+    /// uninvited.
     pub fn discard_partial_destination(&self, dst: &Path) -> Result<()> {
         if self.leftover != Leftover::PartialDestination {
             return Ok(());
@@ -1465,6 +1523,41 @@ mod tests {
             "theirs",
             "the removal stopped at an entry it did not claim"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_destination_named_through_a_link_is_still_cleared() {
+        // `O_NOFOLLOW` belongs on the entry, not on the directory holding it,
+        // which is why the parent is opened without it. Navigating into a
+        // symbolically linked folder is an ordinary thing to do, and refusing
+        // the open there would abandon the partial rather than clear it — the
+        // regression this whole mechanism exists to avoid, traded for nothing:
+        // following the link endangers nothing, because the identity check only
+        // passes when the directory reached really does hold the claimed inode.
+        let dir = tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let source = dir.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(source.join("ipc")).unwrap();
+
+        // Named through the link, so the parent this opens is `link`, not `real`.
+        let dst = link.join("dst");
+        let failure = copy_path_no_replace(&source, &dst).unwrap_err();
+        assert_eq!(failure.leftover(), Leftover::PartialDestination);
+        assert!(real.join("dst").is_dir(), "the partial landed in `real`");
+
+        failure.discard_partial_destination(&dst).unwrap();
+
+        assert!(
+            !real.join("dst").exists(),
+            "and was cleared through the link"
+        );
+        assert!(link.is_symlink(), "the link itself is not the target");
     }
 
     #[cfg(unix)]
