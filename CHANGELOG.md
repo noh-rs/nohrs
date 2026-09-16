@@ -14,6 +14,20 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 ### Added
 
+- `noh search <QUERY> [PATH]...` looks for a query in a directory tree, matching
+  both the names walked and the text inside the files (`--name` / `--content`
+  narrow it to one). Name matches print as the bare path and content matches as
+  `path:line:text`, with `-i`, `-F`, `-l`, `--limit`, `--max-depth`, `--hidden`,
+  `--no-ignore` and `--json` to shape the search and its output. Matching
+  nothing exits `0` and says so on stderr, leaving stdout the empty stream a
+  pipe expects. Where the index covers the scope it chooses the candidate files
+  in BM25 order and the lines are matched in those files; `--engine` forces
+  index or walk, and a fallback says on stderr why the index stood aside. See
+  [`docs/cli.md`](docs/cli.md) §4.
+- `noh index status` / `noh index build` report where the index is, what it
+  covers and how much it holds, and build it on a machine that never opens the
+  GUI. Status opens the index for reading only, so it runs beside the app. See
+  [`docs/cli.md`](docs/cli.md) §5.
 - nohrs now records what it does to a rolling JSON Lines file under
   `$XDG_STATE_HOME/nohrs/logs/`, so a GUI session's log survives the window
   closing, and `noh log show` / `path` / `clear` read it back. Every operation
@@ -27,6 +41,15 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 ### Changed
 
+- The search index takes tantivy's writer lock only when something is actually
+  written, instead of from the moment a process opens the index. The app used to
+  hold it from launch to quit whether or not it indexed anything, which made the
+  index private to whichever process got there first — `noh index build` beside a
+  running app was refused, and so was a second window. Readers never take the
+  lock at all. See [ADR 0009](docs/adr/0009-single-writer-index-no-daemon.md).
+- The default stderr log filter quietens tantivy to `warn`: it narrates every
+  commit and merge at `info`, which is half a screen of "save metas" for one
+  `noh index build`. `RUST_LOG=info` brings it back.
 - Host KV keys are a `KvKey` rather than a `&str`, so the `<namespace>.<name>`
   convention is enforced instead of merely documented. A literal goes through
   the `kv_key!` macro, whose `const { … }` block forces const evaluation, so a

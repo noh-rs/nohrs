@@ -1,10 +1,10 @@
 # CLI — `noh`
 
 > Status: Draft (P2 で `rm` / `restore` / `trash` / `shim` / `doctor` を実装、以降コマンドを追加)
-> Related: [`ROADMAP.md`](./ROADMAP.md), [`explorer-essentials.md`](./explorer-essentials.md), [`architecture.md`](./architecture.md), [`logging.md`](./logging.md)
+> Related: [`ROADMAP.md`](./ROADMAP.md), [`explorer-essentials.md`](./explorer-essentials.md), [`architecture.md`](./architecture.md), [`logging.md`](./logging.md), [`search.md`](./search.md)
 
 `noh` (crate としては `nohrs-cli`) は nohrs の**ターミナル側の入口**です。GUI (`nohrs` バイナリ) と同じファイル操作
-(`nohrs-services::fs`) をシェルから使えるようにするもので、gpui に依存しないため
+(`nohrs-services::fs`) と検索 (`nohrs-services::search`) をシェルから使えるようにするもので、gpui に依存しないため
 `default-members` に含まれ Linux CI でもビルド・テストされます。
 
 | コマンド | 役割 |
@@ -12,9 +12,12 @@
 | [`noh rm`](#1-noh-rm) | 既定でゴミ箱へ送る削除。標準 `rm` の手前に置ける |
 | [`noh restore`](#2-noh-restore) | ゴミ箱から元の場所へ戻す |
 | [`noh trash list` / `purge` / `empty`](#3-noh-trash) | ゴミ箱の一覧・個別完全削除・全消去 |
-| [`noh shim`](#4-noh-shim) | `rm` を乗っ取る symlink の設置・解除 |
-| [`noh doctor`](#5-noh-doctor) | 設置状態と依存物の診断 |
-| [`noh completions`](#6-noh-completions) | シェル補完スクリプト |
+| [`noh search`](#4-noh-search) | 名前と中身でファイルを探す |
+| [`noh index status` / `build`](#5-noh-index) | 検索インデックスの状態確認と構築 |
+| [`noh shim`](#6-noh-shim) | `rm` を乗っ取る symlink の設置・解除 |
+| [`noh doctor`](#7-noh-doctor) | 設置状態と依存物の診断 |
+| [`noh log`](#8-noh-log) | 自分の記録を読み返す |
+| [`noh completions`](#9-noh-completions) | シェル補完スクリプト |
 
 ---
 
@@ -27,7 +30,7 @@
 ### 1.1 インストール (標準 `rm` の手前に置く)
 
 `PATH` 上で `/bin/rm` より先に来る場所へ `rm` という名前の symlink を張ります。手で `ln -sf` する
-代わりに [`noh shim install`](#4-noh-shim) を使ってください (既存の実ファイルを絶対に壊さないため)。
+代わりに [`noh shim install`](#6-noh-shim) を使ってください (既存の実ファイルを絶対に壊さないため)。
 
 ```sh
 cargo build --release -p nohrs-cli
@@ -122,12 +125,106 @@ noh trash empty                     # purge --all と同じ
 `purge` と `empty` は**元に戻せない**ので、既定で 1 件ずつ確認します。`-f` / `--force` で確認を
 省略できます。オペランドも `--all` も `--older-than` も無い `purge` は、事故防止のためエラーです。
 
-なお Linux / Windows では一覧が OS のゴミ箱全体を指すため (§7.2)、`--all` は**他のアプリが
+なお Linux / Windows では一覧が OS のゴミ箱全体を指すため (§10.2)、`--all` は**他のアプリが
 捨てたものも**完全削除します。ゴミ箱を空にするとはそういうことですが、意識しておいてください。
 
 ---
 
-## 4. `noh shim`
+## 4. `noh search`
+
+ディレクトリツリーから、**名前と中身の両方**を探します。GUI の Explorer 内検索 (`Cmd+F`,
+[`search.md`](./search.md) §8) と同じものを、ペインの代わりにオペランドでスコープ指定する形です。
+
+```sh
+noh search needle                  # カレントディレクトリ以下
+noh search needle src docs         # 場所を指定 (複数可)
+noh search --name '\.rs$'          # 名前だけ
+noh search --content needle        # 中身だけ
+noh search -i -F 'a.b'             # 大小無視 + リテラル (正規表現として解釈しない)
+noh search -l needle               # 一致したファイルのパスだけ
+noh search --json needle | jq .    # 1 行 1 オブジェクト
+```
+
+名前で一致したものは**パスだけ**、中身で一致したものは `path:line:text` で出ます。同じファイルが両方で
+一致したときは、名前の行がそのファイルの行の**直前**に来るので区別できます。
+
+| フラグ | 動作 |
+|--------|------|
+| `-n`, `--name` | 名前だけを対象にする |
+| `-c`, `--content` | 中身だけを対象にする (`--name` と排他) |
+| `-i`, `--ignore-case` | 大小を無視する |
+| `-F`, `--fixed-strings` | クエリを正規表現でなくリテラルとして扱う |
+| `-l`, `--files-with-matches` | 一致したファイルのパスを 1 回ずつ出す |
+| `--limit <N>` | N 件で打ち切る (打ち切ったら stderr で知らせる) |
+| `--max-depth <N>` | 各起点から N 階層までしか降りない |
+| `--hidden` | ドットファイル・ドットディレクトリも対象にする |
+| `--no-ignore` | `.gitignore` / `.ignore` による除外をやめる |
+| `--engine <auto\|index\|walk>` | どのエンジンが答えるか (既定 `auto`) |
+| `--json` | 1 行 1 オブジェクトの JSON |
+
+`--json` の各オブジェクトは `kind` を持ちます (`"name"` か `"content"`)。`-l` のときは出力がパスだけなので
+`{"path": …}` になります。
+
+### 4.1 終了コード
+
+**一致が 0 件でも成功 (0)** です。`grep(1)` と違う点なので注意してください。見つからないことは失敗ではなく
+答えなので、`noh search: no matches` を **stderr** に出し、stdout はパイプが期待するとおり空のままにします。
+`1` になるのは、クエリがパターンとして壊れているときと、オペランドを検索できなかったときだけです。
+
+### 4.2 どのエンジンが答えるか
+
+`auto` は、インデックスが答えられるときはインデックスに候補ファイルを BM25 順で出させ、その候補の中で
+実際の行を照合します。インデックスが使えないときは黙って遅くならず、理由を stderr に 1 行出してから
+ファイルを読みに行きます。
+
+```console
+$ noh search needle ~/dev/nohrs
+noh search: read the files: the index only covers /Users/me/Documents
+```
+
+インデックスを使わない (使えない) のは次の場合です。
+
+| 条件 | 理由 |
+|------|------|
+| クエリが素のテキストでない | インデックスは語を引くもので、正規表現は解釈できない |
+| `--max-depth` / `--hidden` / `--no-ignore` が付いている | これらは walk を制限するもので、インデックスは構築時の除外を後から変えられない |
+| 検索ルートが `covers` の外 | インデックスはその木しか知らない |
+| インデックスが未構築 / 空 / 読めない | [`noh index`](#5-noh-index) を参照 |
+
+`--engine index` は上のいずれかに当たると**理由付きで失敗**します。`--engine walk` は常にファイルを読みます。
+どちらのエンジンでも**出力は同じ形**です (インデックス由来の絶対パスは、呼び出し側が書いたルートの綴りに
+直してから出します)。
+
+---
+
+## 5. `noh index`
+
+検索インデックスの状態確認と構築です。インデックスは「ファイルを全部読まずに答える」ための土台ですが、
+ターミナルからはその存在すら見えないので、その窓口がこれです。
+
+```console
+$ noh index status
+index      /Users/me/.nohrs/index
+covers     /Users/me/Documents
+documents  12431
+
+$ noh index build
+indexing /Users/me/Documents
+indexed 12431 documents in 8.2s
+```
+
+- `status` は**読むだけ**でロックを取らないので、アプリが起動中でも安全に実行できます。
+- `build` は writer を取るため、アプリ (や別の `build`) が持っているときは、その旨を述べて終了コード 1 で
+  終わります。tantivy の writer はプロセスを跨いで 1 つだけ、という制約そのものです
+  ([ADR 0009](./adr/0009-single-writer-index-no-daemon.md))。
+- 存在するが空のインデックスは、無いのと同じ扱いで報告します。どちらも検索を 0 件にするからです。
+
+GUI (ランチャー) が起動している間はそちらが更新を担当します。常駐物を増やさない判断なので、UI を開かない
+マシンで索引を保ちたい場合は `noh index build` を cron / systemd timer に載せてください。
+
+---
+
+## 6. `noh shim`
 
 `noh` を標準コマンドの手前に置く symlink を管理します。手作業の `ln -sf` と違い、**実ファイルは
 `--force` を付けても絶対に置き換えません**し、`uninstall` は「自分を指す symlink」であることを
@@ -150,7 +247,7 @@ Windows は symlink に権限が要るため未対応です (バイナリのあ�
 
 ---
 
-## 5. `noh doctor`
+## 7. `noh doctor`
 
 `rm` を乗っ取る以上、設定ミスが**静かに**効かなくなるのが一番まずいので、その確認用です。
 
@@ -167,7 +264,7 @@ ok    config  /Users/me/.config/nohrs/config.toml
 
 ---
 
-## 6. `noh log`
+## 8. `noh log`
 
 nohrs が自分について記録したものを読み返します。GUI は stderr の行き先が無いので、CLI と GUI は
 共通のローリングファイル (`$XDG_STATE_HOME/nohrs/logs/`) に JSON Lines で追記しており、
@@ -202,7 +299,7 @@ nohrs が自分について記録したものを読み返します。GUI は std
 
 ---
 
-## 7. `noh completions`
+## 9. `noh completions`
 
 ```sh
 noh completions zsh  > ~/.zfunc/_noh
@@ -212,9 +309,9 @@ noh completions fish > ~/.config/fish/completions/noh.fish
 
 ---
 
-## 8. 実装メモ
+## 10. 実装メモ
 
-### 8.1 ゴミ箱台帳 (`nohrs-store` の `trash` テーブル)
+### 10.1 ゴミ箱台帳 (`nohrs-store` の `trash` テーブル)
 
 「戻す」ためには**どこから消したか**が要りますが、その情報の出どころは OS によって違います。
 
@@ -268,7 +365,7 @@ ctime を持たないプラットフォームでは全候補が同距離にな�
 行の順序も台帳の仕事です。削除時刻は `trashed_at` (ナノ秒) に持ちますが、同一時刻の
 タイブレークは行 id (単調増加) が行うため、`noh restore` の「直近の 1 件」は常に確定します。
 
-### 8.2 プラットフォームによる差
+### 10.2 プラットフォームによる差
 
 - **一覧の範囲**: Linux / Windows では OS のゴミ箱索引を読むので、**他のアプリが捨てたものも**
   一覧に出ます。macOS では nohrs が捨てたものだけです。
@@ -281,7 +378,7 @@ ctime を持たないプラットフォームでは全候補が同距離にな�
 - ゴミ箱から (Finder などで) 消えたアイテムの台帳行は、`noh trash list` が見つけられなかった時点で
   破棄されます。復元も完全削除もできない行を永遠に残さないためです。
 
-### 8.3 テスト
+### 10.3 テスト
 
 - 破壊的操作は `Store` / `Backend` trait 越しに行います。ヘッドレス CI にはデスクトップのゴミ箱が
   無く実際の `trash::delete` を呼べないため、テストは記録用のフェイク実装や、

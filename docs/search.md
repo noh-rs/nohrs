@@ -122,7 +122,7 @@ globs = ["*.iso", "*.mov"]
 
 | 観点 | 仕様 |
 |------|------|
-| 初回フル indexing | 起動時にバックグラウンドで実行、ステータスバーに progress 表示 |
+| 初回フル indexing | 起動時にバックグラウンドで実行、ステータスバーに progress 表示。GUI を開かないマシンでは `noh index build` |
 | ファイル変更検出 | `notify-debouncer-mini` で 500ms debounce、change event を SQLite `files.mtime_ns` と比較し変化があれば re-index |
 | 削除検出 | watcher の delete event + 定期的な orphan scan (起動時 1 回 + 24h ごと) |
 | concurrent indexing | rayon で並列、CPU の半分 (最大 4 thread) まで |
@@ -183,6 +183,11 @@ PC のリソースを過度に消費しないよう、適応的に throttle し�
 |------|---------|
 | **ランチャー (`Cmd+Shift+Space`)** | グローバル全文検索 (全 indexed scope) |
 | **Explorer 内検索バー (`Cmd+F`)** | active pane の current dir 配下のみ scope |
+| **`noh search`** ([`cli.md`](./cli.md) §4) | オペランドで指定したツリー (既定はカレントディレクトリ) |
+
+`noh search` は index が当該スコープを覆っていれば index に候補を選ばせ (BM25 順)、覆っていなければ walk に
+落ちます。index の writer はプロセスを跨いで 1 つしか居られないため、読み手は全員ロックを取らない
+`IndexReader` 経由で読みます ([ADR 0009](./adr/0009-single-writer-index-no-daemon.md))。
 
 ### 検索結果から遷移
 

@@ -37,6 +37,7 @@
 | [0006](./0006-monorepo-web.md) | web/ を nohrs リポジトリ同居 (monorepo) | Accepted |
 | [0007](./0007-cloudflare-hosting.md) | web ホスティングは Cloudflare Pages + Workers + R2 | Accepted |
 | [0008](./0008-web-design-system.md) | web のデザイン北極星は zed.dev、FE は Tailwind v4 + Radix 再スキン | Accepted |
+| [0009](./0009-single-writer-index-no-daemon.md) | インデックスの書き手は常駐プロセスに任せ、専用デーモンは作らない | Accepted |
 
 ## 命名規約
 
