@@ -56,7 +56,6 @@
       "Bash(git restore:*)",
       "Bash(git merge:*)",
       "Bash(git push)",
-      "Bash(git push origin:*)",
       "Bash(git push -u origin:*)",
       "Bash(cargo fmt:*)",
       "Bash(cargo clippy:*)",
@@ -70,7 +69,18 @@
       "Bash(script/ui-run.sh:*)",
       "Bash(./script/ui-run.sh:*)",
       "Bash(script/sentry-fetch:*)",
-      "Bash(.claude/skills/pull-request/scripts/review-status.sh:*)"
+      "Bash(.claude/skills/pull-request/scripts/review-status.sh:*)",
+      "Bash(.claude/skills/pull-request/scripts/attach-screenshots.sh:*)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git push --force-if-includes:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push --delete:*)",
+      "Bash(git push --mirror:*)",
+      "Bash(git push -u origin --force:*)",
+      "Bash(git push -u origin -f:*)"
     ]
   }
 }

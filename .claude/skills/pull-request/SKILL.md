@@ -23,9 +23,11 @@ The quality gate has three layers:
 1. **Local gate** you run before pushing: `cargo fmt`, `cargo clippy`, `cargo build`, `cargo test`.
 2. **GitHub Actions** — `ci.yml` (`fmt`, `typos`, `config schema`, `clippy`,
    `test`, `build`, `msrv`, `cargo-deny`, coverage with `--fail-under`
-   thresholds), plus `machete.yml` and `web.yml`. Note `ci.yml` skips
-   `web/**`, `docs/**` and `**.md`-only changes via `paths-ignore`, so a
-   docs-only PR legitimately shows fewer checks.
+   thresholds), and `web.yml` for `web/**` changes. The two are mirror images:
+   `ci.yml` ignores `web/**`, `docs/**` and `**.md`, `web.yml` runs only for
+   `web/**`, so a docs-only PR legitimately shows very few checks.
+   `machete.yml` is **not** part of the gate — it is advisory and runs weekly
+   on a schedule, never on a pull request.
 3. **AI reviewers** that run as PR status checks and post review threads:
    - `CodeRabbit` (`coderabbitai[bot]`)
    - `cubic · AI code reviewer` (`cubic-dev-ai[bot]`)
@@ -334,7 +336,9 @@ EOF
 
 Without `gh`, the same issue via `issue_write` (`method: "create"`), passing
 `labels: ["type:docs", "area:docs", "area:web"]` as an array rather than the
-comma-joined string the CLI takes.
+comma-joined string the CLI takes. `issue_write` is deliberately **not** in
+`.claude/settings.json`, so it prompts — filing a blog issue already requires
+the user's explicit go-ahead, and the prompt is a second check on that.
 
 Match the existing issues' Japanese section headings. Title may be Japanese.
 
