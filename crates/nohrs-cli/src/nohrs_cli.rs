@@ -14,6 +14,8 @@ pub mod ledger;
 pub mod log;
 /// `rm`: trash-by-default removal.
 pub mod rm;
+/// `search`: find files by their contents or by their names.
+pub mod search;
 /// `shim`: install and remove the symlinks that shadow a system command.
 pub mod shim;
 /// `trash` and `restore`: the recoverable half of `rm`.
@@ -54,6 +56,8 @@ pub enum Command {
     /// Inspect and empty the trash.
     #[command(subcommand)]
     Trash(trash::Command),
+    /// Find files by what is in them, or by what they are called.
+    Search(search::Args),
     /// Show what nohrs recorded about itself, including how long each
     /// operation took.
     #[command(subcommand)]

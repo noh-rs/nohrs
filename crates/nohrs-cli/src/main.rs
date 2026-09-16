@@ -8,7 +8,7 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use nohrs_cli::{Cli, Command, Invocation, RmCli, doctor, ledger, log, rm, shim, trash};
+use nohrs_cli::{Cli, Command, Invocation, RmCli, doctor, ledger, log, rm, search, shim, trash};
 use nohrs_core::telemetry::logging::{FileLogConfig, init_logging_with_file};
 
 fn main() -> ExitCode {
@@ -51,6 +51,7 @@ fn run_command(command: &Command) -> io::Result<u8> {
             let args = args.as_purge();
             run_trash(|session| session.purge(&args))
         }
+        Command::Search(args) => run_search(args),
         Command::Log(command) => run_log(command),
         Command::Doctor => {
             let checks = doctor::check(&doctor::Environment::detect());
@@ -77,6 +78,16 @@ fn run_log(command: &log::Command) -> io::Result<u8> {
     let directory = nohrs_core::config::paths::log_dir();
     let mut output = io::stdout().lock();
     let summary = log::Session::new(&directory, &mut output).run(command)?;
+    Ok(summary.exit_code())
+}
+
+/// Walk the real filesystem looking for `args.query`. Everything the search
+/// needs is in the operands, so there is no store or ledger to open here.
+fn run_search(args: &search::Args) -> io::Result<u8> {
+    let mut output = io::stdout().lock();
+    let mut errors = io::stderr().lock();
+    let backend = search::ServicesBackend;
+    let summary = search::Session::new(&backend, &mut output, &mut errors).run(args)?;
     Ok(summary.exit_code())
 }
 
