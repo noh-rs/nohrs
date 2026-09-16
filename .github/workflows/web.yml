@@ -194,7 +194,11 @@ jobs:
           url="$(jq -r 'select(.type == "version-upload") | .preview_alias_url // empty' \
             "$WRANGLER_OUTPUT_FILE_PATH" | tail -1)"
           if [ -z "$url" ]; then
-            echo "::error::wrangler uploaded a version but reported no preview alias URL. Check that preview_urls is still true in wrangler.jsonc and that the account has a workers.dev subdomain."
+            # `versions upload` reads the Worker's current preview setting from
+            # the API and prints nothing when it is off; it does not apply
+            # `preview_urls` from wrangler.jsonc, which only `deploy` and
+            # `triggers deploy` do. So the remedy is on the Worker, not here.
+            echo "::error::The version uploaded, but the Worker has no preview URLs, so there is nothing to link to. Enable Preview URLs on nohrs-web (Cloudflare dashboard -> Workers & Pages -> nohrs-web -> Settings -> Domains & Routes), which also registers a workers.dev subdomain if the account has none. A deploy from main applies it too, since preview_urls is set in wrangler.jsonc."
             exit 1
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
