@@ -1,9 +1,17 @@
 # Launcher
 
 > Status: Draft (P3 で実装)
-> Related: [`ROADMAP.md`](./ROADMAP.md), [`docs/search.md`](./search.md), [`docs/plugin-api.md`](./plugin-api.md)
+> Related: [`launcher-requirements.md`](./launcher-requirements.md), [`notch.md`](./notch.md),
+> [`migration.md`](./migration.md), [`ROADMAP.md`](./ROADMAP.md), [`docs/search.md`](./search.md),
+> [`docs/plugin-api.md`](./plugin-api.md)
 
 本書は Raycast 風グローバルランチャーの設計を定めます。Launcher × Explorer の "Launcher" 側です。
+
+**本書はウィンドウ・入力・描画の実装仕様**です。「何を作り、何を作らないか / どの順で作るか」は
+[`launcher-requirements.md`](./launcher-requirements.md) が決めます。既存プロダクト (Raycast / Tinycast /
+Supaste / notch 系) の機能包含マトリクス、クリップボード履歴・スニペット・ウィンドウ管理などの要件、
+crate 構成への影響、フェーズ計画はそちらを参照してください。本書の §4 (`Command` trait) は
+requirements §7.1 の結論で置き場所が変わります (`nohrs-launcher` ではなく共有レイヤ)。
 
 ---
 

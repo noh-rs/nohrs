@@ -14,6 +14,23 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 ### Added
 
+- The launcher now has a requirements document behind it, not just an
+  implementation spec. [`docs/launcher-requirements.md`](docs/launcher-requirements.md)
+  takes the feature sets of Raycast, Tinycast, Supaste and the macOS notch apps,
+  lays them out as one inclusion matrix, and says for each row whether nohrs
+  builds it, builds a reduced version, or does not build it and why. It also
+  names the decisions that have to be made before the code lands — where the
+  `Command` registry lives so the explorer, the notch and plugins can all
+  register into it, where OS-specific capabilities live now that commands call
+  them, and whether the workspace's `unsafe_code = "deny"` gets one exception.
+  Two documents come with it: [`docs/notch.md`](docs/notch.md), which treats the
+  notch as a third surface carrying a file shelf and the progress of the file
+  operations nohrs is already running, with a floating bar for the machines that
+  have no notch; and [`docs/migration.md`](docs/migration.md), which defines an
+  interchange format so an import is a dry run with a difference report rather
+  than a silent overwrite, and settles on rebuilding Raycast extensions from
+  source against a compatibility shim instead of embedding a JavaScript runtime.
+
 - nohrs now records what it does to a rolling JSON Lines file under
   `$XDG_STATE_HOME/nohrs/logs/`, so a GUI session's log survives the window
   closing, and `noh log show` / `path` / `clear` read it back. Every operation
