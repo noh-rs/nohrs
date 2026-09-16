@@ -153,10 +153,18 @@ pub fn footer<V: gpui::Render>(
                             .child(
                                 // Keep the status on one line so a long or
                                 // multi-line message can't overflow the footer.
+                                //
+                                // `text_ellipsis` because a warning can name
+                                // several places at once and a deep path spends
+                                // the line quickly: without it the text stops
+                                // mid-word with nothing to say it was cut, so a
+                                // location scrolled past the edge looks like a
+                                // location that was never reported.
                                 div()
                                     .text_xs()
                                     .whitespace_nowrap()
                                     .overflow_hidden()
+                                    .text_ellipsis()
                                     .text_color(rgb(color))
                                     .child(message),
                             ),
