@@ -126,16 +126,18 @@ Mounting an overlayfs on Linux 6.18 and calling `renameat2(RENAME_NOREPLACE)` di
 | destination taken | `EEXIST` |
 | moving a directory that lives in the lower layer | `EXDEV` |
 
-The first two rows are what ext4 does. The flag is accepted. And the third, `EXDEV`, means "this crosses a filesystem" — an entirely different branch from `EINVAL`. overlayfs does reach the fallback, but **as a cross-device move, not as an unsupported flag**.
+The first two rows are what ext4 does. The flag is accepted. And the third, `EXDEV`, takes an entirely different branch from `EINVAL`. overlayfs does reach the fallback, but **through the cross-device branch, not as an unsupported flag**.
 
-Inferring a situation from an errno gets it wrong: that is this post's subject. The post itself got it wrong, in one line written without checking.
+**That `EXDEV` does not mean anything was crossed, though.** In the measurement above, the source and the destination are both inside the same overlayfs mount. `EXDEV` nominally means "cross-device link", but here it is overlayfs saying "I cannot carry out this rename myself; do it by copying". The code is right to act on it — the fallback is exactly the response being asked for. Reading it as "the user moved across volumes" is not.
+
+Inferring a situation from an errno gets it wrong: that is this post's subject. The post got it wrong once in a line written without checking, and then again in the sentence correcting it — calling `EXDEV` proof of a filesystem crossing, which review caught too. An errno is a single integer, and what it means is up to the driver.
 </Callout>
 
 A no-replace rename is therefore useful where available, but **must not be assumed to exist**. Where it is missing, a fallback is required. The simplest fallback is to **copy, then delete the original.**
 
 This is where a **move** can end up. Worth being precise about, because it is easy to conclude that ext4 and APFS are exempt from everything below: a move **within one volume** does finish in a single rename, and the fallback never runs.
 
-A **copy** has no such shortcut. There is no rename that duplicates a tree, so a copy always walks it, claiming every entry as it goes — on ext4 and APFS exactly as anywhere else. So the problem below reaches an ordinary copy-paste everywhere, and reaches a move whenever it crosses a volume (`EXDEV`) or the no-replace rename is missing.
+A **copy** has no such shortcut. There is no rename that duplicates a tree, so a copy always walks it, claiming every entry as it goes — on ext4 and APFS exactly as anywhere else. So the problem below reaches an ordinary copy-paste everywhere, and reaches a move on `EXDEV` — another volume, or a driver declining the rename as overlayfs does for a lower layer — or where the no-replace rename is missing.
 
 <Callout title="Note: an operation that is not atomic">
 One further operation is **not** atomic. `remove_dir_all`, which deletes a whole directory tree, removes the files inside one at a time. If it fails partway, **the tree is left partly removed.** This property becomes significant in a later section.
