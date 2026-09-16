@@ -199,10 +199,19 @@ pub fn is_log_file_name(name: &str) -> bool {
         .is_some_and(|date| time::Date::parse(date, FILE_DATE_FORMAT).is_ok())
 }
 
-/// The stderr filter: `RUST_LOG` if set, `info` otherwise.
+/// The stderr filter: `RUST_LOG` if set, [`DEFAULT_STDERR_FILTER`] otherwise.
 fn stderr_filter() -> EnvFilter {
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_STDERR_FILTER))
 }
+
+/// What stderr shows when `RUST_LOG` says nothing.
+///
+/// `info` for everything, except that tantivy narrates every commit and merge
+/// at that level — half a screen of "save metas" for one `noh index build`,
+/// which is a dependency's idea of interesting rather than the user's. It is
+/// quietened rather than the whole default lowered, so nohrs's own `info`
+/// records still show. `RUST_LOG=info` brings it all back.
+const DEFAULT_STDERR_FILTER: &str = "info,tantivy=warn";
 
 /// Build the file layer, or describe why it could not be built.
 ///

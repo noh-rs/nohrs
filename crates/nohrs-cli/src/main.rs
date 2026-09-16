@@ -8,7 +8,9 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use nohrs_cli::{Cli, Command, Invocation, RmCli, doctor, ledger, log, rm, search, shim, trash};
+use nohrs_cli::{
+    Cli, Command, Invocation, RmCli, doctor, index, ledger, log, rm, search, shim, trash,
+};
 use nohrs_core::telemetry::logging::{FileLogConfig, init_logging_with_file};
 
 fn main() -> ExitCode {
@@ -52,6 +54,7 @@ fn run_command(command: &Command) -> io::Result<u8> {
             run_trash(|session| session.purge(&args))
         }
         Command::Search(args) => run_search(args),
+        Command::Index(command) => run_index(command),
         Command::Log(command) => run_log(command),
         Command::Doctor => {
             let checks = doctor::check(&doctor::Environment::detect());
@@ -83,11 +86,30 @@ fn run_log(command: &log::Command) -> io::Result<u8> {
 
 /// Walk the real filesystem looking for `args.query`. Everything the search
 /// needs is in the operands, so there is no store or ledger to open here.
+///
+/// The streams are the *unlocked* handles, unlike every other command here:
+/// see [`run_index`].
 fn run_search(args: &search::Args) -> io::Result<u8> {
-    let mut output = io::stdout().lock();
-    let mut errors = io::stderr().lock();
+    let mut output = io::stdout();
+    let mut errors = io::stderr();
     let backend = search::ServicesBackend;
     let summary = search::Session::new(&backend, &mut output, &mut errors).run(args)?;
+    Ok(summary.exit_code())
+}
+
+/// Read or build the real index. `status` opens it for reading only, so it can
+/// run beside the app; `build` takes the writer and reports being refused it.
+///
+/// Both streams are the unlocked handles, which lock per write. Holding a
+/// `StderrLock` for the length of the command — what the other commands do —
+/// deadlocks this one: the index does its work on tantivy's own threads, those
+/// threads log, and the logger's stderr layer then waits for a lock this thread
+/// is holding while it waits for them.
+fn run_index(command: &index::Command) -> io::Result<u8> {
+    let mut output = io::stdout();
+    let mut errors = io::stderr();
+    let backend = index::ServicesBackend;
+    let summary = index::Session::new(&backend, &mut output, &mut errors).run(command)?;
     Ok(summary.exit_code())
 }
 
