@@ -383,9 +383,13 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<Applied> {
             // is what the user asked for, but litter that is their own data, so
             // it is named rather than logged and forgotten.
             let message = format!(
-                "{} was replaced, but the copy of the original kept at {} could not be removed: {error}",
-                dst.display(),
+                // Opening on the scratch path rather than on `{dst} was
+                // replaced, but`, which is how the staging message opens: the
+                // two can be joined, and repeating the clause made the footer
+                // say the same thing twice before getting to either path.
+                "the copy of the original kept at {} could not be removed after replacing {}: {error}",
                 backup.display(),
+                dst.display(),
             );
             tracing::warn!("{message}");
             return Ok(applied.and(message));
@@ -1315,14 +1319,30 @@ mod op_report_tests {
         // replaces, and either can fail to be cleared. Keeping only the first
         // would send the user to one scratch path and leave the other where
         // nothing points at it.
-        let applied = Applied::WithLeftover("the staging copy is at /dst/.x.nohrs-new".into())
-            .and("the original is at /dst/.x.nohrs-old".into());
+        // The two messages verbatim, because the point is how they read joined:
+        // when both opened on "{dst} was replaced, but" the footer said it twice
+        // before reaching either path.
+        let applied = Applied::WithLeftover(
+            "/dst/x was replaced, but the staging copy at /dst/.x.nohrs-new could not be cleared: \
+             denied"
+                .into(),
+        )
+        .and(
+            "the copy of the original kept at /dst/.x.nohrs-old could not be removed after \
+             replacing /dst/x: denied"
+                .into(),
+        );
         let mut report = OpReport::default();
         report.applied(applied);
         let (level, text) = report.footer(1, "1 item(s) pasted");
         assert_eq!(level, StatusLevel::Warning);
         assert!(text.contains(".nohrs-new"), "got: {text}");
         assert!(text.contains(".nohrs-old"), "got: {text}");
+        assert_eq!(
+            text.matches("was replaced, but").count(),
+            1,
+            "the two are joined, so only one may open on it: {text}"
+        );
     }
 
     #[test]
