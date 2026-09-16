@@ -99,6 +99,135 @@ jobs:
           retention-days: 7
           include-hidden-files: true
 
+  # A pull request gets the built site on a URL of its own, so a change can be
+  # looked at before it is merged. This is a version *upload*, not a deploy:
+  # `routes` lives on the deployment, so nothing published here can answer on
+  # nohrs.app, and production keeps serving whatever `deploy` last shipped.
+  preview:
+    name: preview
+    needs: build
+    # Restricted to pull requests the repository owner opened, from a branch in
+    # this repository. Two reasons, and the second is the binding one:
+    #
+    #   - A fork's `pull_request` run cannot read secrets, so it would fail at
+    #     the upload rather than skip.
+    #   - This job runs the *pull request's own copy* of this workflow file
+    #     with a Cloudflare token. For anyone who cannot already push to this
+    #     repository that is a deploy-access escalation, which is the same
+    #     reason `deploy` below refuses to run off `main`.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.user.login == 'syuya2036'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    # Its own environment so the credential can be narrowed later without
+    # touching production: an environment secret shadows the repository one of
+    # the same name. With nothing set there it falls through to the repository
+    # secrets, so this works as configured today.
+    environment: preview
+    permissions:
+      contents: read
+      # To post the URL back on the pull request.
+      pull-requests: write
+    steps:
+      # The commit `build` validated, for the same reason `deploy` does it:
+      # `wrangler.jsonc` and the Workers have to match the assets.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # wrangler only; the site itself is downloaded, not rebuilt.
+      - run: npm ci
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: web-dist
+          path: web/dist/client
+
+      - name: Check the downloaded output
+        run: |
+          test -f dist/client/en/index.html
+          test -f dist/client/ja/index.html
+          test -d dist/client/_pagefind
+
+      # An absent token reaches wrangler as an anonymous request, which fails on
+      # authentication and says nothing about which secret is missing.
+      - name: Check the Cloudflare credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not readable here. Add them to the 'preview' environment, or make them repository secrets."
+            exit 1
+          fi
+
+      - name: Upload a preview version
+        id: upload
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # wrangler writes a structured record of what it did here, so the URL
+          # is read from a documented field rather than scraped out of the log.
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # The alias gives the pull request one address for its whole life:
+          # pushing again replaces what that URL serves instead of minting a
+          # new one, so a link posted in review does not go stale.
+          npx wrangler versions upload --preview-alias "pr-${PR_NUMBER}"
+
+          # `pipefail` is on by default here, so a missing file would fail the
+          # step with jq's message rather than the one below.
+          if [ ! -f "$WRANGLER_OUTPUT_FILE_PATH" ]; then
+            echo "::error::wrangler wrote no output file, so the preview URL cannot be read."
+            exit 1
+          fi
+
+          url="$(jq -r 'select(.type == "version-upload") | .preview_alias_url // empty' \
+            "$WRANGLER_OUTPUT_FILE_PATH" | tail -1)"
+          if [ -z "$url" ]; then
+            echo "::error::wrangler uploaded a version but reported no preview alias URL. Check that preview_urls is still true in wrangler.jsonc and that the account has a workers.dev subdomain."
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Preview: $url" >> "$GITHUB_STEP_SUMMARY"
+
+      # One comment per pull request, rewritten on each push, rather than a new
+      # one every time: the thread is for review, not for a build log.
+      - name: Post the preview URL
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          URL: ${{ steps.upload.outputs.url }}
+          SHA: ${{ needs.build.outputs.sha }}
+        run: |
+          body="$(cat <<EOF
+          <!-- web-preview -->
+          **Web preview:** $URL
+
+          Built from \`${SHA:0:7}\`. Uploaded as a version, so nohrs.app is untouched, and
+          the URL is \`noindex\`. Pushing again replaces what it serves.
+          EOF
+          )"
+
+          existing="$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+            -q '.[] | select(.body | startswith("<!-- web-preview -->")) | .id' | head -1)"
+
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$GH_REPO/issues/comments/$existing" -f "body=$body" --silent
+          else
+            gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" -f "body=$body" --silent
+          fi
+
   deploy:
     name: deploy
     needs: build
