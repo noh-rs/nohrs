@@ -218,6 +218,18 @@ enum Applied {
     WithLeftover(String),
 }
 
+impl Applied {
+    // Adds a leftover to whatever this already carries. One overwrite can strand
+    // two things — the staging copy it built and the backup of the entry it
+    // replaced — and the user needs both paths, not whichever came first.
+    fn and(self, message: String) -> Self {
+        match self {
+            Self::Cleanly => Self::WithLeftover(message),
+            Self::WithLeftover(first) => Self::WithLeftover(format!("{first}; {message}")),
+        }
+    }
+}
+
 /// What a batch of operations has to report when it is done.
 ///
 /// Two lists rather than one, because the footer has to tell three things apart
@@ -264,8 +276,10 @@ impl OpReport {
             [] => (StatusLevel::Info, success_label.to_string()),
             // One of them fits, and it is the whole point of the level: it names
             // the path the leftover is at, which is the only part of this the
-            // user can act on.
-            [only] => (StatusLevel::Warning, format!("{success_label}, but {only}")),
+            // user can act on. Joined with a dash rather than "but", which the
+            // message itself already carries — "3 item(s) moved, but /a was
+            // copied to /b, but the original could not be removed".
+            [only] => (StatusLevel::Warning, format!("{success_label} — {only}")),
             many => (
                 StatusLevel::Warning,
                 format!(
@@ -328,7 +342,6 @@ fn apply_to_free_name(mode: ClipMode, src: &Path, dst: &Path) -> Result<Applied>
 // the end, so the destination is claimed once the replacement is whole rather
 // than held open for the length of a copy.
 fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<Applied> {
-    use nohrs_core::telemetry::LogErr as _;
     if !ops::would_conflict(dst) {
         return apply_to_free_name(mode, src, dst);
     }
@@ -361,8 +374,21 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<Applied> {
     let staged = scratch_path(dst, "new");
     let error = match build_and_commit(mode, src, dst, &staged) {
         Ok(applied) => {
-            ops::delete_permanent(&backup).log_err();
-            return Ok(applied);
+            let Err(error) = ops::delete_permanent(&backup) else {
+                return Ok(applied);
+            };
+            // The overwrite is done — `dst` holds the replacement — and what is
+            // left is the entry it replaced, at a scratch path with no route to
+            // it from the listing. Litter rather than loss, since replacing it
+            // is what the user asked for, but litter that is their own data, so
+            // it is named rather than logged and forgotten.
+            let message = format!(
+                "{} was replaced, but the copy of the original kept at {} could not be removed: {error}",
+                dst.display(),
+                backup.display(),
+            );
+            tracing::warn!("{message}");
+            return Ok(applied.and(message));
         }
         Err(error) => error,
     };
@@ -1258,7 +1284,10 @@ mod op_report_tests {
         ));
         let (level, text) = report.footer(3, "3 item(s) moved");
         assert_eq!(level, StatusLevel::Warning);
-        assert!(text.starts_with("3 item(s) moved, but "), "got: {text}");
+        assert!(text.starts_with("3 item(s) moved — "), "got: {text}");
+        // The message carries its own "but"; a second one from the join read as
+        // "moved, but /a was copied to /b, but the original ...".
+        assert_eq!(text.matches("but").count(), 1, "got: {text}");
         assert!(text.contains("/src/report"), "the source is named: {text}");
         assert!(
             text.contains("/dst/report"),
@@ -1278,6 +1307,22 @@ mod op_report_tests {
         assert_eq!(level, StatusLevel::Warning);
         assert!(text.contains('2'), "got: {text}");
         assert!(text.contains("see the log"), "got: {text}");
+    }
+
+    #[test]
+    fn one_operation_can_strand_two_things_and_names_both() {
+        // An overwrite builds a staging copy and keeps a backup of the entry it
+        // replaces, and either can fail to be cleared. Keeping only the first
+        // would send the user to one scratch path and leave the other where
+        // nothing points at it.
+        let applied = Applied::WithLeftover("the staging copy is at /dst/.x.nohrs-new".into())
+            .and("the original is at /dst/.x.nohrs-old".into());
+        let mut report = OpReport::default();
+        report.applied(applied);
+        let (level, text) = report.footer(1, "1 item(s) pasted");
+        assert_eq!(level, StatusLevel::Warning);
+        assert!(text.contains(".nohrs-new"), "got: {text}");
+        assert!(text.contains(".nohrs-old"), "got: {text}");
     }
 
     #[test]
