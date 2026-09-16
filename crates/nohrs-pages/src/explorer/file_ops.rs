@@ -213,19 +213,41 @@ enum Applied {
     /// Nothing left over. The only thing the batch counts.
     Cleanly,
     /// The whole entry is at the destination, and clearing up after the move did
-    /// not finish. Carries a message naming both paths, because where the
-    /// leftover is is the only part of this the user can act on.
-    WithLeftover(String),
+    /// not finish. One entry per thing left behind.
+    WithLeftover(Vec<Leftover>),
+}
+
+/// One thing an operation finished and could not clear away.
+///
+/// Two fields because the footer has one line and two jobs to do with it. With a
+/// single leftover it can afford to say what happened; with several it can only
+/// say where they are — and where is the half the user can act on, so that is
+/// the half that has to survive being summarised.
+#[derive(Debug, PartialEq, Eq)]
+struct Leftover {
+    /// The whole sentence, naming both paths. What the site logged, and what the
+    /// footer shows when this is the only one.
+    message: String,
+    /// Where the leftover actually sits: the path the user would have to open.
+    at: PathBuf,
 }
 
 impl Applied {
+    fn leftover(message: String, at: PathBuf) -> Self {
+        Self::WithLeftover(vec![Leftover { message, at }])
+    }
+
     // Adds a leftover to whatever this already carries. One overwrite can strand
     // two things — the staging copy it built and the backup of the entry it
-    // replaced — and the user needs both paths, not whichever came first.
-    fn and(self, message: String) -> Self {
+    // replaced — and the user needs both places, not whichever came first.
+    fn and(self, message: String, at: PathBuf) -> Self {
+        let next = Leftover { message, at };
         match self {
-            Self::Cleanly => Self::WithLeftover(message),
-            Self::WithLeftover(first) => Self::WithLeftover(format!("{first}; {message}")),
+            Self::Cleanly => Self::WithLeftover(vec![next]),
+            Self::WithLeftover(mut all) => {
+                all.push(next);
+                Self::WithLeftover(all)
+            }
         }
     }
 }
@@ -240,8 +262,8 @@ impl Applied {
 struct OpReport {
     /// One per operation that did not happen. These decide the footer.
     failures: Vec<String>,
-    /// One per operation that happened and could not finish clearing up.
-    leftovers: Vec<String>,
+    /// One per thing an operation finished and could not clear away.
+    leftovers: Vec<Leftover>,
 }
 
 impl OpReport {
@@ -251,8 +273,8 @@ impl OpReport {
 
     // Records whichever of the two an [`Applied`] turned out to be.
     fn applied(&mut self, applied: Applied) {
-        if let Applied::WithLeftover(message) = applied {
-            self.leftovers.push(message);
+        if let Applied::WithLeftover(left) = applied {
+            self.leftovers.extend(left);
         }
     }
 
@@ -274,17 +296,27 @@ impl OpReport {
         }
         match self.leftovers.as_slice() {
             [] => (StatusLevel::Info, success_label.to_string()),
-            // One of them fits, and it is the whole point of the level: it names
-            // the path the leftover is at, which is the only part of this the
-            // user can act on. Joined with a dash rather than "but", which the
-            // message itself already carries — "3 item(s) moved, but /a was
-            // copied to /b, but the original could not be removed".
-            [only] => (StatusLevel::Warning, format!("{success_label} — {only}")),
+            // One of them fits whole, and it is the whole point of the level.
+            // Joined with a dash rather than "but", which the message itself
+            // already carries — "3 item(s) moved, but /a was copied to /b, but
+            // the original could not be removed".
+            [only] => (
+                StatusLevel::Warning,
+                format!("{success_label} — {}", only.message),
+            ),
+            // Several do not, so the sentences go and the places stay. Sending
+            // the user to the log instead would be the thing this level exists
+            // to stop: a leftover nobody can find is what the `warn!` alone
+            // already was.
             many => (
                 StatusLevel::Warning,
                 format!(
-                    "{success_label}, but {} could not finish clearing up; see the log",
-                    many.len()
+                    "{success_label} — {} left something behind, at {}",
+                    many.len(),
+                    many.iter()
+                        .map(|left| left.at.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 ),
             ),
         }
@@ -327,7 +359,7 @@ fn apply_to_free_name(mode: ClipMode, src: &Path, dst: &Path) -> Result<Applied>
         // hidden scratch path. The log is the durable copy of a message the
         // footer shows once and then drops.
         tracing::warn!("{message}");
-        return Ok(Applied::WithLeftover(message));
+        return Ok(Applied::leftover(message, src.to_path_buf()));
     }
     drop_claimed(&failure, dst);
     Err(failure.into())
@@ -392,7 +424,7 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<Applied> {
                 dst.display(),
             );
             tracing::warn!("{message}");
-            return Ok(applied.and(message));
+            return Ok(applied.and(message, backup.clone()));
         }
         Err(error) => error,
     };
@@ -476,7 +508,7 @@ fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Re
                 staged.display(),
             );
             tracing::warn!("{message}");
-            return Ok(Applied::WithLeftover(message));
+            return Ok(Applied::leftover(message, staged.to_path_buf()));
         }
         match mode {
             ClipMode::Cut => restore_staged(src, staged),
@@ -1265,6 +1297,7 @@ mod overwrite_recovery_tests {
 mod op_report_tests {
     use super::{Applied, OpReport};
     use crate::explorer::types::StatusLevel;
+    use std::path::PathBuf;
 
     // The batch these describe cannot be staged end to end — reaching
     // `Leftover::WholeDestination` needs a `rename` that fails with `EXDEV`, a
@@ -1289,9 +1322,10 @@ mod op_report_tests {
         // the source is still sitting at /src/report.
         let mut report = OpReport::default();
         report.applied(Applied::Cleanly);
-        report.applied(Applied::WithLeftover(
+        report.applied(Applied::leftover(
             "/src/report was copied to /dst/report, but the original could not be fully removed"
                 .into(),
+            PathBuf::from("/src/report"),
         ));
         let (level, text) = report.footer(3, "3 item(s) moved");
         assert_eq!(level, StatusLevel::Warning);
@@ -1307,17 +1341,22 @@ mod op_report_tests {
     }
 
     #[test]
-    fn several_leftovers_fall_back_to_a_count() {
-        // One line of footer cannot carry two paths twice over. The messages are
-        // already in the log by the time this runs, which is what the text sends
-        // the user to.
+    fn several_leftovers_drop_their_sentences_and_keep_their_places() {
+        // One line of footer cannot carry two whole messages, but a count on its
+        // own is the `warn!`-only behaviour this level exists to replace: the log
+        // is not a channel the user of a file manager has. So the sentences go
+        // and the paths stay, because the path is the half that can be acted on.
         let mut report = OpReport::default();
-        report.applied(Applied::WithLeftover("first".into()));
-        report.applied(Applied::WithLeftover("second".into()));
+        report.applied(Applied::leftover("first".into(), PathBuf::from("/src/one")));
+        report.applied(Applied::leftover(
+            "second".into(),
+            PathBuf::from("/src/two"),
+        ));
         let (level, text) = report.footer(2, "2 item(s) moved");
         assert_eq!(level, StatusLevel::Warning);
         assert!(text.contains('2'), "got: {text}");
-        assert!(text.contains("see the log"), "got: {text}");
+        assert!(text.contains("/src/one"), "got: {text}");
+        assert!(text.contains("/src/two"), "got: {text}");
     }
 
     #[test]
@@ -1325,30 +1364,31 @@ mod op_report_tests {
         // An overwrite builds a staging copy and keeps a backup of the entry it
         // replaces, and either can fail to be cleared. Keeping only the first
         // would send the user to one scratch path and leave the other where
-        // nothing points at it.
-        // The two messages verbatim, because the point is how they read joined:
-        // when both opened on "{dst} was replaced, but" the footer said it twice
-        // before reaching either path.
-        let applied = Applied::WithLeftover(
+        // nothing points at it — the scratch names are hidden, so a path the
+        // footer omits is one nothing else will ever mention.
+        let applied = Applied::leftover(
             "/dst/x was replaced, but the staging copy at /dst/.x.nohrs-new could not be cleared: \
              denied"
                 .into(),
+            PathBuf::from("/dst/.x.nohrs-new"),
         )
         .and(
             "the copy of the original kept at /dst/.x.nohrs-old could not be removed after \
              replacing /dst/x: denied"
                 .into(),
+            PathBuf::from("/dst/.x.nohrs-old"),
         );
         let mut report = OpReport::default();
         report.applied(applied);
         let (level, text) = report.footer(1, "1 item(s) pasted");
         assert_eq!(level, StatusLevel::Warning);
-        assert!(text.contains(".nohrs-new"), "got: {text}");
-        assert!(text.contains(".nohrs-old"), "got: {text}");
-        assert_eq!(
-            text.matches("was replaced, but").count(),
-            1,
-            "the two are joined, so only one may open on it: {text}"
+        assert!(text.contains("/dst/.x.nohrs-new"), "got: {text}");
+        assert!(text.contains("/dst/.x.nohrs-old"), "got: {text}");
+        // The two messages both open on "/dst/x was replaced, but", which the
+        // footer used to say twice before reaching either path.
+        assert!(
+            !text.contains("was replaced, but"),
+            "the sentences are what gets dropped, not the paths: {text}"
         );
     }
 
@@ -1359,7 +1399,10 @@ mod op_report_tests {
         // still in the log; the footer has one line and a failure has first call
         // on it.
         let mut report = OpReport::default();
-        report.applied(Applied::WithLeftover("a leftover".into()));
+        report.applied(Applied::leftover(
+            "a leftover".into(),
+            PathBuf::from("/src/x"),
+        ));
         report.failed("/src/other: permission denied".into());
         let (level, text) = report.footer(2, "2 item(s) moved");
         assert_eq!(level, StatusLevel::Error);
