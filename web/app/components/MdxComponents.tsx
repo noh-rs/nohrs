@@ -37,6 +37,24 @@ function Diagram({ caption, children }: { caption?: ReactNode; children: ReactNo
   )
 }
 
+/**
+ * Markdown tables, wrapped so a wide one scrolls instead of stretching the page.
+ * A table's column count is set by its content and a phone measure fits about
+ * three, so anything comparative runs past the edge — the same problem `Diagram`
+ * has, and the same fix, including the focusable wrapper it needs to stay
+ * reachable from the keyboard.
+ */
+function Table({ children }: { children: ReactNode }) {
+  return (
+    <div tabIndex={0} className="my-6 overflow-x-auto">
+      {/* Only the `min-width` here: `.prose table` in `app.css` still owns how
+          the table looks, and this adds the one property that makes it scroll
+          rather than squeeze its columns to nothing. */}
+      <table className="min-w-[520px]">{children}</table>
+    </div>
+  )
+}
+
 function Screenshot({ src, alt, caption }: { src: string; alt: string; caption?: string }) {
   return (
     <figure className="my-9">
@@ -123,4 +141,4 @@ function YouTube({ id, title }: { id: string; title: string }) {
   )
 }
 
-export const mdxComponents = { Callout, Diagram, Screenshot, CodeTabs, YouTube }
+export const mdxComponents = { Callout, Diagram, Screenshot, CodeTabs, YouTube, table: Table }
