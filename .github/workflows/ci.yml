@@ -201,11 +201,20 @@ jobs:
 
       # The workspace `Cargo.toml` is the single declaration; every crate
       # inherits it with `rust-version.workspace = true`.
+      #
+      # `1.95` means 1.95.0 to cargo but names the whole 1.95.x line to rustup,
+      # which would resolve it to the newest patch — so the gate would check a
+      # release later than the declared floor and pass on code that 1.95.0
+      # cannot build. Spelling the patch out pins it to the floor itself.
       - name: Read the declared MSRV
         id: msrv
         run: |
           version=$(grep -m1 '^rust-version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
           test -n "$version"
+          case "$version" in
+            *.*.*) ;;
+            *) version="$version.0" ;;
+          esac
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install GUI build dependencies
