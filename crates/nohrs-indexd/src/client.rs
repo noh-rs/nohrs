@@ -83,7 +83,7 @@ impl Client {
     pub fn connect_if_running(endpoint: &Endpoint) -> Result<Option<Self>> {
         match Self::connect(endpoint) {
             Ok(client) => Ok(Some(client)),
-            Err(error) if nobody_is_listening(&error) => {
+            Err(error) if nobody_is_listening(endpoint, &error) => {
                 tracing::debug!("no daemon is running: {error:#}");
                 Ok(None)
             }
@@ -206,17 +206,37 @@ impl IndexControl for Client {
 /// there is one we could not talk to.
 ///
 /// Read off the `io::Error` that `UnixStream::connect` failed with, which
-/// survives in the error's chain: a socket path that does not exist, or one
-/// left behind by a daemon that has gone (nothing is accepting on it).
-fn nobody_is_listening(error: &anyhow::Error) -> bool {
+/// survives in the error's chain. `NotFound` settles it: nothing is there.
+/// `ConnectionRefused` does not, because the kernel gives it both for a socket
+/// nobody is accepting on — what a daemon that has gone leaves behind, and the
+/// ordinary case — and for a path that is not a socket at all. The second is a
+/// broken endpoint rather than an empty one, and reporting it as "nothing to
+/// stop" would hide it behind a command that looked like it worked, so the
+/// file's own type is what tells the two apart.
+fn nobody_is_listening(endpoint: &Endpoint, error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
-        cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
-            matches!(
-                io.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            )
-        })
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| match io.kind() {
+                std::io::ErrorKind::NotFound => true,
+                std::io::ErrorKind::ConnectionRefused => is_socket(&endpoint.socket),
+                _ => false,
+            })
     })
+}
+
+/// Whether the endpoint path is a socket.
+///
+/// A path that has gone between the failed connect and this call counts: there
+/// is nothing there for the endpoint to be wrong about. Anything else that
+/// cannot be asked is reported rather than assumed away.
+fn is_socket(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+
+    match std::fs::symlink_metadata(path) {
+        Ok(about) => about.file_type().is_socket(),
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
 }
 
 /// Starts a daemon, unless one is already starting.

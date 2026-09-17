@@ -214,10 +214,12 @@ The writer and the file watcher now reside together in `nohrs-indexd`, which giv
 index keeping up with the filesystem?" a single place to be asked. Not a single answer: the
 daemon being up does not entail that the watcher is working. It outlives a watcher it failed
 to install, deliberately, because losing live updates costs freshness and the pass at the
-next start recovers it. `noh index status` therefore states which case obtains — `watching`,
-`running but not watching`, or not running at all — rather than leaving it to be inferred.
-Nothing starts at login, nothing is registered with the system, and the only thing a person
-has to quit is nohrs.
+next start recovers it. `noh index status` therefore states which case obtains — `watching`
+or `running but not watching` — rather than leaving it to be inferred. Asking is itself a
+reason to have a daemon, so the command starts one where none is running; the third answer,
+that none is running at all, is what it reports where none could be started and the index
+was read in this process instead. Nothing starts at login, nothing is registered with the
+system, and the only thing a person has to quit is nohrs.
 
 When vector search arrives and indexing begins to require hundreds of megabytes of model
 weights, it has somewhere to go that is not the process holding the hotkey.

@@ -782,6 +782,48 @@ fn index_one_directory(
     Ok(())
 }
 
+/// Reads `path` as text, refusing to follow it if it is a link.
+///
+/// The check that a path is not a link and the read of that path are separate
+/// syscalls, and what sits at the name can change in between — so the read
+/// carries the rule rather than trusting the check to still hold. Losing that
+/// race then costs a skipped file instead of a document whose content came from
+/// outside the covered tree.
+///
+/// This narrows the window rather than closing it. A *directory* above the file
+/// can be replaced between the two as well, and `O_NOFOLLOW` says nothing about
+/// the path's earlier components; shutting that case out needs the whole walk
+/// to descend by `openat` from a held root, which is a larger change than this.
+/// The remaining exposure is worth naming rather than implying a guarantee that
+/// does not hold.
+///
+/// Indexing runs on the pass's own walk threads, never the GPUI foreground
+/// loop, so the blocking read is fine here.
+#[allow(clippy::disallowed_methods)]
+fn read_without_following(path: &Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // Via rustix rather than a hand-written constant: `O_NOFOLLOW` is a
+        // different value on Linux and macOS, and the wrong one silently opens
+        // the link instead of refusing it.
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(path)
+            .ok()?;
+        let mut content = String::new();
+        file.read_to_string(&mut content).ok()?;
+        Some(content)
+    }
+    #[cfg(not(unix))]
+    {
+        fs::read_to_string(path).ok()
+    }
+}
+
 fn index_one_file(
     path: &Path,
     metadata: &fs::Metadata,
@@ -794,10 +836,7 @@ fn index_one_file(
         return Ok(());
     }
 
-    // Indexing runs on the pass's own walk threads, never the GPUI foreground
-    // loop, so the blocking read is fine here.
-    #[allow(clippy::disallowed_methods)]
-    let Ok(content) = fs::read_to_string(path) else {
+    let Some(content) = read_without_following(path) else {
         tracing::debug!("Skipping binary/unreadable file: {:?}", path);
         return Ok(());
     };
@@ -884,7 +923,23 @@ impl IndexManager {
                 // legitimately covers — and reading a change reported for the
                 // root as "a link, therefore gone" would take the root's
                 // document and, with it, every document beneath: all of them.
-                fs::metadata(path).ok()
+                match fs::metadata(path) {
+                    Ok(about) => Some(about),
+                    // The root being unreachable is this process losing sight
+                    // of the tree, not the tree ceasing to exist, which is the
+                    // distinction `index_home` makes when it fails rather than
+                    // reporting a clean sweep of an index it never validated.
+                    // An unmount that lasts a second would otherwise cost every
+                    // document under the root — all of them — and no later pass
+                    // puts those back short of a full rebuild.
+                    Err(error) => {
+                        tracing::warn!(
+                            "the content root {} cannot be read, leaving the index alone: {error}",
+                            path.display()
+                        );
+                        continue;
+                    }
+                }
             } else {
                 // Asked without following the link, because a symlink is not
                 // indexed: its target is a file the covered tree does not
@@ -1393,6 +1448,64 @@ mod tests {
             reader.candidates("beacon", 10).unwrap().is_empty(),
             "a document under a directory that is gone still answers, at a path \
              that now resolves outside the tree"
+        );
+    }
+
+    /// The check that a path is not a link and the read of it are two syscalls,
+    /// and what sits at the name can change in between. The read carries the
+    /// rule itself, so losing that race costs a skipped file rather than a
+    /// document holding content from outside the covered tree.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_became_a_link_is_not_read_through() {
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "a beacon out here\n").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let ordinary = dir.path().join("notes.txt");
+        std::fs::write(&ordinary, "a beacon in here\n").unwrap();
+        assert!(
+            read_without_following(&ordinary).is_some(),
+            "an ordinary file was refused, so refusing a link proves nothing"
+        );
+
+        let swapped = dir.path().join("swapped.txt");
+        std::os::unix::fs::symlink(&secret, &swapped).unwrap();
+        assert!(
+            read_without_following(&swapped).is_none(),
+            "a link was read through as though it were the file that was checked"
+        );
+    }
+
+    /// `index_home` fails rather than sweeping when it cannot read its own
+    /// content root, because "the pass could not look" is not "the files are
+    /// gone". A change reported for a root that has been unmounted or removed
+    /// has to mean the same thing — otherwise the live path deletes the root's
+    /// document and every document beneath it, which is all of them, for an
+    /// outage that may last a second.
+    #[test]
+    fn a_content_root_that_cannot_be_read_does_not_empty_the_index() {
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        manager.index_home(Refresh::Everything, None).unwrap();
+
+        // The volume goes away, and the watcher reports the root.
+        std::fs::remove_dir_all(&content).unwrap();
+        manager
+            .process_changes(std::slice::from_ref(&content))
+            .unwrap();
+
+        // And comes back.
+        std::fs::create_dir_all(&content).unwrap();
+        std::fs::write(content.join("notes.txt"), "a needle in here\n").unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), content)
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            !reader.candidates("needle", 10).unwrap().is_empty(),
+            "an outage of the content root emptied the index"
         );
     }
 
