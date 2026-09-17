@@ -970,14 +970,21 @@ fn read_without_following(path: &Path) -> Readable {
     // One byte past the limit, so that a file which grew after that check is
     // caught by the length of what came back rather than read to its end.
     let mut content = String::new();
-    let Ok(read) = file
+    let read = match file
         .by_ref()
         .take(MAX_INDEXED_FILE_BYTES + 1)
         .read_to_string(&mut content)
-    else {
-        // Not text, or gone unreadable mid-read. Either way this is not a
-        // decision about the file's contents that will hold next time.
-        return Readable::Unreadable;
+    {
+        Ok(read) => read,
+        // Read to its end and found not to be text. That is a decision about
+        // the file, and it holds until the file changes — as it does for one
+        // too large — so the document keeps its modification time and no later
+        // pass reads it again. Most trees are full of these.
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            return Readable::NameOnly;
+        }
+        // Anything else is a read that did not happen.
+        Err(_) => return Readable::Unreadable,
     };
     if read as u64 > MAX_INDEXED_FILE_BYTES {
         return Readable::NameOnly;
@@ -1734,6 +1741,33 @@ mod tests {
         assert!(
             reader.candidates("beacon", 10).unwrap().is_empty(),
             "a content root that became a file was indexed as a file"
+        );
+    }
+
+    /// A binary file is read to its end and found not to be text, which is a
+    /// decision about the file rather than a read that failed: it holds until
+    /// the file changes. Treating it as unreadable would leave the document
+    /// without a modification time, and every later incremental pass would read
+    /// the whole file again to reach the same conclusion — on most trees, most
+    /// of the files.
+    #[test]
+    fn a_binary_file_is_not_read_again_by_every_pass() {
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        // Invalid UTF-8, so the read fails rather than the NUL check catching
+        // it after a successful decode.
+        std::fs::write(content.join("image.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+
+        manager.index_home(Refresh::Changed, None).unwrap();
+        let second = manager.index_home(Refresh::Changed, None).unwrap();
+
+        assert_eq!(
+            second.indexed, 0,
+            "a file that is not text was read again by the next pass: {second:?}"
+        );
+        assert!(
+            second.unchanged > 0,
+            "nothing was compared at all: {second:?}"
         );
     }
 

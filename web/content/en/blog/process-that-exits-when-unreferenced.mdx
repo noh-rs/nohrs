@@ -12,8 +12,9 @@ canonical: en
 Some stores admit exactly one writer while any number of readers read at once. A
 [tantivy](https://github.com/quickwit-oss/tantivy) index is one. So is an LMDB environment's
 write transaction, and so is anything guarded by a single-writer lock. The constraint is not
-per-process but global: one writer across every process on the machine, settled between them
-by a lock taken on a file on disk rather than by anything held inside any one of them.
+per-process but per store: one writer for a given index, across every process on the machine
+that opens it, settled between them by a lock taken on a file on disk rather than by anything
+held inside any one of them.
 
 Put the writer inside one of the participants and that participant owns the store for as long
 as it runs. Nothing else writes; a second instance is refused; a command-line tool that wants
@@ -166,8 +167,9 @@ pid file is worse, since it reintroduces pid reuse — the number in it may belo
 else entirely by the time it is read.
 
 An **advisory lock** (`flock`) held for the writer's whole life decides instead. The kernel
-releases it once the last descriptor referring to it is closed — which, for a process that
-takes one and hands it to nobody, is when that process dies, by whatever means it dies. That
+releases it once the last descriptor referring to it is closed — the descriptor, not the file,
+so a copy inherited by a child keeps the lock after the process that took it has gone. For a
+process that takes one and hands it to nobody, that is when it dies, by whatever means. That
 is the socket's rule again, and not by coincidence: both ends of this design rest on the same
 count, of descriptors referring to one thing, kept by the same counter.
 
