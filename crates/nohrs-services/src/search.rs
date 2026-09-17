@@ -3,6 +3,8 @@
 
 /// Trait abstracting a search backend.
 pub mod backend;
+/// Asking for the index to be updated, wherever its writer lives.
+pub mod control;
 /// The search engine wiring together the index, watcher, and root backend.
 pub mod engine;
 /// In-memory index of file and directory names, for keystroke-latency matching.

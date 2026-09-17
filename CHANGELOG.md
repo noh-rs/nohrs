@@ -56,7 +56,7 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   hold it from launch to quit whether or not it indexed anything, which made the
   index private to whichever process got there first — `noh index build` beside a
   running app was refused, and so was a second window. Readers never take the
-  lock at all. See [ADR 0009](docs/adr/0009-single-writer-index-no-daemon.md).
+  lock at all. See [ADR 0009](docs/adr/0009-indexd-owns-the-index-writer.md).
 - The default stderr log filter quietens tantivy to `warn`: it narrates every
   commit and merge at `info`, which is half a screen of "save metas" for one
   `noh index build`. `RUST_LOG=info` brings it back.

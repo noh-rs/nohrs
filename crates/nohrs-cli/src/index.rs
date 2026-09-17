@@ -15,7 +15,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use nohrs_core::errors::{Error, Result};
-use nohrs_services::search::indexer::{IndexManager, IndexReader, Refresh};
+use nohrs_services::search::control::{InProcess, IndexControl};
+use nohrs_services::search::indexer::Refresh;
 
 /// The `noh index` subcommands.
 #[derive(clap::Subcommand, Debug, Clone)]
@@ -83,31 +84,30 @@ pub trait Backend {
 pub struct ServicesBackend;
 
 impl ServicesBackend {
-    fn location() -> Result<(PathBuf, PathBuf)> {
-        IndexManager::default_location().map_err(|error| Error::Other(format!("{error:#}")))
+    /// The writer this command drives. Opened per call rather than held: a
+    /// one-shot command has no state to keep between them, and opening is what
+    /// decides whether this process can write at all.
+    fn control() -> Result<InProcess> {
+        InProcess::open_default().map_err(|error| Error::Other(format!("{error:#}")))
     }
 }
 
 impl Backend for ServicesBackend {
     fn status(&self) -> Result<Status> {
-        let (index_path, content_root) = Self::location()?;
-        let reader = IndexReader::open(index_path.clone(), content_root.clone())
+        let status = Self::control()?
+            .status()
             .map_err(|error| Error::Other(format!("{error:#}")))?;
-        let documents = reader.map(|reader| reader.document_count());
         Ok(Status {
-            index_path,
-            content_root,
-            documents,
+            index_path: status.index_path,
+            content_root: status.content_root,
+            documents: status.documents,
         })
     }
 
     fn build(&self, refresh: Refresh) -> Result<Built> {
         let started = Instant::now();
-        let manager = IndexManager::new().map_err(|error| Error::Other(format!("{error:#}")))?;
-        // No progress channel: a one-shot command has nowhere to put a progress
-        // bar that a pipe would not have to read around.
-        let report = manager
-            .index_home(refresh, None)
+        let report = Self::control()?
+            .refresh(refresh)
             .map_err(|error| Error::Other(format!("{error:#}")))?;
         Ok(Built {
             indexed: report.indexed,

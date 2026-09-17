@@ -187,7 +187,7 @@ PC のリソースを過度に消費しないよう、適応的に throttle し�
 
 `noh search` は index が当該スコープを覆っていれば index に候補を選ばせ (BM25 順)、覆っていなければ walk に
 落ちます。index の writer はプロセスを跨いで 1 つしか居られないため、読み手は全員ロックを取らない
-`IndexReader` 経由で読みます ([ADR 0009](./adr/0009-single-writer-index-no-daemon.md))。
+`IndexReader` 経由で読みます ([ADR 0009](./adr/0009-indexd-owns-the-index-writer.md))。
 
 ### 検索結果から遷移
 

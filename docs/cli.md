@@ -220,7 +220,7 @@ indexed 37, unchanged 12394, removed 3 in 1.1s
 - `status` は**読むだけ**でロックを取らないので、アプリが起動中でも安全に実行できます。
 - `build` は writer を取るため、アプリ (や別の `build`) が持っているときは、その旨を述べて終了コード 1 で
   終わります。tantivy の writer はプロセスを跨いで 1 つだけ、という制約そのものです
-  ([ADR 0009](./adr/0009-single-writer-index-no-daemon.md))。
+  ([ADR 0009](./adr/0009-indexd-owns-the-index-writer.md))。
 - 存在するが空のインデックスは、無いのと同じ扱いで報告します。どちらも検索を 0 件にするからです。
 
 GUI (ランチャー) が起動している間はそちらが更新を担当します。watcher が拾えるのは**起動中に起きた変更だけ**なので、
