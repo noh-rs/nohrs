@@ -347,7 +347,7 @@ impl IndexManager {
         // a directory that was merely busy or briefly unreadable, which no
         // later pass puts back short of a full rebuild.
         for gone in known.keys() {
-            if unseen.covers(Path::new(gone)) {
+            if unseen.covers(gone) {
                 continue;
             }
             writer.delete_term(Term::from_field_text(fields.path, gone));
@@ -511,7 +511,14 @@ impl Tally {
 #[derive(Default)]
 struct Unseen {
     /// Paths the walk reported an error for, whose contents it never saw.
-    roots: Vec<PathBuf>,
+    ///
+    /// Held the way the index spells a path — `to_string_lossy` — rather than
+    /// as the `PathBuf` the walk reported, because that is what the documents
+    /// being compared against are keyed by. A path with a non-UTF-8 component
+    /// spells the same way on both sides only if both sides are lossy, and
+    /// getting that wrong would silently un-protect exactly the documents this
+    /// type exists to protect.
+    roots: Vec<String>,
     /// Whether an error arrived naming no path at all. Nothing then says what
     /// went unwalked, so nothing can be called gone.
     anywhere: bool,
@@ -520,14 +527,21 @@ struct Unseen {
 impl Unseen {
     fn note(&mut self, error: &ignore::Error) {
         match unwalked(error) {
-            Some(path) => self.roots.push(path.to_path_buf()),
+            Some(path) => self.roots.push(path.to_string_lossy().into_owned()),
             None => self.anywhere = true,
         }
     }
 
-    /// Whether `path` is somewhere this pass could not see.
-    fn covers(&self, path: &Path) -> bool {
-        self.anywhere || self.roots.iter().any(|root| path.starts_with(root))
+    /// Whether `indexed_path` is somewhere this pass could not see.
+    ///
+    /// Takes the indexed spelling of the path, not a `Path`, so that the
+    /// comparison is between two strings the same lossy conversion produced.
+    fn covers(&self, indexed_path: &str) -> bool {
+        self.anywhere
+            || self
+                .roots
+                .iter()
+                .any(|root| Path::new(indexed_path).starts_with(root))
     }
 }
 
@@ -1048,13 +1062,40 @@ mod tests {
             unseen
         };
 
-        assert!(unseen.covers(Path::new("/home/someone/locked/notes.txt")));
-        assert!(unseen.covers(Path::new("/home/someone/locked")));
+        assert!(unseen.covers("/home/someone/locked/notes.txt"));
+        assert!(unseen.covers("/home/someone/locked"));
         // The rest of the tree was walked and is still judged on what it holds.
-        assert!(!unseen.covers(Path::new("/home/someone/elsewhere/notes.txt")));
+        assert!(!unseen.covers("/home/someone/elsewhere/notes.txt"));
         // Not a prefix match on the string: a sibling that merely starts with
         // the same letters was walked like any other.
-        assert!(!unseen.covers(Path::new("/home/someone/locked-out/notes.txt")));
+        assert!(!unseen.covers("/home/someone/locked-out/notes.txt"));
+    }
+
+    /// The documents are keyed by the index's lossy spelling of their path, so
+    /// the unwalked roots must be spelled the same way. Held as raw `PathBuf`s,
+    /// a directory with a non-UTF-8 component would never match the documents
+    /// beneath it — un-protecting exactly the ones this is for.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_is_not_utf8_is_still_recognised_as_unseen() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        // A lone 0xFF is not valid UTF-8, so `to_string_lossy` replaces it.
+        let raw = PathBuf::from(OsStr::from_bytes(b"/home/someone/lock\xffed"));
+        let mut unseen = Unseen::default();
+        unseen.note(&ignore::Error::WithPath {
+            path: raw.clone(),
+            err: Box::new(ignore::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            ))),
+        });
+
+        let beneath = raw.join("notes.txt");
+        assert!(
+            unseen.covers(&beneath.to_string_lossy()),
+            "a document under an unreadable non-UTF-8 directory was left unprotected"
+        );
     }
 
     #[test]
@@ -1063,7 +1104,7 @@ mod tests {
         unseen.note(&ignore::Error::Io(std::io::Error::other("a broken mount")));
 
         assert!(
-            unseen.covers(Path::new("/anywhere/at/all")),
+            unseen.covers("/anywhere/at/all"),
             "an error saying nothing about where it happened let documents be dropped"
         );
     }

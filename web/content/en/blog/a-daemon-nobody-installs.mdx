@@ -204,13 +204,13 @@ the kind of green that means nothing.
 
 ## Where this leaves us
 
-The writer and the file watcher now live together in `nohrs-indexd`, which makes "the index is
-keeping up with the filesystem" one thing to check rather than something inferred from two.
-Not that the daemon being up proves it — it outlives a watcher it failed to install, on
-purpose, because losing live updates costs freshness and the pass at the next start catches
-up. It just means there is now one place that knows, and `noh index status` prints what it
-knows. Nothing starts at login, nothing is registered with the system, and the only thing a
-person has to quit is nohrs.
+The writer and the file watcher now live together in `nohrs-indexd`, which gives "is the index
+keeping up with the filesystem?" a single place to ask. Not a single answer: the daemon being
+up does not mean the watcher is working. It outlives a watcher it failed to install, on
+purpose, because losing live updates costs freshness and the pass at the next start catches up.
+So the daemon reports the two separately — it is running, and it is or is not watching — and
+`noh index status` prints both. Nothing starts at login, nothing is registered with the system,
+and the only thing a person has to quit is nohrs.
 
 When vector search arrives and indexing starts wanting hundreds of megabytes of model
 weights, it has somewhere to go that is not the process holding your hotkey.

@@ -238,12 +238,21 @@ pub fn search_using(
 /// All three would report "no matches" for something that is not searchable,
 /// and `docs/cli.md` §4.1 promises `1` for an operand that could not be
 /// searched. One `open` per operand settles it.
+///
+/// Anything that is neither a directory nor a regular file is refused rather
+/// than opened. Opening a FIFO blocks until someone writes to it, and a
+/// character device can be read forever, so the `open` that is meant to settle
+/// this question in a syscall would instead be where the command stops. A
+/// symlink is not special here: `metadata` follows it, so an operand naming a
+/// link to a file is a file.
 fn must_be_searchable(root: &Path) -> Result<()> {
     let about = std::fs::metadata(root)?;
     if about.is_dir() {
         std::fs::read_dir(root)?;
-    } else {
+    } else if about.is_file() {
         std::fs::File::open(root)?;
+    } else {
+        anyhow::bail!("not a regular file or a directory");
     }
     Ok(())
 }
@@ -1006,6 +1015,34 @@ mod tests {
                 .map(std::io::Error::kind),
             Some(std::io::ErrorKind::PermissionDenied),
             "the failure did not say what was wrong with the path: {error:#}"
+        );
+    }
+
+    /// `File::open` on a FIFO blocks until someone writes to it, so the one
+    /// syscall meant to settle whether an operand is searchable would instead
+    /// be where the command stopped — with no output and no way to tell it
+    /// apart from a slow search.
+    #[cfg(unix)]
+    #[test]
+    fn an_operand_that_would_block_on_open_is_refused_rather_than_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !made {
+            return;
+        }
+
+        // Would never return before: nothing has this pipe open for writing.
+        let error = search(&fifo, "needle", &Options::default())
+            .expect_err("a FIFO was accepted as something to search");
+
+        assert!(
+            error.to_string().contains("regular file"),
+            "the failure did not say why the operand was refused: {error:#}"
         );
     }
 
