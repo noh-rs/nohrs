@@ -223,6 +223,16 @@ impl IndexManager {
         mut progress_tx: Option<postage::watch::Sender<f32>>,
     ) -> Result<IndexReport> {
         let fields = Fields::of(&self.index.schema())?;
+        // The tree this pass is about has to be readable before any of it means
+        // anything. A walk that cannot read its own root reports one error and
+        // ends, which `Unseen` then reads — correctly, for a subdirectory — as
+        // "do not call anything under here gone". Applied to the root that
+        // protects the whole index, so a content root that has been renamed or
+        // unmounted would leave every document answering searches forever while
+        // the pass reported success. Failing says which it is.
+        std::fs::read_dir(&self.content_root)
+            .with_context(|| format!("cannot read {} to index it", self.content_root.display()))?;
+
         // What the index holds now, by path. The walk reports back which of
         // these it reached, so whatever is left at the end is a document whose
         // file is gone.
@@ -781,8 +791,17 @@ impl IndexManager {
         let fields = Fields::of(&self.index.schema())?;
 
         for path in paths {
-            match fs::metadata(path) {
-                Ok(metadata) if metadata.is_file() => {
+            // Asked without following the link, because a symlink is not
+            // indexed: its target is a file the covered tree does not contain.
+            // A path that has become one is handled below as a path that is
+            // gone, which is what it is as far as the index is concerned —
+            // otherwise a live change would put back what a full pass refuses
+            // to index.
+            let about = fs::symlink_metadata(path)
+                .ok()
+                .filter(|about| !about.is_symlink());
+            match about {
+                Some(metadata) if metadata.is_file() => {
                     let modified = modified_nanos(&metadata);
                     if let Err(e) = index_one_file(path, &metadata, modified, writer, &fields) {
                         tracing::warn!("Failed to update index for {:?}: {}", path, e);
@@ -790,16 +809,16 @@ impl IndexManager {
                 }
                 // A directory the watcher reported is its own entry in the
                 // index, and its children arrive as their own events.
-                Ok(metadata) if metadata.is_dir() => {
+                Some(metadata) if metadata.is_dir() => {
                     let modified = modified_nanos(&metadata);
                     if let Err(e) = index_one_directory(path, modified, writer, &fields) {
                         tracing::warn!("Failed to update index for {:?}: {}", path, e);
                     }
                 }
-                Ok(_) => {}
-                // Gone, or no longer reachable: either way the document for it
-                // must not keep answering searches.
-                Err(_) => {
+                Some(_) => {}
+                // Gone, unreachable, or now a symlink: for the index all three
+                // are the same, a document that must stop answering searches.
+                None => {
                     let path_str = path.to_string_lossy();
                     writer.delete_term(Term::from_field_text(fields.path, &path_str));
                 }
@@ -1183,6 +1202,53 @@ mod tests {
         assert!(
             !reader.candidates("needle", 10).unwrap().contains(&link),
             "a symlink's target was indexed as though it were in the tree"
+        );
+    }
+
+    /// A live change must not put back what a full pass refuses to index: the
+    /// watcher reports a path, and `metadata` follows a link, so a file
+    /// replaced by a symlink came back as its target's contents.
+    #[cfg(unix)]
+    #[test]
+    fn the_watcher_does_not_index_a_file_that_has_become_a_symlink() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "a needle out here\n").unwrap();
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        let notes = content.join("notes.txt");
+        manager.index_home(Refresh::Everything, None).unwrap();
+
+        std::fs::remove_file(&notes).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), &notes).unwrap();
+        manager.update_file(&notes).unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), content)
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            reader.candidates("needle", 10).unwrap().is_empty(),
+            "the watcher indexed a symlink's target as though it were in the tree"
+        );
+    }
+
+    /// A pass that cannot read its own root has not established that anything
+    /// is gone — but `Unseen` would read the root's error the way it reads a
+    /// subdirectory's, and hold every document as protected while reporting a
+    /// clean pass. A renamed or unmounted content root is a failure, not a
+    /// refresh that found nothing to do.
+    #[test]
+    fn a_pass_whose_content_root_is_gone_fails_rather_than_reporting_success() {
+        let (dir, manager) = staged();
+        manager.index_home(Refresh::Everything, None).unwrap();
+
+        std::fs::remove_dir_all(dir.path().join("content")).unwrap();
+
+        let error = manager
+            .index_home(Refresh::Changed, None)
+            .expect_err("a pass over a content root that is gone reported success");
+        assert!(
+            format!("{error:#}").contains("cannot read"),
+            "the failure did not say the root could not be read: {error:#}"
         );
     }
 
