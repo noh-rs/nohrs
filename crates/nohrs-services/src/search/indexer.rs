@@ -434,13 +434,22 @@ impl IndexManager {
     /// under one directory are a contiguous range in it, and a watcher batch
     /// must not cost a pass over everything the index holds: a deleted file is
     /// ordinary, and answering "nothing is beneath it" has to be cheap.
-    fn indexed_beneath(&self, fields: &Fields, path: &str) -> Result<Vec<String>> {
+    ///
+    /// The searcher comes from the caller for the same reason: one batch can
+    /// hold many gone paths — an `rm -rf` reports them together — and opening a
+    /// reader apiece would map the segments once per path, which is the cost
+    /// the seek above is here to avoid.
+    fn indexed_beneath(
+        &self,
+        fields: &Fields,
+        searcher: &tantivy::Searcher,
+        path: &str,
+    ) -> Result<Vec<String>> {
         // Everything below `path` and nothing else: `foo/` excludes `foo` and
         // stops short of `foo!`, `foo.txt` and any other sibling sharing the
         // prefix without the separator.
         let prefix = format!("{path}/");
         let mut beneath = Vec::new();
-        let searcher = self.index.reader()?.searcher();
 
         for segment_reader in searcher.segment_readers() {
             let Ok(Some(paths)) = segment_reader.fast_fields().str("path") else {
@@ -915,6 +924,7 @@ impl IndexManager {
     fn process_changes_with(&self, writer: &mut IndexWriter, paths: &[PathBuf]) -> Result<()> {
         let fields = Fields::of(&self.index.schema())?;
         let mut ancestors = Ancestors::default();
+        let mut sweeping: Option<tantivy::Searcher> = None;
 
         for path in paths {
             let about = if path == &self.content_root {
@@ -983,8 +993,18 @@ impl IndexManager {
                 None => {
                     let path_str = path.to_string_lossy();
                     writer.delete_term(Term::from_field_text(fields.path, &path_str));
-                    for beneath in self.indexed_beneath(&fields, &path_str)? {
-                        writer.delete_term(Term::from_field_text(fields.path, &beneath));
+                    // Opened on the first deletion and shared by the rest.
+                    // Nothing this loop writes reaches a reader before the
+                    // commit below, so one view answers for the whole batch —
+                    // and the ordinary batch, which deletes nothing, never
+                    // opens one at all.
+                    if sweeping.is_none() {
+                        sweeping = Some(self.index.reader()?.searcher());
+                    }
+                    if let Some(searcher) = sweeping.as_ref() {
+                        for beneath in self.indexed_beneath(&fields, searcher, &path_str)? {
+                            writer.delete_term(Term::from_field_text(fields.path, &beneath));
+                        }
                     }
                 }
             }
