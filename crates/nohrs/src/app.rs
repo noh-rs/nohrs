@@ -23,6 +23,74 @@ use nohrs_ui::components::layout::unified_toolbar::UNIFIED_TOOLBAR_HEIGHT;
 use nohrs_ui::window::{self, traffic_lights::TrafficLightsHook};
 use std::sync::Arc;
 
+/// Wiring the window to whoever is keeping the search index current.
+mod search {
+    use std::sync::Arc;
+
+    use gpui::{App, AppContext};
+    use nohrs_services::search::SearchService;
+
+    /// Opens the search service, asking `nohrs-indexd` to own the index writer.
+    ///
+    /// Starting the daemon is what brings the index up to date after a spell
+    /// with the app closed, and what keeps it up to date while the app is
+    /// open — the watcher lives there, because the launcher can be summoned at
+    /// any moment and the freshness of what it answers with cannot depend on a
+    /// window having been left open (ADR 0009).
+    ///
+    /// Failing to reach one is not fatal. The writer comes back here, which
+    /// costs the live updates and nothing else: searches read the index
+    /// directly either way.
+    pub(super) fn open() -> anyhow::Result<SearchService> {
+        match daemon() {
+            Ok(client) => SearchService::with_control(Arc::new(client)),
+            Err(error) => {
+                tracing::warn!("indexing in-process: {error:#}");
+                SearchService::new()
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn daemon() -> anyhow::Result<nohrs_indexd::Client> {
+        nohrs_indexd::Client::connect_or_start(&nohrs_indexd::Endpoint::for_session())
+    }
+
+    #[cfg(not(unix))]
+    fn daemon() -> anyhow::Result<std::convert::Infallible> {
+        anyhow::bail!("the index daemon needs unix sockets")
+    }
+
+    /// Reloads the index whenever the daemon says it has committed.
+    ///
+    /// Without this a search answers from the segments that existed when the
+    /// window opened, and a file saved a moment ago is not found — the index
+    /// would be current and the window would not know.
+    #[cfg(unix)]
+    pub(super) fn follow_the_index(service: Arc<SearchService>, cx: &mut App) {
+        let endpoint = nohrs_indexd::Endpoint::for_session();
+        cx.background_spawn(async move {
+            let notices = match nohrs_indexd::Notices::subscribe(&endpoint) {
+                Ok(notices) => notices,
+                Err(error) => {
+                    tracing::debug!("not following the index: {error:#}");
+                    return;
+                }
+            };
+            // Ends when the daemon does, which is when this window has gone.
+            for notice in notices {
+                if matches!(notice, nohrs_indexd::protocol::Response::Committed) {
+                    service.reload();
+                }
+            }
+        })
+        .detach();
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn follow_the_index(_service: Arc<SearchService>, _cx: &mut App) {}
+}
+
 pub struct NohrsApp;
 
 impl NohrsApp {
@@ -111,7 +179,7 @@ impl NohrsApp {
                 move |window, cx| {
                     // Initialize SearchService. Failure is non-fatal: the app starts
                     // with full-text search disabled rather than crashing.
-                    let search_service: Option<Arc<SearchService>> = match SearchService::new() {
+                    let search_service: Option<Arc<SearchService>> = match search::open() {
                         Ok(service) => Some(Arc::new(service)),
                         Err(e) => {
                             tracing::error!(
@@ -129,6 +197,7 @@ impl NohrsApp {
                         if let Some(job) = service.take_initial_indexing_job() {
                             cx.background_spawn(async move { job.run() }).detach();
                         }
+                        search::follow_the_index(Arc::clone(service), cx);
                     }
 
                     let view = cx.new(|cx| {

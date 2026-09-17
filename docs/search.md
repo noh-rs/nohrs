@@ -122,8 +122,10 @@ globs = ["*.iso", "*.mov"]
 
 | 観点 | 仕様 |
 |------|------|
-| 起動時 indexing | 毎起動、バックグラウンドで**増分**パス (walk + ファイルごとの `stat`)。watcher は起動中の変更しか見えないため、終了中に変わったファイルはここで拾う。GUI を開かないマシンでは `noh index build` |
-| ファイル変更検出 | 起動中は `notify-debouncer-mini` (debounce 2s)。起動時パスは索引の `last_modified` (ns) とファイルの mtime を突き合わせ、一致するものは読まない |
+| 起動時 indexing | `nohrs-indexd` の起動直後にバックグラウンドで**増分**パス (walk + ファイルごとの `stat`)。watcher は起動中の変更しか見えないため、デーモンが居なかった間に変わったファイルはここで拾う |
+| ファイル変更検出 | `nohrs-indexd` の `notify-debouncer-mini` (debounce 2s)。起動時パスは索引の `last_modified` (ns) とファイルの mtime を突き合わせ、一致するものは読まない |
+| 更新の通知 | commit ごとにデーモンが接続中のクライアントへ通知し、読み手が `IndexReader::reload` を呼ぶ。各プロセスが tantivy の commit 監視スレッドを持たずに済む |
+| 並列度 | walk は `min(CPU/2, 4)` スレッド。`IndexWriter::add_document` が `&self` を取るので書き込みはそのまま投げられる |
 | 削除検出 | watcher の delete event + 起動時パスの orphan 掃除 (走査が到達しなかったドキュメントを削除)。定期 orphan scan (24h ごと) は未実装 |
 | concurrent indexing | rayon で並列、CPU の半分 (最大 4 thread) まで |
 | index 整合性 | 起動時に lazy check (`files.content_hash` と Tantivy doc id の対応) |
@@ -185,9 +187,10 @@ PC のリソースを過度に消費しないよう、適応的に throttle し�
 | **Explorer 内検索バー (`Cmd+F`)** | active pane の current dir 配下のみ scope |
 | **`noh search`** ([`cli.md`](./cli.md) §4) | オペランドで指定したツリー (既定はカレントディレクトリ) |
 
-`noh search` は index が当該スコープを覆っていれば index に候補を選ばせ (BM25 順)、覆っていなければ walk に
-落ちます。index の writer はプロセスを跨いで 1 つしか居られないため、読み手は全員ロックを取らない
-`IndexReader` 経由で読みます ([ADR 0009](./adr/0009-indexd-owns-the-index-writer.md))。
+`noh search` も Explorer も、index が当該スコープを覆っていれば index に候補を選ばせ (BM25 順)、覆っていなければ
+walk に落ちます。**読み手は全員ロックを取らない `IndexReader` 経由で直接 index を読み**、書き込みだけが
+`nohrs-indexd` に集約されます。デーモンは検索クエリを一切受け取らないので、落ちていても・古くても・居なくても
+検索は動きます (鮮度が止まるだけ) ([ADR 0009](./adr/0009-indexd-owns-the-index-writer.md))。
 
 ### 検索結果から遷移
 

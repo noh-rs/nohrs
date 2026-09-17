@@ -13,7 +13,7 @@
 | [`noh restore`](#2-noh-restore) | ゴミ箱から元の場所へ戻す |
 | [`noh trash list` / `purge` / `empty`](#3-noh-trash) | ゴミ箱の一覧・個別完全削除・全消去 |
 | [`noh search`](#4-noh-search) | 名前と中身でファイルを探す |
-| [`noh index status` / `build`](#5-noh-index) | 検索インデックスの状態確認と構築 |
+| [`noh index status` / `build` / `stop`](#5-noh-index) | 検索インデックスの状態確認・構築・更新プロセスの停止 |
 | [`noh shim`](#6-noh-shim) | `rm` を乗っ取る symlink の設置・解除 |
 | [`noh doctor`](#7-noh-doctor) | 設置状態と依存物の診断 |
 | [`noh log`](#8-noh-log) | 自分の記録を読み返す |
@@ -206,26 +206,33 @@ noh search: read the files: the index only covers /Users/me/Documents
 $ noh index status
 index      /Users/me/.nohrs/index
 covers     /Users/me/Documents
+daemon     watching, 2 client(s)
 documents  12431
 
 $ noh index build
 indexing /Users/me/Documents
 indexed 37, unchanged 12394, removed 3 in 1.1s
+
+$ noh index stop
+stopped
 ```
 
 - `build` は既定で**増分**です。索引に記録した更新時刻とファイルの mtime を突き合わせ、変わっていないものは読みません。
   消えたファイルのドキュメントも落とします (走査が到達しなかったパスが、そのまま削除対象になります)。
   全ファイルを読み直したいときは `--full` を付けてください (索引が古いのではなく壊れていると疑うとき用)。
 - 出力の 3 つの数は「何もすることが無かった」と「索引が更新されていない」を区別するためのものです。
-- `status` は**読むだけ**でロックを取らないので、アプリが起動中でも安全に実行できます。
-- `build` は writer を取るため、アプリ (や別の `build`) が持っているときは、その旨を述べて終了コード 1 で
-  終わります。tantivy の writer はプロセスを跨いで 1 つだけ、という制約そのものです
+- **どちらも `nohrs-indexd` に依頼します。** 居なければ起動し、最後のクライアントが去って猶予時間 (既定 90 秒)
+  が過ぎると自分で終了します。ログイン時常駐はせず、launchd / systemd への登録もありません
   ([ADR 0009](./adr/0009-indexd-owns-the-index-writer.md))。
+- `daemon` 行が索引の**鮮度**を示します。`watching` なら誰かがファイルシステムの変更を追っている状態で、
+  そうでなければ「このコマンドを打った時点の内容」でしかありません。件数からは分からない違いです。
+- `stop` は索引を消しません。更新を止めるだけで、検索はそのまま動きます (読み手は索引を直接読むので、
+  デーモンの有無に関係なく答えられます)。
 - 存在するが空のインデックスは、無いのと同じ扱いで報告します。どちらも検索を 0 件にするからです。
+- Windows は unix socket が前提のこの経路を使えないため、その場で索引を更新します。
 
-GUI (ランチャー) が起動している間はそちらが更新を担当します。watcher が拾えるのは**起動中に起きた変更だけ**なので、
-終了中に変わったファイルは次の起動時の増分パスで拾います。常駐物を増やさない判断なので、UI を開かないマシンで
-索引を保ちたい場合は `noh index build` を cron / systemd timer に載せてください。
+`noh index build` は既定で増分なので、UI を開かないマシンでは cron / systemd timer に載せておけば
+索引が追従します。デーモンはその実行のたびに起動し、猶予時間が過ぎれば消えます。
 
 ---
 

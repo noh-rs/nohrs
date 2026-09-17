@@ -53,7 +53,11 @@ pub const OP_TARGET: &str = "nohrs::op";
 /// so a rename would silently stop recording every operation — the exact defect
 /// this filter exists to prevent.
 fn default_file_filter() -> String {
-    format!("info,{OP_TARGET}=debug")
+    // `tantivy=warn` for the same reason the stderr filter carries it: tantivy
+    // narrates every commit, merge and deleted segment file at `info`, and one
+    // indexing pass buries every record the file is kept for. What nohrs itself
+    // does about indexing is logged by nohrs.
+    format!("info,tantivy=warn,{OP_TARGET}=debug")
 }
 
 /// How the file sink is configured. Defaults are what a normal run wants:

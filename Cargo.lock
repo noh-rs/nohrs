@@ -4145,10 +4145,12 @@ dependencies = [
 name = "nohrs"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "clap",
  "gpui",
  "gpui-component",
  "nohrs-core",
+ "nohrs-indexd",
  "nohrs-launcher",
  "nohrs-models",
  "nohrs-pages",
@@ -4166,10 +4168,12 @@ dependencies = [
  "clap_complete",
  "dirs 6.0.0",
  "nohrs-core",
+ "nohrs-indexd",
  "nohrs-services",
  "nohrs-store",
  "serde_json",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -4189,6 +4193,23 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "nohrs-indexd"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-channel 2.5.0",
+ "clap",
+ "nohrs-core",
+ "nohrs-services",
+ "postage",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

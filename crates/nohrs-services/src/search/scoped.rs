@@ -177,6 +177,20 @@ pub struct Outcome {
     fields(root = %root.display(), subject = ?options.subject, engine = ?options.engine)
 )]
 pub fn search(root: &Path, query: &str, options: &Options) -> Result<Outcome> {
+    search_using(root, query, options, None)
+}
+
+/// Searches `root` with an index the caller already has open.
+///
+/// Opening a reader maps the index's files and builds a query parser, which a
+/// one-shot command can afford once and a window answering keystrokes cannot
+/// afford at all: it keeps one open and lends it here.
+pub fn search_using(
+    root: &Path,
+    query: &str,
+    options: &Options,
+    open_index: Option<&IndexReader>,
+) -> Result<Outcome> {
     let matcher = build_matcher(query, options)?;
     if options.limit == Some(0) {
         return Ok(Outcome::default());
@@ -184,13 +198,13 @@ pub fn search(root: &Path, query: &str, options: &Options) -> Result<Outcome> {
 
     match options.engine {
         Engine::Walk => Ok(walk(root, &matcher, options, Answered::Walk(None))),
-        Engine::Index => match usable_index(root, query, options) {
+        Engine::Index => match usable_index(root, query, options, open_index) {
             Ok(index) => from_index(&index, query, &matcher, options),
             Err(reason) => Err(anyhow::anyhow!(
                 "the index cannot answer this search: {reason}"
             )),
         },
-        Engine::Auto => match usable_index(root, query, options) {
+        Engine::Auto => match usable_index(root, query, options, open_index) {
             Ok(index) => from_index(&index, query, &matcher, options),
             // The index not being able to answer is not a failure: the files
             // themselves are still there to be read, which is slower and right.
@@ -318,8 +332,8 @@ fn line_searcher() -> Searcher {
 const INDEX_CANDIDATE_POOL: usize = 10_000;
 
 /// The index, and the search root resolved against the paths it stores.
-struct UsableIndex {
-    reader: IndexReader,
+struct UsableIndex<'a> {
+    reader: Borrowed<'a>,
     /// The root as the filesystem canonically names it, which is how indexed
     /// paths are spelled.
     canonical_root: PathBuf,
@@ -329,12 +343,31 @@ struct UsableIndex {
     given_root: PathBuf,
 }
 
+/// Either the caller's open index or one opened here, so that the rest of the
+/// search does not care which it got.
+enum Borrowed<'a> {
+    Lent(&'a IndexReader),
+    Opened(IndexReader),
+}
+
+impl std::ops::Deref for Borrowed<'_> {
+    type Target = IndexReader;
+
+    fn deref(&self) -> &IndexReader {
+        match self {
+            Self::Lent(reader) => reader,
+            Self::Opened(reader) => reader,
+        }
+    }
+}
+
 /// Whether the index can answer this search, and if not, why not.
-fn usable_index(
+fn usable_index<'a>(
     root: &Path,
     query: &str,
     options: &Options,
-) -> std::result::Result<UsableIndex, NoIndex> {
+    open_index: Option<&'a IndexReader>,
+) -> std::result::Result<UsableIndex<'a>, NoIndex> {
     // The index answers term queries; a regular expression means something else
     // to it entirely, and `-F` literals may still carry characters its query
     // parser reads as syntax. Both belong to the files themselves.
@@ -347,10 +380,13 @@ fn usable_index(
         return Err(NoIndex::WalkOnlyOptions);
     }
 
-    let reader = match IndexReader::open_default() {
-        Ok(Some(reader)) => reader,
-        Ok(None) => return Err(NoIndex::NotBuilt),
-        Err(error) => return Err(NoIndex::Unusable(format!("{error:#}"))),
+    let reader = match open_index {
+        Some(reader) => Borrowed::Lent(reader),
+        None => match IndexReader::open_default() {
+            Ok(Some(reader)) => Borrowed::Opened(reader),
+            Ok(None) => return Err(NoIndex::NotBuilt),
+            Err(error) => return Err(NoIndex::Unusable(format!("{error:#}"))),
+        },
     };
     if reader.document_count() == 0 {
         return Err(NoIndex::Empty);

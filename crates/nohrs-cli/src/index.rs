@@ -11,11 +11,10 @@
 //! another build — is holding it.
 
 use std::io::{self, Write};
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use nohrs_core::errors::{Error, Result};
-use nohrs_services::search::control::{InProcess, IndexControl};
+use nohrs_services::search::control::{InProcess, IndexControl, IndexStatus};
 use nohrs_services::search::indexer::Refresh;
 
 /// The `noh index` subcommands.
@@ -25,6 +24,8 @@ pub enum Command {
     Status,
     /// Bring the index up to date. Takes the index writer for the duration.
     Build(BuildArgs),
+    /// Stop the process that keeps the index up to date, if one is running.
+    Stop,
 }
 
 /// Flags for `noh index build`.
@@ -46,17 +47,6 @@ impl BuildArgs {
     }
 }
 
-/// What `status` found.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Status {
-    /// Where the index is (or would be).
-    pub index_path: PathBuf,
-    /// The tree the index covers.
-    pub content_root: PathBuf,
-    /// How many documents it holds, or `None` when nothing has built one.
-    pub documents: Option<u64>,
-}
-
 /// What `build` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Built {
@@ -74,9 +64,13 @@ pub struct Built {
 /// without an index on disk — building a real one walks a home directory.
 pub trait Backend {
     /// Where the index is and what it holds.
-    fn status(&self) -> Result<Status>;
+    fn status(&self) -> Result<IndexStatus>;
     /// Bring it up to date, returning what the pass did.
     fn build(&self, refresh: Refresh) -> Result<Built>;
+
+    /// Stop whatever is keeping the index up to date, and report whether there
+    /// was anything to stop.
+    fn stop(&self) -> Result<bool>;
 }
 
 /// The [`Backend`] used in production, delegating to `nohrs-services`.
@@ -84,24 +78,60 @@ pub trait Backend {
 pub struct ServicesBackend;
 
 impl ServicesBackend {
-    /// The writer this command drives. Opened per call rather than held: a
-    /// one-shot command has no state to keep between them, and opening is what
-    /// decides whether this process can write at all.
-    fn control() -> Result<InProcess> {
-        InProcess::open_default().map_err(|error| Error::Other(format!("{error:#}")))
+    /// Whoever will do the work: the daemon if one can be reached or started,
+    /// and this process if not.
+    ///
+    /// Asking the daemon rather than taking the writer is what keeps a build
+    /// from failing while the app is open — tantivy allows one writer, and with
+    /// a daemon around it is always the daemon's.
+    fn control() -> Result<Box<dyn IndexControl>> {
+        match daemon() {
+            Ok(client) => Ok(Box::new(client)),
+            Err(error) => {
+                tracing::debug!("no index daemon, indexing here instead: {error}");
+                let here = InProcess::open_default()
+                    .map_err(|error| Error::Other(format!("{error:#}")))?;
+                Ok(Box::new(here))
+            }
+        }
     }
 }
 
+#[cfg(unix)]
+fn daemon() -> Result<nohrs_indexd::Client> {
+    nohrs_indexd::Client::connect_or_start(&nohrs_indexd::Endpoint::for_session())
+        .map_err(|error| Error::Other(format!("{error:#}")))
+}
+
+#[cfg(not(unix))]
+fn daemon() -> Result<std::convert::Infallible> {
+    Err(Error::Other(
+        "the index daemon needs unix sockets".to_string(),
+    ))
+}
+
 impl Backend for ServicesBackend {
-    fn status(&self) -> Result<Status> {
-        let status = Self::control()?
+    fn status(&self) -> Result<IndexStatus> {
+        Self::control()?
             .status()
-            .map_err(|error| Error::Other(format!("{error:#}")))?;
-        Ok(Status {
-            index_path: status.index_path,
-            content_root: status.content_root,
-            documents: status.documents,
-        })
+            .map_err(|error| Error::Other(format!("{error:#}")))
+    }
+
+    fn stop(&self) -> Result<bool> {
+        match daemon() {
+            Ok(client) => {
+                client
+                    .stop()
+                    .map_err(|error| Error::Other(format!("{error:#}")))?;
+                Ok(true)
+            }
+            // Nothing to stop is the ordinary case, not a failure: the index
+            // has no process of its own unless something started one.
+            Err(error) => {
+                tracing::debug!("nothing to stop: {error}");
+                Ok(false)
+            }
+        }
     }
 
     fn build(&self, refresh: Refresh) -> Result<Built> {
@@ -158,7 +188,17 @@ impl<'a> Session<'a> {
         match command {
             Command::Status => self.status(),
             Command::Build(args) => self.build(*args),
+            Command::Stop => self.stop(),
         }
+    }
+
+    fn stop(self) -> io::Result<Summary> {
+        match self.backend.stop() {
+            Ok(true) => writeln!(self.output, "stopped")?,
+            Ok(false) => writeln!(self.output, "nothing to stop")?,
+            Err(error) => return self.abort(&error),
+        }
+        Ok(Summary::default())
     }
 
     fn status(self) -> io::Result<Summary> {
@@ -168,6 +208,18 @@ impl<'a> Session<'a> {
         };
         writeln!(self.output, "index      {}", status.index_path.display())?;
         writeln!(self.output, "covers     {}", status.content_root.display())?;
+        // Whether anything is keeping the index level with the filesystem is
+        // the difference between "up to date" and "up to date as of whenever
+        // this last ran", which is not visible from the document count.
+        let keeping_up = match (status.watching, status.clients) {
+            (true, Some(clients)) => format!("watching, {clients} client(s)"),
+            (true, None) => "watching".to_string(),
+            (false, _) => {
+                "not running — the index updates while nohrs runs, or on `noh index build`"
+                    .to_string()
+            }
+        };
+        writeln!(self.output, "daemon     {keeping_up}")?;
         match status.documents {
             // An index that exists but holds nothing answers every search with
             // "no results", so it is worth as much as no index at all and is
@@ -217,21 +269,26 @@ impl<'a> Session<'a> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     struct FakeBackend {
-        status: Result<Status>,
+        status: Result<IndexStatus>,
         build: Result<Built>,
         asked_for: std::cell::Cell<Option<Refresh>>,
+        running: std::cell::Cell<bool>,
     }
 
     impl FakeBackend {
         fn holding(documents: Option<u64>) -> Self {
             Self {
-                status: Ok(Status {
+                status: Ok(IndexStatus {
                     index_path: PathBuf::from("/home/me/.nohrs/index"),
                     content_root: PathBuf::from("/home/me/Documents"),
                     documents,
+                    watching: true,
+                    clients: Some(2),
                 }),
                 build: Ok(Built {
                     indexed: documents.unwrap_or_default() as usize,
@@ -240,16 +297,21 @@ mod tests {
                     took: Duration::from_millis(1500),
                 }),
                 asked_for: std::cell::Cell::new(None),
+                running: std::cell::Cell::new(true),
             }
         }
     }
 
     impl Backend for FakeBackend {
-        fn status(&self) -> Result<Status> {
+        fn status(&self) -> Result<IndexStatus> {
             match &self.status {
                 Ok(status) => Ok(status.clone()),
                 Err(error) => Err(Error::Other(crate::message(error))),
             }
+        }
+
+        fn stop(&self) -> Result<bool> {
+            Ok(self.running.get())
         }
 
         fn build(&self, refresh: Refresh) -> Result<Built> {
@@ -284,6 +346,7 @@ mod tests {
             output,
             "index      /home/me/.nohrs/index\n\
              covers     /home/me/Documents\n\
+             daemon     watching, 2 client(s)\n\
              documents  12431\n"
         );
         assert!(errors.is_empty());
@@ -349,6 +412,20 @@ mod tests {
             "noh index: the index at /home/me/.nohrs/index is being written by another nohrs process\n"
         );
         assert_eq!(summary.exit_code(), 1);
+    }
+
+    #[test]
+    fn stopping_says_whether_there_was_anything_to_stop() {
+        let backend = FakeBackend::holding(Some(7));
+        let (output, _, summary) = run(&backend, &Command::Stop);
+        assert_eq!(output, "stopped\n");
+        assert_eq!(summary.exit_code(), 0);
+
+        backend.running.set(false);
+        let (output, _, summary) = run(&backend, &Command::Stop);
+        // Nothing running is the ordinary case, not a failure.
+        assert_eq!(output, "nothing to stop\n");
+        assert_eq!(summary.exit_code(), 0);
     }
 
     #[test]

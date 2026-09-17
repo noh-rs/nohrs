@@ -66,10 +66,23 @@ pub struct SearchService {
 }
 
 impl SearchService {
-    /// Builds the service, initializing the index, file watcher, and root backend.
+    /// Builds the service with the index writer in this process.
     pub fn new() -> Result<Self> {
         let engine = Arc::new(engine::SearchEngine::new()?);
         Ok(Self { engine })
+    }
+
+    /// Builds the service around a writer someone else owns — `nohrs-indexd`,
+    /// where one can be reached.
+    pub fn with_control(control: Arc<dyn control::IndexControl>) -> Result<Self> {
+        let engine = Arc::new(engine::SearchEngine::with_control(control)?);
+        Ok(Self { engine })
+    }
+
+    /// Picks up whatever has been committed to the index since the last search.
+    /// Called when the writer says it has committed.
+    pub fn reload(&self) {
+        self.engine.reload();
     }
 
     /// Search is synchronous; run it on GPUI's background executor

@@ -28,6 +28,9 @@ pub struct IndexStatus {
     pub documents: Option<u64>,
     /// Whether something is watching the tree for changes as this is answered.
     pub watching: bool,
+    /// How many processes are holding the index process up, or `None` when the
+    /// index has no process of its own to hold.
+    pub clients: Option<usize>,
 }
 
 /// A way to ask for the index to be updated.
@@ -35,8 +38,21 @@ pub trait IndexControl: Send + Sync {
     /// Where the index is and what it holds.
     fn status(&self) -> Result<IndexStatus>;
 
-    /// Bring the index up to date with the tree it covers.
-    fn refresh(&self, refresh: Refresh) -> Result<IndexReport>;
+    /// Bring the index up to date with the tree it covers, publishing how far
+    /// along it is on `progress` in the range `0.0..=1.0`.
+    ///
+    /// The progress is what a first build needs: it is minutes of silence
+    /// otherwise, and the caller has a status bar to fill.
+    fn refresh_reporting(
+        &self,
+        refresh: Refresh,
+        progress: Option<postage::watch::Sender<f32>>,
+    ) -> Result<IndexReport>;
+
+    /// Bring the index up to date, with nowhere to report progress.
+    fn refresh(&self, refresh: Refresh) -> Result<IndexReport> {
+        self.refresh_reporting(refresh, None)
+    }
 }
 
 /// The writer in this process: takes tantivy's lock and does the work here.
@@ -82,10 +98,15 @@ impl IndexControl for InProcess {
             // Nothing here watches: this is a pass someone asked for, not a
             // process that keeps the index level with the filesystem.
             watching: false,
+            clients: None,
         })
     }
 
-    fn refresh(&self, refresh: Refresh) -> Result<IndexReport> {
-        self.manager.index_home(refresh, None)
+    fn refresh_reporting(
+        &self,
+        refresh: Refresh,
+        progress: Option<postage::watch::Sender<f32>>,
+    ) -> Result<IndexReport> {
+        self.manager.index_home(refresh, progress)
     }
 }

@@ -14,6 +14,16 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 ### Added
 
+- `nohrs-indexd` owns the search index's writer and the file watcher beside it.
+  tantivy allows one writer across all processes, and the watcher's output is a
+  stream of write requests, so with both in one place "the daemon is running"
+  and "the index is keeping up with the filesystem" are the same fact. It is
+  not installed or started at login: the first process that wants it starts it,
+  and it stops once its last client has been gone for 90 seconds — so the only
+  thing to quit is nohrs. Searches never go through it; readers open the index
+  directly, which is what makes a daemon that is down, busy or a version behind
+  cost freshness and never an answer. See
+  [ADR 0009](docs/adr/0009-indexd-owns-the-index-writer.md).
 - `noh search <QUERY> [PATH]...` looks for a query in a directory tree, matching
   both the names walked and the text inside the files (`--name` / `--content`
   narrow it to one). Name matches print as the bare path and content matches as
@@ -28,8 +38,11 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   covers and how much it holds, and build it on a machine that never opens the
   GUI. Status opens the index for reading only, so it runs beside the app.
   `build` is incremental: it re-reads only the files whose modification time
-  differs from the index's, and `--full` forces the rest. See
-  [`docs/cli.md`](docs/cli.md) §5.
+  differs from the index's, and `--full` forces the rest. Both ask the daemon,
+  so a build no longer fails because the app is open, and `status` reports
+  whether anything is watching — the difference between "up to date" and "up to
+  date as of whenever this last ran". `noh index stop` stops the daemon without
+  touching the index. See [`docs/cli.md`](docs/cli.md) §5.
 - nohrs now records what it does to a rolling JSON Lines file under
   `$XDG_STATE_HOME/nohrs/logs/`, so a GUI session's log survives the window
   closing, and `noh log show` / `path` / `clear` read it back. Every operation
@@ -43,6 +56,19 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 ### Changed
 
+- Indexing costs the walk rather than the index. Reading what the index already
+  holds took 678ms of a 700ms pass over 20,000 files, against 39ms for the walk
+  and every `stat` in it: the modification times came out of the document store,
+  which is compressed in blocks, and each path was resolved by seeking around a
+  sorted dictionary. Both now come from the index's own columns, with the
+  dictionary streamed once in its own order — 6.9ms. The walk itself is
+  parallel (`IndexWriter::add_document` takes `&self`), on half the machine's
+  threads and no more than four, and indexing a file no longer copies it a
+  second time to prepend its path. A warm pass over those 20,000 files went
+  from 0.7s to under 0.1s, which is what the app pays on every launch.
+- `IndexReader` holds its reader and query parser open rather than rebuilding
+  them per query, and takes tantivy's manual reload policy, so reading the
+  index no longer installs a directory watcher in every process that reads.
 - Indexing re-reads only what changed. Documents now carry the file's
   modification time, so a pass compares it against the file on disk and skips
   what matches, and documents whose file has disappeared are removed instead of
