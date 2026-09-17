@@ -262,13 +262,14 @@ fn empty_dir(dir: &fs::File) -> Result<()> {
                 already_gone_is_fine(unlinkat(dir, name, AtFlags::REMOVEDIR))?;
             }
             // Not a directory. A symbolic link lands here too: `O_NOFOLLOW`
-            // refuses to open its target, and which errno carries that refusal
-            // depends on the order the kernel checks the flags in. Measured on
-            // Linux 6.18 it is `ENOTDIR`, `O_DIRECTORY` being answered first —
-            // not the `ELOOP` the same flag gives on its own in `open_claimed`,
-            // which carries no `O_DIRECTORY`. Both are matched because that
-            // order is the kernel's to choose, not something the condition
-            // decides.
+            // refuses to open its target, and `O_DIRECTORY` is answered first,
+            // so that refusal arrives as `ENOTDIR` rather than the `ELOOP` the
+            // same flag gives on its own in `open_claimed`, which carries no
+            // `O_DIRECTORY`. Measured on both supported targets. `LOOP` stays
+            // matched because the order is the kernel's to choose rather than
+            // anything this call guarantees, and
+            // `a_symlink_is_refused_by_both_entry_opens` is what would notice a
+            // kernel choosing otherwise.
             Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
                 already_gone_is_fine(unlinkat(dir, name, AtFlags::empty()))?;
             }
@@ -1939,16 +1940,9 @@ mod tests {
         // refusal is `O_NOFOLLOW`'s own.
         assert_eq!(claiming, rustix::io::Errno::LOOP);
 
-        // With it, Linux answers `O_DIRECTORY` first. This is the value the
-        // comment on that arm names.
-        #[cfg(target_os = "linux")]
+        // With it, both supported targets answer `O_DIRECTORY` first. Review
+        // expected macOS to differ, XNU refusing the link in `namei` before the
+        // directory check and so reporting `ELOOP`; the runner says otherwise.
         assert_eq!(descending, rustix::io::Errno::NOTDIR);
-
-        // Review held that XNU rejects the link in `namei` before the directory
-        // check, making this `ELOOP` instead. That was not measured when this
-        // was written — this assertion is the measurement, and its failure
-        // message carries the real value.
-        #[cfg(target_os = "macos")]
-        assert_eq!(descending, rustix::io::Errno::LOOP);
     }
 }
