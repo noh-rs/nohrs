@@ -125,7 +125,7 @@ pub fn serve(endpoint: &Endpoint, settings: &Settings) -> Result<Outcome> {
 ///
 /// Which it is, twice over here: the socket left by a daemon that died has to
 /// go before this one can bind, and the socket this one bound has to go when it
-/// stops. Either may already be gone, and neither is worth a word about it.
+/// stops. Either may already be gone.
 fn remove_if_present(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),

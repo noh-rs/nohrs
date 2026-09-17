@@ -803,8 +803,6 @@ fn index_one_directory(
 /// can be replaced between the two as well, and `O_NOFOLLOW` says nothing about
 /// the path's earlier components; shutting that case out needs the whole walk
 /// to descend by `openat` from a held root, which is a larger change than this.
-/// The remaining exposure is worth naming rather than implying a guarantee that
-/// does not hold.
 ///
 /// The size is asked of the open handle and the read is bounded, because the
 /// caller's `metadata` describes whatever was at that name a syscall ago. A

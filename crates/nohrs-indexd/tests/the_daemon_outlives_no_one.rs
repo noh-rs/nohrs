@@ -85,7 +85,7 @@ impl Drop for Fixture {
         // Whatever the test did, nothing is left running. Reported rather than
         // asserted: this runs while a failing test is unwinding, and panicking
         // here would bury that test's own message. A daemon left behind holds a
-        // socket the next run would trip over, so it is worth saying out loud.
+        // socket the next run would trip over.
         if let Ok(None) = self.daemon.try_wait()
             && let Err(error) = self.daemon.kill()
         {

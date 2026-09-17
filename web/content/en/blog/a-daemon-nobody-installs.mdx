@@ -28,8 +28,7 @@ The immediate answer is the launcher. Nohrs provides a global hotkey, so a proce
 resident whether or not a window is open, and placing the writer there introduces nothing
 that is not already running.
 
-This answer is incorrect, and the reason merits statement, because it does not concern
-residency.
+This answer is incorrect, and not because of residency.
 
 The launcher operates under a latency budget: under 100ms from hotkey to window, under 50ms
 from keystroke to results. Indexing is work of an entirely different kind — throughput-bound,
@@ -38,7 +37,7 @@ heap and its merge threads; once vector search is addressed, an embedding model 
 hundred megabytes. Two such workloads in one address space share an allocator, a thread pool
 and a fate. An out-of-memory kill during indexing removes the hotkey with it.
 
-A second and narrower fact applies: **the launcher does not read that index**. Its keystroke
+And **the launcher does not read that index**. Its keystroke
 path consults an in-memory index of file *names*, whereas the tantivy index answers content
 queries. Co-location yields nothing.
 
@@ -61,7 +60,7 @@ is, and for the grace period after quitting. Nothing is added to the login items
 stopping it is neither required nor hidden: it goes on its own, and `noh index stop` ends it
 at once.
 
-One question remains, and it is the substantive one.
+One question remains.
 
 ## Determining when to exit
 
@@ -120,9 +119,8 @@ A grace period was required. A `noh index build` in a shell script, followed a s
 by another, should not incur the cost of starting a second daemon, so the daemon waits ninety
 seconds after the last client departs before it goes.
 
-This breaks the pure last-drop formulation, and the reason merits precision: `Arc` reports
-that the count reached zero and then discards everything, **including the means of recalling
-whatever that set in motion**. A client arriving during the countdown must cancel it, and
+This breaks the pure last-drop formulation. `Arc` reports that the count reached zero and
+then discards everything, **including the means of recalling whatever that set in motion**. A client arriving during the countdown must cancel it, and
 nothing remains with which to do so.
 
 The count and the moment it reached zero are therefore held explicitly:
