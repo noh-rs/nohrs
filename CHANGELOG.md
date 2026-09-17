@@ -44,11 +44,12 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   open; where there is not — no unix sockets, or a daemon that cannot be
   started — `build` indexes in-process and can still find the writer held
   elsewhere, which it reports rather than hides. `status` needs no writer
-  either way: it opens the index for reading, which is why it runs beside the
-  app. It also reports whether anything is watching — the difference between
-  "up to date" and "up to date as of whenever this last ran". `noh index stop`
-  stops the daemon without touching the index. See
-  [`docs/cli.md`](docs/cli.md) §5.
+  either way — it reads the index's own documents — which is why it runs beside
+  the app; it does ask the daemon, and so starts one where none is running,
+  which installs the watcher and begins a pass in the background. It also
+  reports whether anything is watching — the difference between "up to date"
+  and "up to date as of whenever this last ran". `noh index stop` stops the
+  daemon without touching the index. See [`docs/cli.md`](docs/cli.md) §5.
 - nohrs now records what it does to a rolling JSON Lines file under
   `$XDG_STATE_HOME/nohrs/logs/`, so a GUI session's log survives the window
   closing, and `noh log show` / `path` / `clear` read it back. Every operation

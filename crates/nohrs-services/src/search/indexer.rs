@@ -815,12 +815,25 @@ fn index_one_directory(
 ///
 /// Indexing runs on the pass's own walk threads, never the GPUI foreground
 /// loop, so the blocking read is fine here.
+/// What a file's contents amount to for the index.
+enum Readable {
+    /// The text to index beside the name.
+    Text(String),
+    /// A regular file whose contents do not go in — too large, not text, or
+    /// not readable. Its name still does.
+    NameOnly,
+    /// Not a regular file any more: a link took its place between the walk's
+    /// check and this read. Nothing about it belongs in the index, the name
+    /// included, because the index covers one tree and a link points anywhere.
+    NotAFile,
+}
+
 #[allow(clippy::disallowed_methods)]
-fn read_without_following(path: &Path) -> Option<String> {
+fn read_without_following(path: &Path) -> Readable {
     use std::io::Read;
 
     #[cfg(unix)]
-    let mut file = {
+    let opened = {
         use std::os::unix::fs::OpenOptionsExt;
 
         // Via rustix rather than a hand-written constant: `O_NOFOLLOW` is a
@@ -830,25 +843,46 @@ fn read_without_following(path: &Path) -> Option<String> {
             .read(true)
             .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(path)
-            .ok()?
     };
     #[cfg(not(unix))]
-    let mut file = fs::File::open(path).ok()?;
+    let opened = fs::File::open(path);
 
-    let about = file.metadata().ok()?;
-    if !about.is_file() || about.len() > MAX_INDEXED_FILE_BYTES {
-        return None;
+    let mut file = match opened {
+        Ok(file) => file,
+        // `O_NOFOLLOW` refusing a link is the case this has to tell apart from
+        // an ordinary unreadable file: one gets no document at all, the other
+        // keeps its name in the index.
+        #[cfg(unix)]
+        Err(error) if error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) => {
+            return Readable::NotAFile;
+        }
+        Err(_) => return Readable::NameOnly,
+    };
+
+    let Ok(about) = file.metadata() else {
+        return Readable::NameOnly;
+    };
+    if !about.is_file() {
+        return Readable::NotAFile;
+    }
+    if about.len() > MAX_INDEXED_FILE_BYTES {
+        return Readable::NameOnly;
     }
 
     // One byte past the limit, so that a file which grew after that check is
     // caught by the length of what came back rather than read to its end.
     let mut content = String::new();
-    let read = file
+    let Ok(read) = file
         .by_ref()
         .take(MAX_INDEXED_FILE_BYTES + 1)
         .read_to_string(&mut content)
-        .ok()?;
-    (read as u64 <= MAX_INDEXED_FILE_BYTES).then_some(content)
+    else {
+        return Readable::NameOnly;
+    };
+    if read as u64 > MAX_INDEXED_FILE_BYTES {
+        return Readable::NameOnly;
+    }
+    Readable::Text(content)
 }
 
 fn index_one_file(
@@ -864,6 +898,8 @@ fn index_one_file(
     // it: a file that was small and textual when it was last indexed already
     // has one, and returning here would leave that older document answering
     // searches with what the file used to hold.
+    let path_str = path.to_string_lossy();
+
     let content = if metadata.len() > MAX_INDEXED_FILE_BYTES {
         tracing::debug!("Indexing the name only, the file is large: {:?}", path);
         None
@@ -871,19 +907,27 @@ fn index_one_file(
         match read_without_following(path) {
             // Crude, and the same check the rest of the search stack makes: a
             // NUL byte means this is not text anyone wants lines quoted from.
-            Some(text) if text.contains('\0') => {
+            Readable::Text(text) if text.contains('\0') => {
                 tracing::debug!("Indexing the name only, the file is binary: {:?}", path);
                 None
             }
-            Some(text) => Some(text),
-            None => {
+            Readable::Text(text) => Some(text),
+            Readable::NameOnly => {
                 tracing::debug!("Indexing the name only, the file was not read: {:?}", path);
                 None
+            }
+            // A link took the file's place between the walk's check and this
+            // read. The index holds no document for one, so the name does not
+            // go in either — and whatever this path held before has to go,
+            // which is what the watcher does for the same change.
+            Readable::NotAFile => {
+                tracing::debug!("Dropping the document, the path is now a link: {:?}", path);
+                writer.delete_term(Term::from_field_text(fields.path, &path_str));
+                return Ok(());
             }
         }
     };
 
-    let path_str = path.to_string_lossy();
     let filename = path.file_name().unwrap_or_default().to_string_lossy();
 
     let mut doc = TantivyDocument::default();
@@ -1548,14 +1592,14 @@ mod tests {
         std::fs::write(&big, vec![b'a'; oversized]).unwrap();
 
         assert!(
-            read_without_following(&big).is_none(),
+            matches!(read_without_following(&big), Readable::NameOnly),
             "a file past the limit was read anyway"
         );
 
         let small = dir.path().join("small.txt");
         std::fs::write(&small, b"a beacon in here\n").unwrap();
         assert!(
-            read_without_following(&small).is_some(),
+            matches!(read_without_following(&small), Readable::Text(_)),
             "an ordinary file was refused, so refusing a large one proves nothing"
         );
     }
@@ -1575,15 +1619,55 @@ mod tests {
         let ordinary = dir.path().join("notes.txt");
         std::fs::write(&ordinary, "a beacon in here\n").unwrap();
         assert!(
-            read_without_following(&ordinary).is_some(),
+            matches!(read_without_following(&ordinary), Readable::Text(_)),
             "an ordinary file was refused, so refusing a link proves nothing"
         );
 
         let swapped = dir.path().join("swapped.txt");
         std::os::unix::fs::symlink(&secret, &swapped).unwrap();
         assert!(
-            read_without_following(&swapped).is_none(),
+            matches!(read_without_following(&swapped), Readable::NotAFile),
             "a link was read through as though it were the file that was checked"
+        );
+    }
+
+    /// Losing the check/read race to a link is not the same as a file whose
+    /// contents cannot go in: the index holds no document for a link, so it
+    /// must not gain one by name either. The distinction matters because the
+    /// name-only document exists for the other cases.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_became_a_link_is_dropped_rather_than_indexed_by_name() {
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "a beacon out here\n").unwrap();
+
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        let notes = content.join("notes.txt");
+        manager.index_home(Refresh::Everything, None).unwrap();
+
+        // The metadata the walk would have handed on, taken while it is still
+        // an ordinary file — then the file is replaced before the read.
+        let about = std::fs::symlink_metadata(&notes).unwrap();
+        std::fs::remove_file(&notes).unwrap();
+        std::os::unix::fs::symlink(&secret, &notes).unwrap();
+
+        manager
+            .with_writer(|writer| {
+                let fields = Fields::of(&manager.index.schema())?;
+                index_one_file(&notes, &about, None, writer, &fields)?;
+                writer.commit()?;
+                Ok(())
+            })
+            .unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), content)
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            !reader.candidates("notes", 10).unwrap().contains(&notes),
+            "a path that became a link kept a document, by name"
         );
     }
 

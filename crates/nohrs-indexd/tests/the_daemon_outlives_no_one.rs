@@ -287,7 +287,16 @@ fn a_caller_that_has_not_agreed_on_a_version_is_not_obeyed() {
     )
     .unwrap();
     let mut reading = BufReader::new(stranger.try_clone().unwrap());
-    let refusal = read_frame::<Response>(&mut reading).unwrap();
+    // Notices go to every connection, so one from the pass the daemon runs at
+    // startup can land ahead of the answer. The real client skips them the same
+    // way (`Client::request_watching`); reading the first frame and calling it
+    // the answer would make this test fail on timing rather than on behaviour.
+    let refusal = loop {
+        let frame = read_frame::<Response>(&mut reading).unwrap();
+        if !frame.as_ref().is_some_and(Response::is_notice) {
+            break frame;
+        }
+    };
     assert!(
         matches!(refusal, Some(Response::Failed { .. })),
         "a mismatched version was welcomed: {refusal:?}"
@@ -297,12 +306,19 @@ fn a_caller_that_has_not_agreed_on_a_version_is_not_obeyed() {
     // Both are the daemon declining to act, which is what is being asserted.
     write_frame(&mut stranger, &Request::Stop).ok();
 
+    // Notices queued before the daemon dropped this connection may still be
+    // flushed to it, so what is asserted is that nothing but a notice arrives
+    // before the stream ends — not that the very next frame is the end.
+    let answered = loop {
+        match read_frame::<Response>(&mut reading) {
+            Ok(Some(frame)) if frame.is_notice() => continue,
+            Ok(Some(frame)) => break Some(frame),
+            Ok(None) | Err(_) => break None,
+        }
+    };
     assert!(
-        read_frame::<Response>(&mut reading)
-            .ok()
-            .flatten()
-            .is_none(),
-        "a caller that never agreed on a version was answered anyway"
+        answered.is_none(),
+        "a caller that never agreed on a version was answered anyway: {answered:?}"
     );
     // The daemon is still here and still serving the client that did greet it.
     assert!(

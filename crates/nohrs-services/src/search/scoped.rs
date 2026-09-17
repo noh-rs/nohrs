@@ -214,7 +214,12 @@ pub fn search_using(
     // walk resolves the root before yielding it, so it reports an error for a
     // name that is plainly still there, and the index holds no document for a
     // link at all.
-    if only_the_name {
+    //
+    // Not open to [`Engine::Index`], which is the caller insisting that the
+    // index answer or say why it cannot. Answering it from the operand's own
+    // name would be neither, and would make `--engine` the one flag that
+    // quietly does not mean what it says.
+    if only_the_name && options.engine != Engine::Index {
         let mut outcome = Outcome::default();
         collect_from(
             root,

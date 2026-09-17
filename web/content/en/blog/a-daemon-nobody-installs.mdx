@@ -54,10 +54,12 @@ wanted and exits when it is not is a different matter, and processes of that kin
 the dozen without complaint.
 
 `nohrs-indexd` is of the latter kind. Nothing installs it. The first process that requires
-the index to be kept current starts it, and it exits once its last client has been absent for
-ninety seconds. The launcher is resident in any case, so in practice the daemon's lifetime
-coincides with the application's: quitting nohrs ends both. There is nothing to locate,
-nothing to stop, and nothing added to the login items.
+the index to be kept current starts it — which need not be the application, since the CLI
+commands ask for it too — and it exits once its last client has been absent for ninety
+seconds. The launcher is resident in any case, so in practice it is up for as long as nohrs
+is, and for the grace period after quitting. Nothing is added to the login items, and
+stopping it is neither required nor hidden: it goes on its own, and `noh index stop` ends it
+at once.
 
 One question remains, and it is the substantive one.
 
@@ -218,8 +220,9 @@ next start recovers it. `noh index status` therefore states which case obtains �
 or `running but not watching` — rather than leaving it to be inferred. Asking is itself a
 reason to have a daemon, so the command starts one where none is running; the third answer,
 that none is running at all, is what it reports where none could be started and the index
-was read in this process instead. Nothing starts at login, nothing is registered with the
-system, and the only thing a person has to quit is nohrs.
+was read in this process instead. Nothing starts at login and nothing is registered with the
+system; quitting nohrs is all that is required of a person, and `noh index stop` is there for
+anyone who would rather not wait out the grace period.
 
 When vector search arrives and indexing begins to require hundreds of megabytes of model
 weights, it has somewhere to go that is not the process holding the hotkey.
