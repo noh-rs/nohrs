@@ -185,6 +185,57 @@ jobs:
       - name: Build
         run: cargo build ${{ matrix.args }} --locked
 
+  # Every other job runs on `stable`, so nothing here would notice `rust-version`
+  # drifting below what the code and its dependencies actually need — which is how
+  # it sat at 1.85 while the real floor climbed to 1.95. This job compiles the
+  # workspace on exactly the declared version, so raising the floor becomes a
+  # deliberate edit to Cargo.toml rather than something a contributor discovers as
+  # an error inside a dependency's build script.
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The workspace `Cargo.toml` is the single declaration; every crate
+      # inherits it with `rust-version.workspace = true`.
+      #
+      # `1.95` means 1.95.0 to cargo but names the whole 1.95.x line to rustup,
+      # which would resolve it to the newest patch — so the gate would check a
+      # release later than the declared floor and pass on code that 1.95.0
+      # cannot build. Spelling the patch out pins it to the floor itself.
+      - name: Read the declared MSRV
+        id: msrv
+        run: |
+          version=$(grep -m1 '^rust-version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          test -n "$version"
+          case "$version" in
+            *.*.*) ;;
+            *) version="$version.0" ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install GUI build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libfreetype6-dev
+
+      - name: Install Rust ${{ steps.msrv.outputs.version }}
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # `rust-toolchain.toml` pins the channel to `stable` and would win over the
+      # toolchain installed above, so the version is forced through the
+      # environment instead.
+      - name: Check the workspace on the declared MSRV
+        run: cargo check --workspace --all-targets --all-features --locked
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.version }}
+
   # `bans` / `licenses` / `sources` are the required gate. `advisories` runs as a
   # separate informational step (continue-on-error) so transitive advisories from
   # the gpui async stack are surfaced without blocking merge (see deny.toml).

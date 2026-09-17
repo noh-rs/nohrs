@@ -435,10 +435,10 @@ fn count_entries(root: &Path) -> usize {
         .run(|| {
             let total = &total;
             Box::new(move |result| {
-                if let Ok(entry) = result {
-                    if entry.file_type().is_some_and(|kind| !kind.is_symlink()) {
-                        total.fetch_add(1, Ordering::Relaxed);
-                    }
+                if let Ok(entry) = result
+                    && entry.file_type().is_some_and(|kind| !kind.is_symlink())
+                {
+                    total.fetch_add(1, Ordering::Relaxed);
                 }
                 ignore::WalkState::Continue
             })

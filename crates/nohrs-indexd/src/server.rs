@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -71,12 +71,8 @@ pub fn serve(endpoint: &Endpoint, settings: &Settings) -> Result<Outcome> {
 
     // Holding the claim means nothing is listening on that path, so whatever is
     // there was left by a daemon that died. Binding would fail on it.
-    if let Err(error) = std::fs::remove_file(&endpoint.socket) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(error)
-                .with_context(|| format!("cannot clear {}", endpoint.socket.display()));
-        }
-    }
+    remove_if_present(&endpoint.socket)
+        .with_context(|| format!("cannot clear {}", endpoint.socket.display()))?;
     let listener = UnixListener::bind(&endpoint.socket)
         .with_context(|| format!("cannot listen on {}", endpoint.socket.display()))?;
 
@@ -115,16 +111,26 @@ pub fn serve(endpoint: &Endpoint, settings: &Settings) -> Result<Outcome> {
     }
 
     drop(listener);
-    if let Err(error) = std::fs::remove_file(&endpoint.socket) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!("cannot remove {}: {error}", endpoint.socket.display());
-        }
+    if let Err(error) = remove_if_present(&endpoint.socket) {
+        tracing::warn!("cannot remove {}: {error}", endpoint.socket.display());
     }
     if janitor.join().is_err() {
         tracing::warn!("the shutdown thread panicked");
     }
     drop(claim);
     Ok(Outcome::Served)
+}
+
+/// Removes `path`, treating "there was nothing there" as success.
+///
+/// Which it is, twice over here: the socket left by a daemon that died has to
+/// go before this one can bind, and the socket this one bound has to go when it
+/// stops. Either may already be gone, and neither is worth a word about it.
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
 }
 
 /// The daemon's state: the writer, the clients, and the way out.

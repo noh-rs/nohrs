@@ -69,7 +69,7 @@ impl ListDelegate for FileListDelegate {
         };
 
         // Alternate row background for zebra striping
-        let bg_color = if ix.row % 2 == 0 {
+        let bg_color = if ix.row.is_multiple_of(2) {
             theme::BG
         } else {
             theme::GRAY_50
@@ -191,12 +191,11 @@ impl ListDelegate for FileListDelegate {
         _window: &mut Window,
         _cx: &mut gpui::Context<ListState<Self>>,
     ) {
-        if let Some(ix) = self.selected {
-            if let Some(item) = self.items.get(ix.row) {
-                if let Some(cb) = &self.on_confirm {
-                    cb(item);
-                }
-            }
+        if let Some(ix) = self.selected
+            && let Some(item) = self.items.get(ix.row)
+            && let Some(cb) = &self.on_confirm
+        {
+            cb(item);
         }
     }
 }

@@ -794,15 +794,15 @@ fn read_keybindings(
 }
 
 fn read_plugins(table: &toml::Table, plugins: &mut Plugins, diagnostics: &mut Vec<Diagnostic>) {
-    if let Some(value) = table.get("core") {
-        if let Some(core) = read_string_array(value, "plugins.core", diagnostics) {
-            plugins.core = core;
-        }
+    if let Some(value) = table.get("core")
+        && let Some(core) = read_string_array(value, "plugins.core", diagnostics)
+    {
+        plugins.core = core;
     }
-    if let Some(value) = table.get("community") {
-        if let Some(community) = read_string_array(value, "plugins.community", diagnostics) {
-            plugins.community = community;
-        }
+    if let Some(value) = table.get("community")
+        && let Some(community) = read_string_array(value, "plugins.community", diagnostics)
+    {
+        plugins.community = community;
     }
     warn_unknown_keys(table, &["core", "community"], "plugins.", diagnostics);
 }
@@ -833,15 +833,15 @@ fn read_indexing_exclude(
     exclude: &mut IndexingExclude,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if let Some(value) = table.get("paths") {
-        if let Some(paths) = read_string_array(value, "indexing.exclude.paths", diagnostics) {
-            exclude.paths = paths;
-        }
+    if let Some(value) = table.get("paths")
+        && let Some(paths) = read_string_array(value, "indexing.exclude.paths", diagnostics)
+    {
+        exclude.paths = paths;
     }
-    if let Some(value) = table.get("globs") {
-        if let Some(globs) = read_string_array(value, "indexing.exclude.globs", diagnostics) {
-            exclude.globs = globs;
-        }
+    if let Some(value) = table.get("globs")
+        && let Some(globs) = read_string_array(value, "indexing.exclude.globs", diagnostics)
+    {
+        exclude.globs = globs;
     }
     warn_unknown_keys(table, &["paths", "globs"], "indexing.exclude.", diagnostics);
 }

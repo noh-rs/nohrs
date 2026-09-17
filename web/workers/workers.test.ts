@@ -73,6 +73,16 @@ test('workers.dev and localhost are left alone', async () => {
   assert.equal(local.status, 200)
 })
 
+test('a preview host is served, but never indexed', async () => {
+  const preview = await site.fetch(new Request('https://pr-42-nohrs-web.example.workers.dev/en/'), env)
+  assert.equal(preview.status, 200)
+  assert.equal(await preview.text(), 'asset:/en/')
+  assert.equal(preview.headers.get('x-robots-tag'), 'noindex')
+
+  const production = await site.fetch(new Request('https://nohrs.app/en/'), env)
+  assert.equal(production.headers.get('x-robots-tag'), null)
+})
+
 test('/ negotiates a language and varies on what it read', async () => {
   assert.deepEqual(await get('https://nohrs.app/', { 'accept-language': 'ja,en;q=0.8' }), {
     status: 302,

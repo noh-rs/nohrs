@@ -36,7 +36,11 @@ default-members = [
 [workspace.package]
 version      = "0.0.1"
 edition      = "2024"
-rust-version = "1.85"
+# Edition 2024 alone would allow 1.85, which is what this said while the real
+# floor climbed past it. 1.95 is the release that stabilized `cfg_select!`, used
+# by the libsqlite3-sys build script behind rusqlite; the declared graph asks for
+# at most 1.89 (redb).
+rust-version = "1.95"
 license      = "MIT"
 repository   = "https://github.com/noh-rs/nohrs"
 homepage     = "https://nohrs.app"
