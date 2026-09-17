@@ -1118,6 +1118,22 @@ impl IndexManager {
                 // root as "a link, therefore gone" would take the root's
                 // document and, with it, every document beneath: all of them.
                 match fs::metadata(path) {
+                    // A root that is no longer a directory is not a document to
+                    // write: indexing it as the file it has become would leave
+                    // every document under the directory it used to be
+                    // answering for a tree that is not there. Nor is it a
+                    // deletion to carry out here, on one watcher event — what
+                    // the index covers has changed, which is a question for a
+                    // pass over the whole tree, and `index_home` refuses to
+                    // sweep a root it cannot walk. So the index is left as it
+                    // is until one runs.
+                    Ok(about) if !about.is_dir() => {
+                        tracing::warn!(
+                            "the content root {} is not a directory, leaving the index alone",
+                            path.display()
+                        );
+                        Reported::Unreadable
+                    }
                     Ok(about) => Reported::Present(about),
                     // The root being unreachable is this process losing sight
                     // of the tree, not the tree ceasing to exist, which is the
@@ -1687,6 +1703,29 @@ mod tests {
         assert!(
             !reader.candidates("deep", 10).unwrap().is_empty(),
             "a file that could not be stat'd was taken for a file that is gone"
+        );
+    }
+
+    /// A content root that has become a regular file is not a document to
+    /// write. Indexing it as the file it now is would leave every document
+    /// under the directory it used to be answering for a tree that is not
+    /// there, at paths that no longer resolve.
+    #[test]
+    fn a_content_root_that_became_a_file_is_not_indexed_as_one() {
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        manager.index_home(Refresh::Everything, None).unwrap();
+
+        std::fs::remove_dir_all(&content).unwrap();
+        std::fs::write(&content, "a beacon in here\n").unwrap();
+        manager.process_changes(&[content.clone()]).unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), content.clone())
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            reader.candidates("beacon", 10).unwrap().is_empty(),
+            "a content root that became a file was indexed as a file"
         );
     }
 

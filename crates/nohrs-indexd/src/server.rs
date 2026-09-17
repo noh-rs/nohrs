@@ -282,11 +282,14 @@ impl Daemon {
         }
     }
 
-    /// Serves one client until its end of the socket closes.
+    /// Serves one client until the connection ends.
     ///
     /// `lease` is taken by value and never handed on: this function returning
-    /// is what releases it, and this function returns when the client's end
-    /// closes — which the kernel does whatever became of the client.
+    /// is what releases it. Usually what ends the connection is the client's
+    /// end closing — which the kernel does whatever became of the client, and
+    /// which is the whole point of counting connections rather than asking
+    /// clients to say goodbye. This end can also end it: a `Stop`, or a write
+    /// this client stopped reading.
     fn serve_client(self: &Arc<Self>, stream: UnixStream, lease: Lease) -> Result<()> {
         let id = self.next_subscriber.fetch_add(1, Ordering::Relaxed);
         let (outbound, outbox) = std::sync::mpsc::channel::<Response>();

@@ -13,7 +13,7 @@ Some stores admit exactly one writer while any number of readers read at once. A
 [tantivy](https://github.com/quickwit-oss/tantivy) index is one. So is an LMDB environment's
 write transaction, and so is anything guarded by a single-writer lock. The constraint is not
 per-process but global: one writer across every process on the machine, enforced by a lock
-on disk that outlives whoever took it.
+taken on a file on disk rather than by anything held inside a process.
 
 Put the writer inside one of the participants and that participant owns the store for as long
 as it runs. Nothing else writes; a second instance is refused; a command-line tool that wants
@@ -86,11 +86,12 @@ On the writer's side the lease is an ordinary RAII type, and the one design deci
 carries weight is that it is **taken by value by the function that serves the connection**:
 
 ```rust
-/// Serves one client until its end of the socket closes.
+/// Serves one client until the connection ends.
 ///
 /// `lease` is taken by value and never handed on: this function returning is what
-/// releases it, and this function returns when the client's end closes — which the
-/// kernel does whatever became of the client.
+/// releases it. Usually what ends the connection is the client's end closing —
+/// which the kernel does whatever became of the client. This end can end it too:
+/// a `Stop`, or a write the client stopped reading.
 fn serve_client(&self, stream: UnixStream, lease: Lease) -> Result<()> {
     let mut reader = BufReader::new(stream);
     while let Some(request) = read_frame::<Request>(&mut reader)? {
