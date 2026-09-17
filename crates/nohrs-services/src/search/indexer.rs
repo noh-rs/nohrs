@@ -456,7 +456,13 @@ impl IndexManager {
         // Everything below `path` and nothing else: `foo/` excludes `foo` and
         // stops short of `foo!`, `foo.txt` and any other sibling sharing the
         // prefix without the separator.
-        let prefix = format!("{path}/");
+        //
+        // The platform's separator rather than `/`, because these are compared
+        // against paths the walk produced: on Windows those hold `\`, and a
+        // prefix ending in `/` matches none of them — a directory that went
+        // would take its own document and leave every document under it
+        // answering.
+        let prefix = format!("{path}{}", std::path::MAIN_SEPARATOR);
         let mut beneath = Vec::new();
 
         for segment_reader in searcher.segment_readers() {

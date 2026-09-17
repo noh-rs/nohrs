@@ -12,8 +12,8 @@ canonical: en
 Some stores admit exactly one writer while any number of readers read at once. A
 [tantivy](https://github.com/quickwit-oss/tantivy) index is one. So is an LMDB environment's
 write transaction, and so is anything guarded by a single-writer lock. The constraint is not
-per-process but global: one writer across every process on the machine, enforced by a lock
-taken on a file on disk rather than by anything held inside a process.
+per-process but global: one writer across every process on the machine, settled between them
+by a lock taken on a file on disk rather than by anything held inside any one of them.
 
 Put the writer inside one of the participants and that participant owns the store for as long
 as it runs. Nothing else writes; a second instance is refused; a command-line tool that wants
@@ -123,6 +123,10 @@ struct State {
     /// When the count last reached zero, and `None` while anyone holds a lease.
     /// This is what lets a client cancel a shutdown that is pending.
     idle_since: Option<Instant>,
+    /// Set by `release` to end the wait whatever the count says, which is what
+    /// a `Stop` does: it is the one way out that does not wait for the grace
+    /// period.
+    released: bool,
 }
 ```
 
@@ -133,6 +137,9 @@ nothing to retain:
 pub fn wait_until_idle(&self) {
     let mut state = self.lock();
     loop {
+        if state.released {
+            return;
+        }
         match state.idle_since {
             // Somebody is connected. Nothing to do until that changes.
             None => state = self.wait(state),
