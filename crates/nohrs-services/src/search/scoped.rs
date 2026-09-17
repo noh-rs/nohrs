@@ -240,35 +240,35 @@ pub fn search_using(
 /// and `docs/cli.md` §4.1 promises `1` for an operand that could not be
 /// searched. One `open` per operand settles it.
 ///
-/// Anything that is neither a directory nor a regular file is refused rather
-/// than opened. Opening a FIFO blocks until someone writes to it, and a
-/// character device can be read forever, so the `open` that is meant to settle
-/// this question in a syscall would instead be where the command stops. A
-/// symlink is not special here: `metadata` follows it, so an operand naming a
-/// link to a file is a file.
-///
 /// What counts as searchable depends on what is being searched for, so this
 /// asks of the operand only what the search it was given actually needs:
 ///
-/// * A name is knowable without reading the file, so a `--name` search over a
-///   file nobody may open is a search that can be answered — refusing it would
-///   report a failure for a question that has a perfectly good answer.
 /// * A directory's entries come from listing it, so it is listed — except under
 ///   `--max-depth 0`, which stops above them. Nothing below the root is
 ///   reached, the root is not itself a candidate, and the answer is no matches
 ///   whether or not it could have been listed.
+/// * A name is knowable without reading anything, so a `--name` search is
+///   refused nothing that exists: not a file nobody may open, and not a FIFO or
+///   a device either, whose names are as good as any. Refusing them would
+///   report a failure for a question that has a perfectly good answer.
+/// * Contents have to be opened, and opened without blocking, which only a
+///   regular file can promise. Opening a FIFO waits for a writer and a
+///   character device can be read forever, so the `open` meant to settle this
+///   in a syscall would instead be where the command stops.
+///
+/// A symlink is not special here: `metadata` follows it, so an operand naming a
+/// link to a file is a file.
 fn must_be_searchable(root: &Path, options: &Options) -> Result<()> {
     let about = std::fs::metadata(root)?;
     if about.is_dir() {
         if options.max_depth != Some(0) {
             std::fs::read_dir(root)?;
         }
-    } else if about.is_file() {
-        if options.subject.includes_contents() {
-            std::fs::File::open(root)?;
+    } else if options.subject.includes_contents() {
+        if !about.is_file() {
+            anyhow::bail!("not a regular file or a directory");
         }
-    } else {
-        anyhow::bail!("not a regular file or a directory");
+        std::fs::File::open(root)?;
     }
     Ok(())
 }
@@ -1094,6 +1094,19 @@ mod tests {
             error.to_string().contains("regular file"),
             "the failure did not say why the operand was refused: {error:#}"
         );
+
+        // The name of a pipe is as good as any other name, and reading it is
+        // what was refused. `--name` never opens it, so it has an answer.
+        let by_name = search(
+            &fifo,
+            "pipe",
+            &Options {
+                subject: Subject::Names,
+                ..Options::default()
+            },
+        )
+        .expect("a name search was refused a pipe it never needed to open");
+        assert_eq!(paths(&by_name).len(), 1, "{:?}", paths(&by_name));
     }
 
     /// The rule that refuses a FIFO named as the operand has to hold for one
