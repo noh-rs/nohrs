@@ -261,9 +261,11 @@ fn empty_dir(dir: &fs::File) -> Result<()> {
                 empty_dir(&fs::File::from(child))?;
                 already_gone_is_fine(unlinkat(dir, name, AtFlags::REMOVEDIR))?;
             }
-            // Not a directory, or a symbolic link to one — `O_NOFOLLOW` turns
-            // that into `ELOOP` rather than opening the target, which is what
-            // keeps a link inside the tree from taking its target with it.
+            // Not a directory. A symbolic link lands here too: `O_NOFOLLOW`
+            // refuses to open its target, and with `O_DIRECTORY` also set the
+            // refusal comes back as `ENOTDIR` rather than the `ELOOP` the same
+            // flag gives on its own in `open_claimed`. Both are matched because
+            // the flags decide which one arrives, not the condition.
             Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
                 already_gone_is_fine(unlinkat(dir, name, AtFlags::empty()))?;
             }
