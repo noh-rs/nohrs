@@ -261,9 +261,14 @@ fn empty_dir(dir: &fs::File) -> Result<()> {
                 empty_dir(&fs::File::from(child))?;
                 already_gone_is_fine(unlinkat(dir, name, AtFlags::REMOVEDIR))?;
             }
-            // Not a directory, or a symbolic link to one — `O_NOFOLLOW` turns
-            // that into `ELOOP` rather than opening the target, which is what
-            // keeps a link inside the tree from taking its target with it.
+            // Not a directory. A symbolic link lands here too: `O_NOFOLLOW`
+            // refuses to open its target, and which errno carries that refusal
+            // depends on the order the kernel checks the flags in. Measured on
+            // Linux 6.18 it is `ENOTDIR`, `O_DIRECTORY` being answered first —
+            // not the `ELOOP` the same flag gives on its own in `open_claimed`,
+            // which carries no `O_DIRECTORY`. Both are matched because that
+            // order is the kernel's to choose, not something the condition
+            // decides.
             Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
                 already_gone_is_fine(unlinkat(dir, name, AtFlags::empty()))?;
             }

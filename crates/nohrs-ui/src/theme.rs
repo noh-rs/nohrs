@@ -84,6 +84,12 @@ pub mod theme {
     /// Danger color, used for error messages and destructive actions.
     pub const DANGER: u32 = 0xDC2626; // Red, for error messages
 
+    /// Warning color, for an operation that did what was asked and left
+    /// something unfinished. Amber rather than a lighter red: the distance from
+    /// `DANGER` is the whole point, since the two say opposite things about
+    /// whether the thing the user asked for happened.
+    pub const WARNING: u32 = 0xB45309; // Amber, for a completed-with-leftover message
+
     /// Backdrop behind an image preview; deliberately dark so transparent and
     /// light-colored images stay legible.
     pub const PREVIEW_BACKDROP: u32 = GRAY_800;

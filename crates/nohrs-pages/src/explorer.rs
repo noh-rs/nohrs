@@ -16,6 +16,9 @@ mod tests;
 
 pub use page::ExplorerPage;
 pub use state::ExplorerPane;
+// Part of `status_for_footer`'s signature, so it has to travel with it. The rest
+// of `types` stays internal.
+pub use types::StatusLevel;
 
 use gpui::{Context, IntoElement, Render, Window};
 

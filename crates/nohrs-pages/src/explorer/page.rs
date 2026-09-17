@@ -23,7 +23,7 @@ use nohrs_ui::theme::theme;
 use serde::{Deserialize, Serialize};
 
 use super::state::ExplorerPane;
-use super::types::PaneEvent;
+use super::types::{PaneEvent, StatusLevel};
 use crate::pane_group::{PaneGroup, PaneGroupCallbacks};
 
 // Key context the pane shortcuts are bound under, so they only fire while the
@@ -500,7 +500,7 @@ impl ExplorerPage {
 
     /// Footer status for the active tab (a config error in `RootView` still
     /// takes precedence over this).
-    pub fn status_for_footer(&self, cx: &App) -> Option<(String, bool)> {
+    pub fn status_for_footer(&self, cx: &App) -> Option<(String, StatusLevel)> {
         self.group.active_pane().read(cx).status_for_footer()
     }
 

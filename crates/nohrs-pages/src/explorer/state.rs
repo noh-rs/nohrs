@@ -276,12 +276,12 @@ impl ExplorerPane {
         cx.notify();
     }
 
-    /// Returns the current status text and whether it represents an error, for
-    /// rendering in the footer status bar.
-    pub fn status_for_footer(&self) -> Option<(String, bool)> {
+    /// Returns the current status text and what it is reporting, for rendering
+    /// in the footer status bar.
+    pub fn status_for_footer(&self) -> Option<(String, StatusLevel)> {
         self.status_message
             .as_ref()
-            .map(|status| (status.text.clone(), status.level == StatusLevel::Error))
+            .map(|status| (status.text.clone(), status.level))
     }
 
     pub(crate) fn set_search_scope(&mut self, scope: SearchScope, cx: &mut Context<Self>) {

@@ -53,9 +53,24 @@ pub struct LastClickInfo {
     pub click_count: usize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// What a status message is reporting.
+///
+/// [`Self::Warning`] is the one that needs a reason. A filesystem operation can
+/// finish what the user asked for and fail to clear up after itself — a
+/// cross-volume cut whose copy landed and whose removal of the source gave up
+/// partway, or an overwrite whose staging copy could not be cleared. Calling
+/// that [`Self::Info`] says "1 item(s) moved" while part of the source is still
+/// there; calling it [`Self::Error`] hands a cut's source back to the clipboard
+/// — whenever the clipboard is still the one that batch left behind, which is
+/// the ordinary case — and has the retry land beside the copy that already
+/// succeeded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusLevel {
+    /// Done, with nothing left over.
     Info,
+    /// Done, with something left behind. The message says where.
+    Warning,
+    /// Not done.
     Error,
 }
 
