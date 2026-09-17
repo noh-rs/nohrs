@@ -319,8 +319,20 @@ impl Daemon {
         if writer.join().is_err() {
             tracing::warn!("a client's writer thread panicked");
         }
+        // Released here rather than where the request was read, because `Stop`
+        // is the one request whose answer the daemon can outrun. It drops the
+        // count to zero without waiting out the grace period, and the janitor
+        // takes the process down the moment it does — while the answer was
+        // still only in this client's outbox. The client then read the
+        // connection closing instead of the reply it was waiting for, and `noh
+        // index stop` reported a failure for a stop that had worked. Joining
+        // the writer first puts the answer in the socket, which the kernel
+        // delivers whatever becomes of this process.
+        if matches!(served, Ok(true)) {
+            self.leases.release();
+        }
         drop(lease);
-        served
+        served.map(|_| ())
     }
 
     /// Serves one connection until it leaves, after it has agreed on a version.
@@ -332,7 +344,11 @@ impl Daemon {
     /// and closed until it has said a matching `Hello`. The socket is the
     /// user's own, so this is the protocol keeping its word rather than a
     /// defence against anybody.
-    fn read_requests(self: &Arc<Self>, stream: UnixStream, id: u64) -> Result<()> {
+    ///
+    /// Reports whether the client asked the daemon to stop. Acting on that is
+    /// the caller's, once the answer has actually been written — see
+    /// [`Self::serve_client`].
+    fn read_requests(self: &Arc<Self>, stream: UnixStream, id: u64) -> Result<bool> {
         let mut reader = BufReader::new(stream);
         let mut greeted = false;
         while let Some(request) = protocol::read_frame::<Request>(&mut reader)? {
@@ -365,11 +381,10 @@ impl Daemon {
                 break;
             }
             if matches!(request, Request::Stop) {
-                self.leases.release();
-                break;
+                return Ok(true);
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     fn answer(self: &Arc<Self>, request: &Request) -> Response {
