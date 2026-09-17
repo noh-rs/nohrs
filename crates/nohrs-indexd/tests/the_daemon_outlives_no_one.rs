@@ -109,6 +109,41 @@ impl Drop for Fixture {
     }
 }
 
+/// A helper process, stopped and reaped whatever the test does.
+///
+/// `Child` does not kill on drop, so a helper spawned in a test that panics
+/// before killing it would outlive the run. The one below sleeps for an hour.
+struct Killable(Child);
+
+impl Killable {
+    fn spawn(command: &mut Command) -> Self {
+        Self(command.spawn().unwrap())
+    }
+
+    /// Kills it and waits for it to go, for a test that is about to assert on
+    /// the daemon having noticed.
+    fn kill(&mut self) {
+        self.0.kill().unwrap();
+        self.0.wait().unwrap();
+    }
+}
+
+impl Drop for Killable {
+    fn drop(&mut self) {
+        // Reported rather than asserted, as in `Fixture::drop`: this runs while
+        // a failing test is unwinding, and panicking here would bury that
+        // test's own message.
+        if let Ok(None) = self.0.try_wait()
+            && let Err(error) = self.0.kill()
+        {
+            eprintln!("could not stop the helper client: {error}");
+        }
+        if let Err(error) = self.0.wait() {
+            eprintln!("could not reap the helper client: {error}");
+        }
+    }
+}
+
 /// Waits for `condition`, or gives up and says what it was waiting for.
 fn until(what: &str, mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + PATIENCE;
@@ -220,10 +255,9 @@ fn a_client_that_is_killed_releases_its_hold_like_any_other() {
     // A client in a process of its own, so that it can be killed outright: no
     // destructor runs, no goodbye is sent, and the daemon has nothing but the
     // kernel closing the socket to go on.
-    let mut held = Command::new(env!("CARGO_BIN_EXE_holds_a_connection"))
-        .arg(&fixture.endpoint.socket)
-        .spawn()
-        .unwrap();
+    let mut held = Killable::spawn(
+        Command::new(env!("CARGO_BIN_EXE_holds_a_connection")).arg(&fixture.endpoint.socket),
+    );
     until("the killable client to be counted", || {
         probe.status().unwrap().clients == Some(2)
     });
@@ -237,8 +271,7 @@ fn a_client_that_is_killed_releases_its_hold_like_any_other() {
     );
 
     let started = Instant::now();
-    held.kill().unwrap();
-    held.wait().unwrap();
+    held.kill();
     until("the daemon to stop", || gone(&fixture.endpoint.socket));
 
     assert!(
