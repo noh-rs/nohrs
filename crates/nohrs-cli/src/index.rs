@@ -228,7 +228,16 @@ impl<'a> Session<'a> {
         let keeping_up = match (status.watching, status.clients) {
             (true, Some(clients)) => format!("watching, {clients} client(s)"),
             (true, None) => "watching".to_string(),
-            (false, _) => {
+            // A daemon answered — the count includes this command's own
+            // connection — but it is not watching. It outlives a watcher it
+            // could not install, on purpose, so this is the one state where
+            // "there is a daemon" and "the index is keeping up" come apart, and
+            // reporting it as "not running" would hide exactly that.
+            (false, Some(clients)) => format!(
+                "running but not watching, {clients} client(s) — \
+                 changes reach the index on `noh index build`"
+            ),
+            (false, None) => {
                 "not running — the index updates while nohrs runs, or on `noh index build`"
                     .to_string()
             }
@@ -365,6 +374,30 @@ mod tests {
         );
         assert!(errors.is_empty());
         assert_eq!(summary.exit_code(), 0);
+    }
+
+    /// A daemon that could not install its watcher stays up on purpose, so
+    /// "watching" and "running" come apart exactly here — and this line is the
+    /// only place that difference is visible. Calling it "not running" would
+    /// report the one state it exists to distinguish as the other one.
+    #[test]
+    fn a_daemon_that_is_not_watching_is_not_reported_as_one_that_is_not_there() {
+        let mut backend = FakeBackend::holding(Some(12_431));
+        backend.status = Ok(IndexStatus {
+            watching: false,
+            ..backend.status.expect("a status to start from")
+        });
+
+        let (output, _, _) = run(&backend, &Command::Status);
+
+        let daemon = output
+            .lines()
+            .find(|line| line.starts_with("daemon"))
+            .expect("a daemon line");
+        assert!(
+            daemon.contains("running but not watching") && daemon.contains("2 client(s)"),
+            "a running daemon was reported as absent: {daemon}"
+        );
     }
 
     #[test]

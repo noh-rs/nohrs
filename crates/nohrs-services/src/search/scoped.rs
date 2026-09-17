@@ -530,6 +530,14 @@ fn from_index(
             // record of a file rather than from the file.
             continue;
         };
+        // Indexed as a file, since become a symlink — the index has not caught
+        // up yet. Searching it would read a file the scope does not contain,
+        // which is the rule the walk applies to a symlink it meets; `--engine`
+        // must not be what decides whether a search stays inside its tree. The
+        // operand itself is the same exception the walk makes.
+        if metadata.is_symlink() && candidate != index.canonical_root {
+            continue;
+        }
         let path = as_given(&candidate, &index.canonical_root, &index.given_root);
         collect_from(
             &path,
@@ -1068,6 +1076,58 @@ mod tests {
         assert!(
             outcome.results.is_empty(),
             "a search read through a symlink and out of its scope: {:?}",
+            paths(&outcome)
+        );
+    }
+
+    /// `--engine` chooses how a search is answered, never what it is allowed to
+    /// read. The index records a path, and a file recorded as a file can be a
+    /// symlink by the time a search reads it — so the engine that answers from
+    /// records has to apply the same rule the walk applies to what it meets.
+    #[cfg(unix)]
+    #[test]
+    fn the_index_engine_stays_inside_the_scope_the_walk_does() {
+        let outside = tempfile::tempdir().unwrap();
+        write(outside.path(), "secret.txt", b"a needle out here\n");
+        let dir = tempfile::tempdir().unwrap();
+        let index_path = dir.path().join("index");
+        let content = dir.path().join("content");
+        std::fs::create_dir_all(&content).unwrap();
+
+        // Indexed while it is a real file, so the index records it as one.
+        let decoy = content.join("notes.txt");
+        std::fs::write(&decoy, "a needle in here\n").unwrap();
+        let manager = crate::search::indexer::IndexManager::new_with_path(
+            index_path.clone(),
+            content.clone(),
+        )
+        .unwrap();
+        manager
+            .index_home(crate::search::indexer::Refresh::Everything, None)
+            .unwrap();
+
+        // Then it becomes a link out of the tree, before the index catches up.
+        std::fs::remove_file(&decoy).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), &decoy).unwrap();
+
+        let reader = IndexReader::open(index_path, content.clone())
+            .unwrap()
+            .expect("an index that was just built");
+        let outcome = search_using(
+            &content,
+            "needle",
+            &Options {
+                engine: Engine::Index,
+                ..Options::default()
+            },
+            Some(&reader),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.answered_by, Answered::Index);
+        assert!(
+            outcome.results.is_empty(),
+            "the index engine read through a symlink the walk would have skipped: {:?}",
             paths(&outcome)
         );
     }
