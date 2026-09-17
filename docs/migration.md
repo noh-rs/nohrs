@@ -188,6 +188,7 @@ interface commands {
     item-selected(string),                        // item id
     action-invoked(tuple<string, string>),        // (item id, action id)
     form-submitted(list<tuple<string, string>>),  // field id → value
+    resync,                                       // host: 差分を当てられなかった。全体を送り直せ
     dismissed,
   }
 
@@ -230,8 +231,15 @@ interface commands {
   現在のビューに適用して `replace` 相当に畳む — plugin 側から見た意味は同じで、host の最適化は後から入れられます。
   それでも**型として最初から置く**のは、WIT の variant にケースを足すのが破壊的変更だからです
   (Raycast が JSON Patch を使っているのと同じ理由で、大きなリストの再送は最終的に避けたい)。
-- `target` が現在のビューに存在しない場合は**エラーにせず無視**し、host のログに残します。
-  plugin と host のビューが食い違ったときに、画面が固まるより崩れて進むほうが直しやすいためです。
+- **差分は 1 バッチが全か無か**です。`target` が現在のビューに存在しないものが 1 つでもあれば、
+  そのバッチは**丸ごと捨てて前のビューを保ち**、host は当該セッションに `ui-event::resync` を送ります。
+  plugin はそれに `replace` で答える契約です (`resync` に対して再び `patch` を返したら、host は
+  プロトコル違反としてセッションを閉じる — 直らないループを回すよりエラーとして見えるほうがよい)。
+
+  当てられなかった差分を**黙って捨てるのは誤り**です。差分は「host の現在のビュー」を土台に計算されるので、
+  1 回取りこぼした時点で plugin が信じているビューと host のビューがずれ、以降の差分はすべて誤った土台の上に
+  乗ります。画面には消えたはずの行や、もう無いアクションが残り続け、しかも plugin はそれを知りません。
+  部分適用も同じ理由で禁止で、どこまで当たったかが plugin から見えない状態を作ります。
 - セッションはプラグイン側の状態 (React の state) の寿命を定義します。`close-session` で確実に解放する。
 - host 側のタイムアウト: `handle-event` が **200ms** を超えたら UI に loading を出し、**5 秒**で打ち切る。
 
