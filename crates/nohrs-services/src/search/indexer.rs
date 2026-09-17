@@ -475,6 +475,36 @@ impl IndexManager {
         Ok(beneath)
     }
 
+    /// What the index holds as `path`'s modification time.
+    ///
+    /// `None` when it holds no document for that path at all, which is not the
+    /// same as `Some(None)`: a document written from a file whose modification
+    /// time could not be read.
+    fn indexed_modification(
+        &self,
+        fields: &Fields,
+        searcher: &tantivy::Searcher,
+        path: &str,
+    ) -> Result<Option<Option<u64>>> {
+        let query = tantivy::query::TermQuery::new(
+            Term::from_field_text(fields.path, path),
+            tantivy::schema::IndexRecordOption::Basic,
+        );
+        let found = searcher.search(
+            &query,
+            &tantivy::collector::TopDocs::with_limit(1).order_by_score(),
+        )?;
+        let Some((_score, address)) = found.first() else {
+            return Ok(None);
+        };
+        let document: TantivyDocument = searcher.doc(*address)?;
+        Ok(Some(
+            document
+                .get_first(fields.last_modified)
+                .and_then(|value| value.as_u64()),
+        ))
+    }
+
     fn indexed_modifications_from_store(
         &self,
         fields: &Fields,
@@ -995,7 +1025,10 @@ impl IndexManager {
     fn process_changes_with(&self, writer: &mut IndexWriter, paths: &[PathBuf]) -> Result<()> {
         let fields = Fields::of(&self.index.schema())?;
         let mut ancestors = Ancestors::default();
-        let mut sweeping: Option<tantivy::Searcher> = None;
+        // Opened on the first path that needs the index looked at, and shared by
+        // the rest. Nothing this loop writes reaches a reader before the commit
+        // at the end, so one view answers for the whole batch.
+        let mut viewing: Option<tantivy::Searcher> = None;
 
         for path in paths {
             let about = if path == &self.content_root {
@@ -1040,6 +1073,34 @@ impl IndexManager {
             match about {
                 Some(metadata) if metadata.is_file() => {
                     let modified = modified_nanos(&metadata);
+                    // Asked before the file is opened, because opening it is
+                    // itself a change as far as the watcher is concerned:
+                    // `notify` reports a read as `Access(Open)` and the
+                    // debouncer passes it on like any other event. Indexing
+                    // whatever is reported without first asking whether it
+                    // changed therefore feeds the watcher its own work, and the
+                    // daemon re-indexes the tree every debounce interval for as
+                    // long as it runs. Everything this arm does short of
+                    // `index_one_file` leaves the file unopened, so asking ends
+                    // the loop rather than slowing it down.
+                    //
+                    // A file with no readable modification time is re-read, as
+                    // it is by a pass: nothing says it has not changed.
+                    if modified.is_some() {
+                        if viewing.is_none() {
+                            viewing = Some(self.index.reader()?.searcher());
+                        }
+                        let held = match viewing.as_ref() {
+                            Some(searcher) => {
+                                let path = path.to_string_lossy();
+                                self.indexed_modification(&fields, searcher, &path)?
+                            }
+                            None => None,
+                        };
+                        if held == Some(modified) {
+                            continue;
+                        }
+                    }
                     if let Err(e) = index_one_file(path, &metadata, modified, writer, &fields) {
                         tracing::warn!("Failed to update index for {:?}: {}", path, e);
                     }
@@ -1064,15 +1125,10 @@ impl IndexManager {
                 None => {
                     let path_str = path.to_string_lossy();
                     writer.delete_term(Term::from_field_text(fields.path, &path_str));
-                    // Opened on the first deletion and shared by the rest.
-                    // Nothing this loop writes reaches a reader before the
-                    // commit below, so one view answers for the whole batch —
-                    // and the ordinary batch, which deletes nothing, never
-                    // opens one at all.
-                    if sweeping.is_none() {
-                        sweeping = Some(self.index.reader()?.searcher());
+                    if viewing.is_none() {
+                        viewing = Some(self.index.reader()?.searcher());
                     }
-                    if let Some(searcher) = sweeping.as_ref() {
+                    if let Some(searcher) = viewing.as_ref() {
                         for beneath in self.indexed_beneath(&fields, searcher, &path_str)? {
                             writer.delete_term(Term::from_field_text(fields.path, &beneath));
                         }

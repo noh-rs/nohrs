@@ -53,19 +53,23 @@ The obvious repairs each fail somewhere:
   merely busy looks dead.
 - **Watching the client's pid** races against pid reuse. Between the check and the conclusion,
   that number can belong to something else.
-- **`PR_SET_PDEATHSIG`** ties a child's death to its parent, which is the wrong shape here:
-  the writer has to outlive whatever started it. The starter may be a one-shot command that
-  exits a second later, and the writer is supposed to remain for the next one.
+- **`PR_SET_PDEATHSIG`** has a child receive a signal when its *parent* dies, which is the
+  wrong way round here: the writer has to outlive whatever started it. The starter may be a
+  one-shot command that exits a second later, and the writer is supposed to remain for the
+  next one.
 
 ## What the kernel already counts
 
 The kernel maintains exactly this count already, and with exactly these semantics.
 
-**A unix socket connection is refcounted by the kernel.** When a process ends — by whatever
-means, including the ones that run no user code — its file descriptors are closed. The other
-end reads end-of-stream. "How many clients are alive" and "how many connections are open" are
-the same quantity, and that quantity is correct under `kill -9` because nothing in userspace
-was asked to maintain it.
+**A unix socket connection is refcounted by the kernel.** What it counts is descriptors, not
+processes: when a process ends — by whatever means, including the ones that run no user code
+— its descriptors are closed, and the other end reads end-of-stream once the last descriptor
+on that side has gone. So the quantity is connections held rather than clients alive. A
+process that opens two connections is counted twice, and a descriptor a child inherits keeps
+its connection open after the process that opened it has exited. Connections held is the
+quantity worth having anyway — it is what the writer is being kept up *for* — and it is
+correct under `kill -9`, because nothing in userspace was asked to maintain it.
 
 This generalises past sockets, and it is the rule worth taking away: **where one process's
 liveness has to be observed by another, use something the kernel maintains** — an open
@@ -154,8 +158,10 @@ pid file is worse, since it reintroduces pid reuse — the number in it may belo
 else entirely by the time it is read.
 
 An **advisory lock** (`flock`) held for the writer's whole life decides instead, and the
-kernel releases that when the holder dies, by whatever means it dies. A pid file has to be
-second-guessed; a lock cannot misreport.
+kernel releases that when the holder dies, by whatever means it dies. Advisory means it binds
+only the processes that ask for it, which here is the whole of the set that matters: what is
+being arbitrated is which writer wins, and both of them are asking. Within that set a pid
+file has to be second-guessed, and a lock cannot go stale.
 
 Both ends of the writer's existence — becoming the writer, and ceasing to be one — therefore
 rest on facts the kernel maintains, for the same reason in each case.
@@ -211,6 +217,6 @@ that matter are the ones where user code does not run, and the boundary that mat
 destructors do not cross. Both ends of it — who becomes the writer, and when the writer
 stops — belong to the kernel, which is already keeping the count for its own reasons.
 
-The code is in [noh-rs/nohrs](https://github.com/noh-rs/nohrs), where the writer is a search
-index's; the reasoning, including the version of this that was rejected, is in
+The code is in [noh-rs/nohrs](https://github.com/noh-rs/nohrs), where the writer belongs to a
+search index; the reasoning, including the version of this that was rejected, is in
 [ADR 0009](https://github.com/noh-rs/nohrs/blob/develop/docs/adr/0009-indexd-owns-the-index-writer.md).

@@ -87,6 +87,12 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   made while the app is running, so files that changed between quitting and
   launching again reached the index nowhere else. An index left by the previous
   schema is rebuilt once, since it carries no times to compare.
+- A change the watcher reports is checked against the index before the file is
+  opened, and skipped when its modification time still matches. Indexing a file
+  opens it, and `notify` reports an open as an event like any other, so a pass
+  that re-indexed whatever was reported was feeding the watcher its own reads:
+  the daemon committed a fresh pass every debounce interval, indefinitely, over
+  a tree nobody was touching.
 - The search index takes tantivy's writer lock only when something is actually
   written, instead of from the moment a process opens the index. The app used to
   hold it from launch to quit whether or not it indexed anything, which made the
