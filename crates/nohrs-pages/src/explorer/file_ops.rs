@@ -200,6 +200,133 @@ fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> ops::ClaimResult<()> {
     }
 }
 
+/// What an operation that did happen still has to say for itself.
+///
+/// The return type of the paste helpers, which `Result<()>` could not express.
+/// `Ok(())` and `Err(_)` are "it worked" and "it did not", and a cross-volume
+/// cut whose copy landed and whose removal of the source gave up partway is
+/// neither: the entry is under the name the user asked for, and part of the
+/// source is still where it was.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+enum Applied {
+    /// Nothing left over. The only thing the batch counts.
+    Cleanly,
+    /// The whole entry is at the destination, and clearing up after the move did
+    /// not finish. One entry per thing left behind.
+    WithLeftover(Vec<Leftover>),
+}
+
+/// One thing an operation finished and could not clear away.
+///
+/// Two fields because the footer has one line and two jobs to do with it. With a
+/// single leftover it can afford to say what happened; with several it can only
+/// say where they are — and where is the half the user can act on, so that is
+/// the half that has to survive being summarised.
+#[derive(Debug, PartialEq, Eq)]
+struct Leftover {
+    /// The whole sentence, naming both paths. What the site logged, and what the
+    /// footer shows when this is the only one.
+    message: String,
+    /// Where the leftover actually sits: the path the user would have to open.
+    at: PathBuf,
+}
+
+impl Applied {
+    fn leftover(message: String, at: PathBuf) -> Self {
+        Self::WithLeftover(vec![Leftover { message, at }])
+    }
+
+    // Adds a leftover to whatever this already carries. One overwrite can strand
+    // two things — the staging copy it built and the backup of the entry it
+    // replaced — and the user needs both places, not whichever came first.
+    fn and(self, message: String, at: PathBuf) -> Self {
+        let next = Leftover { message, at };
+        match self {
+            Self::Cleanly => Self::WithLeftover(vec![next]),
+            Self::WithLeftover(mut all) => {
+                all.push(next);
+                Self::WithLeftover(all)
+            }
+        }
+    }
+}
+
+/// What a batch of operations has to report when it is done.
+///
+/// Two lists rather than one, because the footer has to tell three things apart
+/// and `errors.is_empty()` only ever told it two. A leftover is not a failure:
+/// counting it as one puts the source back on the clipboard, and the retry then
+/// numbers around the name this very batch just took.
+#[derive(Default)]
+struct OpReport {
+    /// One per operation that did not happen. These decide the footer.
+    failures: Vec<String>,
+    /// One per thing an operation finished and could not clear away.
+    leftovers: Vec<Leftover>,
+}
+
+impl OpReport {
+    fn failed(&mut self, message: String) {
+        self.failures.push(message);
+    }
+
+    // Records whichever of the two an [`Applied`] turned out to be.
+    fn applied(&mut self, applied: Applied) {
+        if let Applied::WithLeftover(left) = applied {
+            self.leftovers.extend(left);
+        }
+    }
+
+    // The one line the footer gets, and what it is claiming.
+    //
+    // A failure outranks a leftover: the leftover message is about work that is
+    // done, and saying so while something else in the same batch did not happen
+    // would read as though the batch went fine. The failures are logged here
+    // because the footer only has room for their count.
+    fn footer(&self, total: usize, success_label: &str) -> (StatusLevel, String) {
+        if !self.failures.is_empty() {
+            for failure in &self.failures {
+                tracing::error!("explorer file operation failed: {failure}");
+            }
+            return (
+                StatusLevel::Error,
+                format!("{} of {total} failed", self.failures.len()),
+            );
+        }
+        match self.leftovers.as_slice() {
+            [] => (StatusLevel::Info, success_label.to_string()),
+            // One of them fits whole, and it is the whole point of the level.
+            // Joined with a dash rather than "but", which the message itself
+            // already carries — "3 item(s) moved, but /a was copied to /b, but
+            // the original could not be removed".
+            [only] => (
+                StatusLevel::Warning,
+                format!("{success_label} — {}", only.message),
+            ),
+            // Several do not, so the sentences go and the places stay. Sending
+            // the user to the log instead would be the thing this level exists
+            // to stop: a leftover nobody can find is what the `warn!` alone
+            // already was.
+            //
+            // The count is of places, and says so: one overwrite can strand two
+            // of them, so counting it against `success_label`'s items would read
+            // as "1 item(s) pasted — 2 left something behind".
+            many => (
+                StatusLevel::Warning,
+                format!(
+                    "{success_label} — left something behind in {} places: {}",
+                    many.len(),
+                    many.iter()
+                        .map(|left| left.at.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+            ),
+        }
+    }
+}
+
 // [`apply_one`] to a name nothing else is waiting on, clearing away its own
 // half-written work if it cannot finish.
 //
@@ -216,24 +343,31 @@ fn apply_one(mode: ClipMode, src: &Path, dst: &Path) -> ops::ClaimResult<()> {
 //
 // That last one is not reported as a failure at all. A cross-volume cut whose
 // copy landed and whose removal of the source then gave up partway has put the
-// whole entry under the name the user asked for, so this returns `Ok` and logs
-// the removal it could not finish. Reporting it would hand the source back to
-// the retry, and the retry would number around the name this very call just
-// took — the same `report (2)` as above, this time beside a finished `report`.
-fn apply_to_free_name(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
+// whole entry under the name the user asked for, so this returns
+// `Applied::WithLeftover` rather than an error. Reporting it as a failure would
+// hand the source back to the retry, and the retry would number around the name
+// this very call just took — the same `report (2)` as above, this time beside a
+// finished `report`.
+fn apply_to_free_name(mode: ClipMode, src: &Path, dst: &Path) -> Result<Applied> {
     let Err(failure) = apply_one(mode, src, dst) else {
-        return Ok(());
+        return Ok(Applied::Cleanly);
     };
     if failure.leftover() == ops::Leftover::WholeDestination {
-        // `warn!` rather than the `error!` the strandings in `overwrite_apply`
-        // get: what is left sits at `src`, in the listing, rather than at a
-        // hidden scratch path where this line would be the only record of it.
-        tracing::warn!(
+        let message = format!(
             "{} was copied to {}, but the original could not be fully removed: {failure}",
             src.display(),
             dst.display(),
         );
-        return Ok(());
+        // Logged here because a leftover is the one outcome `footer` does not
+        // write out: it shows the message once and then drops it, so without
+        // this line there would be no durable record. The strandings in
+        // `overwrite_apply` need no such line — they become failures, and
+        // `footer` logs every one of those itself.
+        //
+        // `warn!` rather than `error!` because what is left sits at `src`, in
+        // the listing, rather than at a hidden scratch path.
+        tracing::warn!("{message}");
+        return Ok(Applied::leftover(message, src.to_path_buf()));
     }
     drop_claimed(&failure, dst);
     Err(failure.into())
@@ -247,8 +381,7 @@ fn apply_to_free_name(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
 // The new entry is built at a path only this call knows and moved onto `dst` at
 // the end, so the destination is claimed once the replacement is whole rather
 // than held open for the length of a copy.
-fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
-    use nohrs_core::telemetry::LogErr as _;
+fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<Applied> {
     if !ops::would_conflict(dst) {
         return apply_to_free_name(mode, src, dst);
     }
@@ -258,21 +391,49 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
         // The same stranding the staging step can suffer, one step earlier: the
         // copy to `backup` landed and only clearing `dst` gave up partway, so
         // the whole original is at a hidden scratch path and `dst` holds what
-        // the removal spared. Nothing else in this function reaches `backup`
-        // from here, so this message is the only record of where it went.
+        // the removal spared.
+        //
+        // This one stays an error, and does not go to `Applied::WithLeftover`.
+        // The overwrite did not happen: what the user asked for is not at `dst`,
+        // and a retry is the right next step. What the leftover channel is for
+        // is the opposite case, where retrying would redo finished work. But the
+        // error has to carry the scratch path, because otherwise the batch
+        // reports "1 of 1 failed" and the only record of where the original went
+        // is a log line.
         if failure.leftover() == ops::Leftover::WholeDestination {
-            tracing::error!(
+            let message = format!(
                 "{} could not be cleared after copying it aside; the whole original is at {}",
                 dst.display(),
                 backup.display(),
             );
+            return Err(Error::Other(format!("{failure} — {message}")));
         }
         return Err(failure.into());
     }
     let staged = scratch_path(dst, "new");
-    let Err(error) = build_and_commit(mode, src, dst, &staged) else {
-        ops::delete_permanent(&backup).log_err();
-        return Ok(());
+    let error = match build_and_commit(mode, src, dst, &staged) {
+        Ok(applied) => {
+            let Err(error) = ops::delete_permanent(&backup) else {
+                return Ok(applied);
+            };
+            // The overwrite is done — `dst` holds the replacement — and what is
+            // left is the entry it replaced, at a scratch path with no route to
+            // it from the listing. Litter rather than loss, since replacing it
+            // is what the user asked for, but litter that is their own data, so
+            // it is named rather than logged and forgotten.
+            let message = format!(
+                // Opening on the scratch path rather than on `{dst} was
+                // replaced, but`, which is how the staging message opens: the
+                // two can be joined, and repeating the clause made the footer
+                // say the same thing twice before getting to either path.
+                "the copy of the original kept at {} could not be removed after replacing {}: {error}",
+                backup.display(),
+                dst.display(),
+            );
+            tracing::warn!("{message}");
+            return Ok(applied.and(message, backup.clone()));
+        }
+        Err(error) => error,
     };
     // Put the original back. Whatever took `dst` in the meantime is not ours to
     // replace, so a failure here leaves the original at `backup` and says where.
@@ -281,11 +442,16 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
         // there is the rollback's own fragment, and it has to go for the message
         // below — the original is at `backup` — to be the whole truth.
         drop_claimed(&failure, dst);
-        tracing::error!(
+        let message = format!(
             "failed to restore {} after a failed overwrite (original kept at {}): {failure}",
             dst.display(),
             backup.display(),
         );
+        // The overwrite's own error is what went wrong first, but this is the
+        // one the user has to act on: their original is not at `dst` and not in
+        // the listing at all. Reported together rather than in place of, so the
+        // cause is not lost either.
+        return Err(Error::Other(format!("{error} — {message}")));
     }
     Err(error)
 }
@@ -293,7 +459,7 @@ fn overwrite_apply(mode: ClipMode, src: &Path, dst: &Path) -> Result<()> {
 // Builds the replacement at `staged` and takes `dst` with it, leaving nothing of
 // its own behind when it cannot. `dst` is free on entry — the caller moved what
 // was there to the backup.
-fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Result<()> {
+fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Result<Applied> {
     if let Err(failure) = apply_one(mode, src, staged) {
         // Anything a *partial* failure left at `staged` is a fragment the source
         // outlived: a rename that fails moves nothing, and the copy-and-delete
@@ -308,12 +474,18 @@ fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Re
         // original and `src` holds whatever `remove_dir_all` spared, so the one
         // thing that must not happen is the whole copy going quietly — it is at
         // a hidden scratch path nobody would think to look at.
+        //
+        // Still an error rather than a leftover, for the reason the backup step
+        // gives: the overwrite did not happen, the caller is about to roll `dst`
+        // back, and a retry is what the user wants. The scratch path rides along
+        // on the error so the batch reports it instead of only the log.
         if failure.leftover() == ops::Leftover::WholeDestination {
-            tracing::error!(
+            let message = format!(
                 "{} could not be cleared after copying it aside; the whole copy is at {}",
                 src.display(),
                 staged.display(),
             );
+            return Err(Error::Other(format!("{failure} — {message}")));
         }
         return Err(failure.into());
     }
@@ -333,15 +505,15 @@ fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Re
         // Rolling back from here would take a finished overwrite apart, and a
         // cut would put whatever `remove_dir_all` spared where the user expects
         // their file, next to the whole copy. What is left is litter at a
-        // scratch path, so it is logged the way a trashed item's unwritten
-        // ledger row is, and the operation stands.
+        // scratch path, so the operation stands and says where the litter is.
         if failure.leftover() == ops::Leftover::WholeDestination {
-            tracing::warn!(
+            let message = format!(
                 "{} was replaced, but the staging copy at {} could not be cleared: {failure}",
                 dst.display(),
                 staged.display(),
             );
-            return Ok(());
+            tracing::warn!("{message}");
+            return Ok(Applied::leftover(message, staged.to_path_buf()));
         }
         match mode {
             ClipMode::Cut => restore_staged(src, staged),
@@ -349,7 +521,7 @@ fn build_and_commit(mode: ClipMode, src: &Path, dst: &Path, staged: &Path) -> Re
         }
         return Err(failure.into());
     }
-    Ok(())
+    Ok(Applied::Cleanly)
 }
 
 // Puts a cut's source back where it came from. `staged` holds the only copy of
@@ -410,7 +582,7 @@ impl ExplorerPane {
     // batch for the success / partial-failure messages.
     fn run_fs_op<F>(&mut self, total: usize, success_label: String, cx: &mut Context<Self>, op: F)
     where
-        F: FnOnce() -> Vec<String> + Send + 'static,
+        F: FnOnce() -> OpReport + Send + 'static,
     {
         self.run_fs_op_with(total, success_label, cx, move || (op(), ()), |(), _| {});
     }
@@ -429,7 +601,7 @@ impl ExplorerPane {
         on_complete: G,
     ) where
         T: Send + 'static,
-        F: FnOnce() -> (Vec<String>, T) + Send + 'static,
+        F: FnOnce() -> (OpReport, T) + Send + 'static,
         G: FnOnce(T, &mut App) + 'static,
     {
         use nohrs_core::telemetry::LogErr as _;
@@ -437,24 +609,22 @@ impl ExplorerPane {
         cx.spawn(move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut cx = cx.clone();
             async move {
-                let (errors, outcome) = task.await;
+                let (report, outcome) = task.await;
                 cx.update(|cx| on_complete(outcome, cx)).log_err();
-                this.update(&mut cx, |pane, cx| {
+                // Before the update, not inside it: this is what writes the
+                // failures to the log, and a batch can outlive the pane that
+                // started it. Computed in there, a closed pane would take the
+                // whole record of what went wrong with it.
+                let (level, text) = report.footer(total, &success_label);
+                if let Err(error) = this.update(&mut cx, |pane, cx| {
                     pane.reload();
-                    if errors.is_empty() {
-                        pane.set_status(StatusLevel::Info, success_label);
-                    } else {
-                        for error in &errors {
-                            tracing::error!("explorer file operation failed: {error}");
-                        }
-                        pane.set_status(
-                            StatusLevel::Error,
-                            format!("{} of {total} failed", errors.len()),
-                        );
-                    }
+                    pane.set_status(level, text);
                     cx.notify();
-                })
-                .ok();
+                }) {
+                    // Not a failure: the work happened and is logged. There is
+                    // just no longer a status bar to put the outcome in.
+                    tracing::debug!("the pane a file operation was started from is gone: {error}");
+                }
             }
         })
         .detach();
@@ -483,22 +653,22 @@ impl ExplorerPane {
         let total = paths.len();
         let label = format!("{total} item(s) moved to trash");
         self.run_fs_op(total, label, cx, move || {
-            let mut errors = Vec::new();
+            let mut report = OpReport::default();
             for path in paths {
                 // Re-read per item rather than captured once: `to_record`
                 // borrows from `ledger`, which this closure owns.
                 let record = match ledger.to_record() {
                     Ok(record) => record,
                     Err(error) => {
-                        errors.push(format!("{path}: {error}"));
+                        report.failed(format!("{path}: {error}"));
                         continue;
                     }
                 };
                 if let Err(error) = ops::trash_path(Path::new(&path), record) {
-                    errors.push(format!("{path}: {error}"));
+                    report.failed(format!("{path}: {error}"));
                 }
             }
-            errors
+            report
         });
     }
 
@@ -506,13 +676,13 @@ impl ExplorerPane {
         let total = paths.len();
         let label = format!("{total} item(s) deleted");
         self.run_fs_op(total, label, cx, move || {
-            let mut errors = Vec::new();
+            let mut report = OpReport::default();
             for path in paths {
                 if let Err(error) = ops::delete_permanent(Path::new(&path)) {
-                    errors.push(format!("{path}: {error}"));
+                    report.failed(format!("{path}: {error}"));
                 }
             }
-            errors
+            report
         });
     }
 
@@ -719,7 +889,7 @@ impl ExplorerPane {
             label,
             cx,
             move || {
-                let mut errors = Vec::new();
+                let mut report = OpReport::default();
                 let mut failed = Vec::new();
                 for src in clear {
                     // Owned so the borrow of `src` ends before `src` is moved
@@ -736,14 +906,17 @@ impl ExplorerPane {
                     let dst = match free_destination(&dest_dir, &name) {
                         Ok(dst) => dst,
                         Err(error) => {
-                            errors.push(format!("{}: {error}", src.display()));
+                            report.failed(format!("{}: {error}", src.display()));
                             failed.push(src);
                             continue;
                         }
                     };
-                    if let Err(error) = apply_to_free_name(mode, &src, &dst) {
-                        errors.push(format!("{}: {error}", src.display()));
-                        failed.push(src);
+                    match apply_to_free_name(mode, &src, &dst) {
+                        Ok(applied) => report.applied(applied),
+                        Err(error) => {
+                            report.failed(format!("{}: {error}", src.display()));
+                            failed.push(src);
+                        }
                     }
                 }
                 for (src, resolution) in resolved {
@@ -758,12 +931,15 @@ impl ExplorerPane {
                         ConflictResolution::Overwrite => ops::destination_in(&dest_dir, &name)
                             .and_then(|dst| overwrite_apply(mode, &src, &dst)),
                     };
-                    if let Err(error) = result {
-                        errors.push(format!("{}: {error}", src.display()));
-                        failed.push(src);
+                    match result {
+                        Ok(applied) => report.applied(applied),
+                        Err(error) => {
+                            report.failed(format!("{}: {error}", src.display()));
+                            failed.push(src);
+                        }
                     }
                 }
-                (errors, failed)
+                (report, failed)
             },
             move |failed, cx| {
                 if let Some(generation) = cut_generation {
@@ -1119,6 +1295,128 @@ mod overwrite_recovery_tests {
 
         assert!(!staged.exists());
         assert_eq!(std::fs::read_to_string(&src).unwrap(), "payload");
+    }
+}
+
+#[cfg(test)]
+mod op_report_tests {
+    use super::{Applied, OpReport};
+    use crate::explorer::types::StatusLevel;
+    use std::path::PathBuf;
+
+    // The batch these describe cannot be staged end to end — reaching
+    // `Leftover::WholeDestination` needs a `rename` that fails with `EXDEV`, a
+    // copy that completes, and a `remove_dir_all` that gives up partway, three
+    // conditions that will not hold together inside a tmpdir. What decides the
+    // report, though, is not how the leftover arose but that it did, so the
+    // reporting is pinned here on its own.
+
+    #[test]
+    fn a_batch_with_nothing_to_say_reports_the_success_label() {
+        let report = OpReport::default();
+        let (level, text) = report.footer(3, "3 item(s) moved");
+        assert_eq!(level, StatusLevel::Info);
+        assert_eq!(text, "3 item(s) moved");
+    }
+
+    #[test]
+    fn a_leftover_is_not_counted_as_a_failure_and_names_where_it_is() {
+        // The whole of #283: this batch did what was asked, so "1 of 3 failed"
+        // would be untrue and would put the source back on the clipboard. And
+        // the success label alone would be untrue the other way, because part of
+        // the source is still sitting at /src/report.
+        let mut report = OpReport::default();
+        report.applied(Applied::Cleanly);
+        report.applied(Applied::leftover(
+            "/src/report was copied to /dst/report, but the original could not be fully removed"
+                .into(),
+            PathBuf::from("/src/report"),
+        ));
+        let (level, text) = report.footer(3, "3 item(s) moved");
+        assert_eq!(level, StatusLevel::Warning);
+        assert!(text.starts_with("3 item(s) moved — "), "got: {text}");
+        // The message carries its own "but"; a second one from the join read as
+        // "moved, but /a was copied to /b, but the original ...".
+        assert_eq!(text.matches("but").count(), 1, "got: {text}");
+        assert!(text.contains("/src/report"), "the source is named: {text}");
+        assert!(
+            text.contains("/dst/report"),
+            "so is the destination: {text}"
+        );
+    }
+
+    #[test]
+    fn several_leftovers_drop_their_sentences_and_keep_their_places() {
+        // One line of footer cannot carry two whole messages, but a count on its
+        // own is the `warn!`-only behaviour this level exists to replace: the log
+        // is not a channel the user of a file manager has. So the sentences go
+        // and the paths stay, because the path is the half that can be acted on.
+        let mut report = OpReport::default();
+        report.applied(Applied::leftover("first".into(), PathBuf::from("/src/one")));
+        report.applied(Applied::leftover(
+            "second".into(),
+            PathBuf::from("/src/two"),
+        ));
+        let (level, text) = report.footer(2, "2 item(s) moved");
+        assert_eq!(level, StatusLevel::Warning);
+        assert!(text.contains('2'), "got: {text}");
+        assert!(text.contains("/src/one"), "got: {text}");
+        assert!(text.contains("/src/two"), "got: {text}");
+    }
+
+    #[test]
+    fn one_operation_can_strand_two_things_and_names_both() {
+        // An overwrite builds a staging copy and keeps a backup of the entry it
+        // replaces, and either can fail to be cleared. Keeping only the first
+        // would send the user to one scratch path and leave the other where
+        // nothing points at it — the scratch names are hidden, so a path the
+        // footer omits is one nothing else will ever mention.
+        let applied = Applied::leftover(
+            "/dst/x was replaced, but the staging copy at /dst/.x.nohrs-new could not be cleared: \
+             denied"
+                .into(),
+            PathBuf::from("/dst/.x.nohrs-new"),
+        )
+        .and(
+            "the copy of the original kept at /dst/.x.nohrs-old could not be removed after \
+             replacing /dst/x: denied"
+                .into(),
+            PathBuf::from("/dst/.x.nohrs-old"),
+        );
+        let mut report = OpReport::default();
+        report.applied(applied);
+        let (level, text) = report.footer(1, "1 item(s) pasted");
+        assert_eq!(level, StatusLevel::Warning);
+        assert!(text.contains("/dst/.x.nohrs-new"), "got: {text}");
+        assert!(text.contains("/dst/.x.nohrs-old"), "got: {text}");
+        // The two messages both open on "/dst/x was replaced, but", which the
+        // footer used to say twice before reaching either path.
+        assert!(
+            !text.contains("was replaced, but"),
+            "the sentences are what gets dropped, not the paths: {text}"
+        );
+        // One item, two leftovers: the count belongs to the places, and saying
+        // it against the items read as "1 item(s) pasted — 2 left something
+        // behind".
+        assert!(text.contains("in 2 places"), "got: {text}");
+        assert!(text.starts_with("1 item(s) pasted"), "got: {text}");
+    }
+
+    #[test]
+    fn a_failure_outranks_a_leftover_in_the_same_batch() {
+        // Reporting the leftover here would read as though the batch went fine,
+        // and the entry that did not move would go unmentioned. The leftover is
+        // still in the log; the footer has one line and a failure has first call
+        // on it.
+        let mut report = OpReport::default();
+        report.applied(Applied::leftover(
+            "a leftover".into(),
+            PathBuf::from("/src/x"),
+        ));
+        report.failed("/src/other: permission denied".into());
+        let (level, text) = report.footer(2, "2 item(s) moved");
+        assert_eq!(level, StatusLevel::Error);
+        assert_eq!(text, "1 of 2 failed");
     }
 }
 

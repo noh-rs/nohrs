@@ -2,6 +2,34 @@ use crate::theme::theme;
 use gpui::{Context, IntoElement, div, prelude::*, px, rgb};
 use gpui_component::{Icon, IconName};
 
+/// What a footer status message is claiming, which decides the color it is
+/// painted in.
+///
+/// Three rather than two: an operation can also do what was asked and leave
+/// something of its own behind. Why that needs a reading of its own belongs to
+/// whoever produced the message — this crate knows nothing about file
+/// operations — so here it is only a third color.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatusTone {
+    /// It worked, and there is nothing left over.
+    #[default]
+    Normal,
+    /// It worked, and left something behind. The message says where.
+    Warning,
+    /// It did not work.
+    Error,
+}
+
+impl StatusTone {
+    fn color(self) -> u32 {
+        match self {
+            Self::Normal => theme::GRAY_700,
+            Self::Warning => theme::WARNING,
+            Self::Error => theme::DANGER,
+        }
+    }
+}
+
 /// Properties controlling the contents of the footer status bar.
 #[derive(Clone)]
 pub struct FooterProps {
@@ -19,11 +47,11 @@ pub struct FooterProps {
     pub storage_status: Option<String>,
     /// Indexing progress in the range 0.0..=1.0; the indicator is hidden once it reaches 1.0.
     pub indexing_progress: Option<f32>,
-    /// Transient message (e.g. an error) surfaced to the user. When
-    /// `status_is_error` is set it is rendered in the error color.
+    /// Transient message surfaced to the user. `status_tone` decides how it is
+    /// painted, and with that what it is claiming happened.
     pub status_message: Option<String>,
-    /// Whether `status_message` should be rendered using the error color.
-    pub status_is_error: bool,
+    /// What `status_message` is reporting.
+    pub status_tone: StatusTone,
 }
 
 impl Default for FooterProps {
@@ -37,7 +65,7 @@ impl Default for FooterProps {
             storage_status: None,
             indexing_progress: None,
             status_message: None,
-            status_is_error: false,
+            status_tone: StatusTone::Normal,
         }
     }
 }
@@ -112,11 +140,7 @@ pub fn footer<V: gpui::Render>(
                 ))
                 // Transient status / error message
                 .when_some(props.status_message.clone(), |this, message| {
-                    let color = if props.status_is_error {
-                        theme::DANGER
-                    } else {
-                        theme::GRAY_700
-                    };
+                    let color = props.status_tone.color();
                     this.child(
                         div()
                             .id(("footer-status", 6_usize))
@@ -129,10 +153,18 @@ pub fn footer<V: gpui::Render>(
                             .child(
                                 // Keep the status on one line so a long or
                                 // multi-line message can't overflow the footer.
+                                //
+                                // `text_ellipsis` because a warning can name
+                                // several places at once and a deep path spends
+                                // the line quickly: without it the text stops
+                                // mid-word with nothing to say it was cut, so a
+                                // location scrolled past the edge looks like a
+                                // location that was never reported.
                                 div()
                                     .text_xs()
                                     .whitespace_nowrap()
                                     .overflow_hidden()
+                                    .text_ellipsis()
                                     .text_color(rgb(color))
                                     .child(message),
                             ),
@@ -244,7 +276,7 @@ fn truncate_path(path: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{FooterProps, footer, truncate_path};
+    use super::{FooterProps, StatusTone, footer, truncate_path};
     use gpui::{IntoElement, Render, TestAppContext, Window};
 
     #[test]
@@ -315,7 +347,7 @@ mod tests {
             storage_status: Some("S3: connected".into()),
             indexing_progress: Some(0.5),
             status_message: Some("scan failed".into()),
-            status_is_error: true,
+            status_tone: StatusTone::Error,
         };
         let (host, cx) = cx.add_window_view(|_window, _cx| FooterHost { props, renders: 0 });
         cx.run_until_parked();
@@ -331,7 +363,7 @@ mod tests {
             total_count: 0,
             indexing_progress: Some(1.0),
             status_message: Some("ready".into()),
-            status_is_error: false,
+            status_tone: StatusTone::Warning,
             ..FooterProps::default()
         };
         let (host, cx) = cx.add_window_view(|_window, _cx| FooterHost { props, renders: 0 });
