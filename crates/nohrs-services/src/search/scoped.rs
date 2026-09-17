@@ -198,7 +198,7 @@ pub fn search_using(
     open_index: Option<&IndexReader>,
 ) -> Result<Outcome> {
     let matcher = build_matcher(query, options)?;
-    must_be_searchable(root, options.subject)?;
+    must_be_searchable(root, options)?;
 
     if options.limit == Some(0) {
         return Ok(Outcome::default());
@@ -247,17 +247,24 @@ pub fn search_using(
 /// symlink is not special here: `metadata` follows it, so an operand naming a
 /// link to a file is a file.
 ///
-/// What counts as searchable depends on what is being searched for. A name is
-/// knowable without reading the file, so a `--name` search over a file nobody
-/// may open is a search that can be answered — refusing it would report a
-/// failure for a question that has a perfectly good answer. A directory is
-/// listed either way, since its entries' names come from reading it.
-fn must_be_searchable(root: &Path, subject: Subject) -> Result<()> {
+/// What counts as searchable depends on what is being searched for, so this
+/// asks of the operand only what the search it was given actually needs:
+///
+/// * A name is knowable without reading the file, so a `--name` search over a
+///   file nobody may open is a search that can be answered — refusing it would
+///   report a failure for a question that has a perfectly good answer.
+/// * A directory's entries come from listing it, so it is listed — except under
+///   `--max-depth 0`, which stops above them. Nothing below the root is
+///   reached, the root is not itself a candidate, and the answer is no matches
+///   whether or not it could have been listed.
+fn must_be_searchable(root: &Path, options: &Options) -> Result<()> {
     let about = std::fs::metadata(root)?;
     if about.is_dir() {
-        std::fs::read_dir(root)?;
+        if options.max_depth != Some(0) {
+            std::fs::read_dir(root)?;
+        }
     } else if about.is_file() {
-        if subject.includes_contents() {
+        if options.subject.includes_contents() {
             std::fs::File::open(root)?;
         }
     } else {
@@ -1109,6 +1116,49 @@ mod tests {
         assert!(
             by_content.is_err(),
             "an unreadable file answered a content search"
+        );
+    }
+
+    /// `--max-depth 0` stops above a directory's entries, so listing it is not
+    /// something the search needs. Refusing an unreadable directory there
+    /// reports a failure for a search whose answer — no matches — does not
+    /// depend on what is inside it.
+    #[cfg(unix)]
+    #[test]
+    fn a_zero_depth_search_answers_for_a_directory_it_may_not_list() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        write(&locked, "needle.txt", b"a needle in here\n");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads a directory whatever its mode, so there is nothing to
+        // observe on a machine where this test cannot lock anything.
+        if std::fs::read_dir(&locked).is_ok() {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        let at_depth_zero = search(
+            &locked,
+            "needle",
+            &Options {
+                max_depth: Some(0),
+                ..Options::default()
+            },
+        );
+        let descending = search(&locked, "needle", &Options::default());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let outcome =
+            at_depth_zero.expect("a zero-depth search was refused a directory it never listed");
+        assert!(paths(&outcome).is_empty(), "{:?}", paths(&outcome));
+        // A search that would have descended still fails, because that one
+        // really cannot be answered without listing the directory.
+        assert!(
+            descending.is_err(),
+            "an unlistable directory answered a descending search"
         );
     }
 
