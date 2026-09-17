@@ -878,19 +878,29 @@ impl IndexManager {
         let mut ancestors = Ancestors::default();
 
         for path in paths {
-            // Asked without following the link, because a symlink is not
-            // indexed: its target is a file the covered tree does not contain.
-            // A path that has become one is handled below as a path that is
-            // gone, which is what it is as far as the index is concerned —
-            // otherwise a live change would put back what a full pass refuses
-            // to index. `symlink_metadata` spares only the final component and
-            // resolves the rest, so the same has to be asked of the directories
-            // above it: a file under one that has become a link is reported as
-            // an ordinary file, at a path inside the tree.
-            let about = fs::symlink_metadata(path)
-                .ok()
-                .filter(|about| !about.is_symlink())
-                .filter(|_| ancestors.are_walkable(&self.content_root, path));
+            let about = if path == &self.content_root {
+                // The root is the one link that is followed. The walk follows
+                // it, so a tree reached through one is a tree this index
+                // legitimately covers — and reading a change reported for the
+                // root as "a link, therefore gone" would take the root's
+                // document and, with it, every document beneath: all of them.
+                fs::metadata(path).ok()
+            } else {
+                // Asked without following the link, because a symlink is not
+                // indexed: its target is a file the covered tree does not
+                // contain. A path that has become one is handled below as a
+                // path that is gone, which is what it is as far as the index is
+                // concerned — otherwise a live change would put back what a
+                // full pass refuses to index. `symlink_metadata` spares only
+                // the final component and resolves the rest, so the same has to
+                // be asked of the directories above it: a file under one that
+                // has become a link is reported as an ordinary file, at a path
+                // inside the tree.
+                fs::symlink_metadata(path)
+                    .ok()
+                    .filter(|about| !about.is_symlink())
+                    .filter(|_| ancestors.are_walkable(&self.content_root, path))
+            };
             match about {
                 Some(metadata) if metadata.is_file() => {
                     let modified = modified_nanos(&metadata);
@@ -1383,6 +1393,47 @@ mod tests {
             reader.candidates("beacon", 10).unwrap().is_empty(),
             "a document under a directory that is gone still answers, at a path \
              that now resolves outside the tree"
+        );
+    }
+
+    /// The content root is the one link that is followed: the walk follows it,
+    /// so an index over a root that is a symlink is an ordinary index. Reading
+    /// a change reported for the root as "this is a link, so it is gone" would
+    /// delete the root's own document and — since a directory that goes takes
+    /// its descendants — every document under it, which is all of them.
+    #[cfg(unix)]
+    #[test]
+    fn a_content_root_that_is_a_link_is_not_read_as_a_tree_that_is_gone() {
+        let real = tempfile::tempdir().unwrap();
+        std::fs::write(real.path().join("notes.txt"), "a beacon in here\n").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("content");
+        std::os::unix::fs::symlink(real.path(), &root).unwrap();
+        let manager = IndexManager::new_with_path(dir.path().join("index"), root.clone()).unwrap();
+        manager.index_home(Refresh::Everything, None).unwrap();
+
+        // Established first: the walk does follow the root link, so there is
+        // something here for the next step to be able to destroy.
+        let reader = IndexReader::open(dir.path().join("index"), root.clone())
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            !reader.candidates("beacon", 10).unwrap().is_empty(),
+            "the root link was never followed, so this test proves nothing"
+        );
+
+        // The watcher reports the root itself — a permission change, a touch.
+        manager
+            .process_changes(std::slice::from_ref(&root))
+            .unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), root)
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            !reader.candidates("beacon", 10).unwrap().is_empty(),
+            "a change reported for a symlinked content root emptied the index"
         );
     }
 
