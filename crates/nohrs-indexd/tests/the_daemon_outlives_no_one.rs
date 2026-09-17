@@ -214,15 +214,29 @@ fn a_subscriber_is_told_when_a_pass_commits() {
     let client = fixture.connect();
     let mut notices = Notices::subscribe(&fixture.endpoint).unwrap();
 
-    let told =
-        std::thread::spawn(move || notices.find(|notice| matches!(notice, Response::Committed)));
+    // Subscribing has already registered this connection by the time it
+    // returns: the daemon adds a client to `subscribers` before it reads that
+    // client's first request, and the `Welcome` that `subscribe` waits for is
+    // itself sent through that subscription. So the refresh below cannot
+    // commit before there is anyone to tell.
+    //
+    // Read on a thread all the same, but collected with a deadline: were that
+    // ordering ever to change, a notice that never comes should fail this test
+    // rather than hang it, because a hung job on CI says nothing about what
+    // broke.
+    let (found_tx, found) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let committed = notices.find(|notice| matches!(notice, Response::Committed));
+        if found_tx.send(committed).is_err() {
+            eprintln!("the notice arrived after the test had given up waiting");
+        }
+    });
     client.refresh(Refresh::Everything).unwrap();
 
-    assert_eq!(
-        told.join().unwrap(),
-        Some(Response::Committed),
-        "a pass committed and nothing was told about it"
-    );
+    let told = found
+        .recv_timeout(PATIENCE)
+        .expect("a pass committed and nothing was told about it");
+    assert_eq!(told, Some(Response::Committed));
 }
 
 #[test]

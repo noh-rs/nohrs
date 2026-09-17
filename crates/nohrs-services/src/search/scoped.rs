@@ -261,15 +261,13 @@ fn walk(
                 entry
             }
             // The operand is the first thing the walk yields, so an error
-            // before anything has been reached is the operand itself failing.
-            // `depth` does not tell these apart: it is `None` both for the
-            // root's error and for an unparseable ignore file.
+            // before anything has been reached is the operand itself failing —
+            // whatever the `metadata` call above was happy with. `depth` does
+            // not tell these apart: it is `None` for the root's own error and
+            // for a malformed ignore file alike. This message keeps `ignore`'s
+            // wording, repeated path and all, because there is nothing to
+            // unwrap it with: `ignore::Error` implements no `source`.
             Err(error) if !reached_anything => {
-                // Only what went wrong, not where: every caller already names
-                // the operand it asked about, and the error `ignore` hands
-                // back spells the path into its own message twice more. Rebuilt
-                // from the OS code rather than reworded, so the kind survives
-                // for a caller telling "not there" from "not allowed".
                 return Err(anyhow::anyhow!("{error}"));
             }
             // An unreadable directory further down is normal (permissions,
