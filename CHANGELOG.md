@@ -40,13 +40,13 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   covers and how much it holds, and build it on a machine that never opens the
   GUI. `build` is incremental: it re-reads only the files whose modification
   time differs from the index's, and `--full` forces the rest. Both ask the
-  daemon where there is one, so a build no longer fails because the app is
-  open; where there is not — no unix sockets, or a daemon that cannot be
-  started — `build` indexes in-process and can still find the writer held
-  elsewhere, which it reports rather than hides. `status` needs no writer
-  either way — it reads the index's own documents — which is why it runs beside
-  the app; it does ask the daemon, and so starts one where none is running,
-  which installs the watcher and begins a pass in the background. It also
+  daemon, starting one where none is running, so a build no longer fails
+  because the app is open; only where a daemon cannot be had at all — no unix
+  sockets, or a start that fails — does `build` index in-process, where it can
+  still find the writer held elsewhere, which it reports rather than hides.
+  `status` needs no writer either way — it reads the index's own documents —
+  which is why it runs beside the app; starting a daemon to ask it installs the
+  watcher and begins a pass in the background. It also
   reports whether anything is watching — the difference between "up to date"
   and "up to date as of whenever this last ran". `noh index stop` stops the
   daemon without touching the index. See [`docs/cli.md`](docs/cli.md) §5.

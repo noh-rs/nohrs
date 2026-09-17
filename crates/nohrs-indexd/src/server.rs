@@ -32,6 +32,14 @@ const DEBOUNCE: Duration = Duration::from_secs(2);
 /// How often progress is republished while a pass runs.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How long one write to a client may take before that client is given up on.
+///
+/// Generous for a local socket, where a client that is reading at all drains a
+/// frame in microseconds. It is not a latency budget but a bound: what it rules
+/// out is a client that has stopped reading holding up the daemon's shutdown
+/// forever.
+const WRITE_PATIENCE: Duration = Duration::from_secs(5);
+
 /// What the daemon is asked to be when it starts.
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
@@ -291,6 +299,19 @@ impl Daemon {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(id, outbound);
+
+        // A client that stops reading fills its end of the socket, and a write
+        // into a full socket blocks until it drains. Without a deadline that
+        // wait is unbounded, and it is a wait the daemon's own shutdown is
+        // behind: the join below is what puts a `Stop` answer in the socket
+        // before the count drops. One client that never reads would hold the
+        // daemon up indefinitely. A frame may be half-written when the deadline
+        // passes, which is why this ends the connection rather than skipping
+        // the message: the client has stopped reading, and what it has already
+        // been sent can no longer be relied upon to parse.
+        if let Err(error) = writing_end.set_write_timeout(Some(WRITE_PATIENCE)) {
+            tracing::debug!("cannot bound writes to a client: {error}");
+        }
 
         // Everything written to this client goes through one thread, so a
         // notice can never land in the middle of an answer.

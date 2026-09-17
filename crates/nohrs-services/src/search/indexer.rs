@@ -565,9 +565,9 @@ impl Ancestors {
     ///
     /// A path outside `root` is not walkable at all: the index covers one tree,
     /// and a document keyed inside it must have come from inside it.
-    fn are_walkable(&mut self, root: &Path, path: &Path) -> bool {
+    fn are_walkable(&mut self, root: &Path, path: &Path) -> Reach {
         let Ok(relative) = path.strip_prefix(root) else {
-            return false;
+            return Reach::Outside;
         };
         let mut walked = root.to_path_buf();
         let mut components: Vec<_> = relative.components().collect();
@@ -581,18 +581,49 @@ impl Ancestors {
             if self.walkable.contains(&walked) {
                 continue;
             }
-            // Unreadable counts as not walkable: nothing below a directory the
-            // walk cannot enter is reachable, whatever the reason.
-            let followable = fs::symlink_metadata(&walked)
-                .map(|about| !about.is_symlink())
-                .unwrap_or(false);
-            if !followable {
-                return false;
+            // A directory that cannot be read is answered apart from one that
+            // is a link. Neither is walked, but only the link says anything
+            // about what is underneath: a document below it is keyed at a path
+            // that now resolves outside the tree, so it must go, while one
+            // below a directory this process merely cannot open is a document
+            // about a file that is very likely still there.
+            match fs::symlink_metadata(&walked) {
+                Ok(about) if about.is_symlink() => return Reach::Outside,
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Reach::Outside;
+                }
+                Err(_) => return Reach::Unknown,
             }
             self.walkable.insert(walked.clone());
         }
-        true
+        Reach::Walkable
     }
+}
+
+/// What a look at a path the watcher reported established about it.
+enum Reported {
+    /// It is there, and this is what it is.
+    Present(fs::Metadata),
+    /// It is not there, or is no longer part of the tree the index covers.
+    Gone,
+    /// It could not be looked at, which settles nothing about whether it is
+    /// there. The index keeps what it holds.
+    Unreadable,
+}
+
+/// How a path the watcher reported stands in relation to the tree the index
+/// covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// Reachable from the content root without passing through a symlink.
+    Walkable,
+    /// Not part of the covered tree: outside the root, gone, or below a
+    /// symlink, which a walk does not descend through.
+    Outside,
+    /// One of the directories above it could not be read, so whether it is part
+    /// of the covered tree is not established either way.
+    Unknown,
 }
 
 /// The walk every indexing pass makes, configured in one place so the counting
@@ -1056,7 +1087,7 @@ impl IndexManager {
                 // root as "a link, therefore gone" would take the root's
                 // document and, with it, every document beneath: all of them.
                 match fs::metadata(path) {
-                    Ok(about) => Some(about),
+                    Ok(about) => Reported::Present(about),
                     // The root being unreachable is this process losing sight
                     // of the tree, not the tree ceasing to exist, which is the
                     // distinction `index_home` makes when it fails rather than
@@ -1083,13 +1114,34 @@ impl IndexManager {
                 // be asked of the directories above it: a file under one that
                 // has become a link is reported as an ordinary file, at a path
                 // inside the tree.
-                fs::symlink_metadata(path)
-                    .ok()
-                    .filter(|about| !about.is_symlink())
-                    .filter(|_| ancestors.are_walkable(&self.content_root, path))
+                //
+                // Not being able to look is answered apart from finding nothing
+                // there. A permission that changed on a directory above, or a
+                // mount that went away for a moment, makes every path under it
+                // unstattable — and taking that for "gone" would delete those
+                // documents and every document beneath them, which no later
+                // pass puts back short of a full rebuild. It is the same
+                // distinction `index_home` makes when it refuses to report a
+                // clean sweep of a tree it could not read.
+                match fs::symlink_metadata(path) {
+                    Ok(about) if about.is_symlink() => Reported::Gone,
+                    Ok(about) => match ancestors.are_walkable(&self.content_root, path) {
+                        Reach::Walkable => Reported::Present(about),
+                        Reach::Outside => Reported::Gone,
+                        Reach::Unknown => Reported::Unreadable,
+                    },
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Reported::Gone,
+                    Err(_) => Reported::Unreadable,
+                }
             };
             match about {
-                Some(metadata) if metadata.is_file() => {
+                Reported::Unreadable => {
+                    tracing::debug!(
+                        "{} cannot be read, leaving what the index holds for it alone",
+                        path.display()
+                    );
+                }
+                Reported::Present(metadata) if metadata.is_file() => {
                     let modified = modified_nanos(&metadata);
                     // Asked before the file is opened, because opening it is
                     // itself a change as far as the watcher is concerned:
@@ -1129,22 +1181,23 @@ impl IndexManager {
                 }
                 // A directory the watcher reported is its own entry in the
                 // index, and its children arrive as their own events.
-                Some(metadata) if metadata.is_dir() => {
+                Reported::Present(metadata) if metadata.is_dir() => {
                     let modified = modified_nanos(&metadata);
                     if let Err(e) = index_one_directory(path, modified, writer, &fields) {
                         tracing::warn!("Failed to update index for {:?}: {}", path, e);
                     }
                 }
-                Some(_) => {}
-                // Gone, unreachable, or now a symlink: for the index all three
-                // are the same, a document that must stop answering searches.
+                Reported::Present(_) => {}
+                // Gone, outside the tree, or now a symlink: for the index all
+                // three are the same, a document that must stop answering
+                // searches.
                 //
                 // Its descendants go with it. A directory takes its children
                 // when it goes and nothing touched them, so no event ever
                 // arrives on their behalf; left alone they answer for files
                 // that are not there, and where the directory was replaced by a
                 // link, at paths that now resolve outside the tree.
-                None => {
+                Reported::Gone => {
                     let path_str = path.to_string_lossy();
                     writer.delete_term(Term::from_field_text(fields.path, &path_str));
                     if viewing.is_none() {
@@ -1562,6 +1615,47 @@ mod tests {
         assert!(
             reader.candidates("needle", 10).unwrap().is_empty(),
             "the watcher indexed a symlink's target as though it were in the tree"
+        );
+    }
+
+    /// A change reported for a path the process cannot stat says nothing about
+    /// whether the file is there: a permission that changed on a directory
+    /// above it, or a mount that went away for a moment, makes every path under
+    /// it unstattable. Read as "gone" it costs that document and every document
+    /// beneath it, which no later incremental pass puts back — the walk does
+    /// not reach them either, so nothing short of a full rebuild restores them.
+    #[cfg(unix)]
+    #[test]
+    fn a_change_under_a_directory_that_cannot_be_read_keeps_what_the_index_holds() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        let locked = content.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("deep.txt"), "a needle in the deep\n").unwrap();
+        manager.index_home(Refresh::Changed, None).unwrap();
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads a directory whatever its mode, so there is nothing to
+        // observe on a machine where this test cannot lock anything.
+        if std::fs::metadata(locked.join("deep.txt")).is_ok() {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        // Exactly what the watcher reports for a file whose directory has just
+        // had its permissions changed.
+        let outcome = manager.process_changes(&[locked.join("deep.txt")]);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        outcome.unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), content)
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            !reader.candidates("deep", 10).unwrap().is_empty(),
+            "a file that could not be stat'd was taken for a file that is gone"
         );
     }
 
