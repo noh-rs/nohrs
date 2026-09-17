@@ -17,7 +17,9 @@
 //! good answer, and it is reported in words on stderr so that a person is not
 //! left wondering, while stdout stays exactly what a pipe should see.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
+use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -305,7 +307,7 @@ impl<'a> Session<'a> {
                     continue;
                 }
                 if args.json {
-                    writeln!(self.output, "{}", path_json(path))?;
+                    writeln!(self.output, "{}", Record::path(path))?;
                 } else {
                     writeln!(self.output, "{}", path.display())?;
                 }
@@ -314,11 +316,7 @@ impl<'a> Session<'a> {
                 // and it comes immediately before that file's own lines, which
                 // is what tells the two apart in a mixed listing.
                 if args.json {
-                    writeln!(
-                        self.output,
-                        "{}",
-                        serde_json::json!({ "kind": "name", "path": path.to_string_lossy() })
-                    )?;
+                    writeln!(self.output, "{}", Record::name(path))?;
                 } else {
                     writeln!(self.output, "{}", path.display())?;
                 }
@@ -326,12 +324,7 @@ impl<'a> Session<'a> {
                 writeln!(
                     self.output,
                     "{}",
-                    serde_json::json!({
-                        "kind": "content",
-                        "path": path.to_string_lossy(),
-                        "line_number": result.line_number,
-                        "line_content": result.line_content,
-                    })
+                    Record::content(path, result.line_number, &result.line_content)
                 )?;
             } else {
                 writeln!(
@@ -348,13 +341,65 @@ impl<'a> Session<'a> {
     }
 }
 
-/// Render a path as its own JSON object.
+/// One line of `--json` output.
+///
+/// A struct rather than `serde_json::json!` because the macro builds a map
+/// whose key order follows serde_json's `preserve_order` feature, and `gpui`
+/// turns that on: the same `noh` would order the keys one way in a build that
+/// includes the GUI crates and another way in a build that does not. A struct
+/// serializes in declaration order either way.
 ///
 /// The path is rendered lossily rather than serialized: `serde_json` refuses a
 /// `Path` that is not valid UTF-8, and a path that came back from a walk of
 /// someone's filesystem may well not be. A match is still worth printing.
-fn path_json(path: &Path) -> String {
-    serde_json::json!({ "path": path.to_string_lossy() }).to_string()
+#[derive(serde::Serialize)]
+struct Record<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<&'static str>,
+    path: Cow<'a, str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_number: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_content: Option<&'a str>,
+}
+
+impl<'a> Record<'a> {
+    /// `-l`: the file matched, and which way it did is not being reported.
+    fn path(path: &'a Path) -> Self {
+        Self {
+            kind: None,
+            path: path.to_string_lossy(),
+            line_number: None,
+            line_content: None,
+        }
+    }
+
+    fn name(path: &'a Path) -> Self {
+        Self {
+            kind: Some("name"),
+            ..Self::path(path)
+        }
+    }
+
+    fn content(path: &'a Path, line_number: usize, line_content: &'a str) -> Self {
+        Self {
+            kind: Some("content"),
+            line_number: Some(line_number),
+            line_content: Some(line_content),
+            ..Self::path(path)
+        }
+    }
+}
+
+impl fmt::Display for Record<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Every field is a string, a number or absent, so nothing here can be
+        // the map key or float that serialization rejects.
+        match serde_json::to_string(self) {
+            Ok(json) => formatter.write_str(&json),
+            Err(_) => Err(fmt::Error),
+        }
+    }
 }
 
 /// The path as the user should see it.
@@ -580,7 +625,22 @@ mod tests {
 
         assert_eq!(
             run.output,
-            "{\"kind\":\"content\",\"line_content\":\"a \\\"quoted\\\" line\",\"line_number\":7,\"path\":\"notes.txt\"}\n"
+            "{\"kind\":\"content\",\"path\":\"notes.txt\",\"line_number\":7,\"line_content\":\"a \\\"quoted\\\" line\"}\n"
+        );
+    }
+
+    /// The key order is part of the output, and it used to come from
+    /// serde_json's map, which `gpui` reorders by enabling `preserve_order` —
+    /// so `noh search --json` ordered its keys one way when built alongside the
+    /// GUI crates and another way without them. Spelling the order out here
+    /// fails in whichever of the two builds regresses.
+    #[test]
+    fn the_json_keys_are_in_the_same_order_whatever_else_is_in_the_build() {
+        let record = Record::content(Path::new("notes.txt"), 7, "needle");
+
+        assert_eq!(
+            record.to_string(),
+            "{\"kind\":\"content\",\"path\":\"notes.txt\",\"line_number\":7,\"line_content\":\"needle\"}"
         );
     }
 
