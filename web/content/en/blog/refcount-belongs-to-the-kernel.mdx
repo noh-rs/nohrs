@@ -1,0 +1,216 @@
+---
+title: The refcount belongs to the kernel
+date: '2026-09-17'
+description: One writer, any number of readers, and a writer process that should exist only
+  while something wants it. Ending it is a reference count no destructor can maintain, since
+  Drop does not run on SIGKILL and does not cross an address space.
+author: shuya goto
+tags: ['engineering']
+canonical: en
+---
+
+Some stores admit exactly one writer while any number of readers read at once. A
+[tantivy](https://github.com/quickwit-oss/tantivy) index is one. So is an LMDB environment's
+write transaction, and so is anything guarded by a single-writer lock. The constraint is not
+per-process but global: one writer across every process on the machine, enforced by a lock
+on disk that outlives whoever took it.
+
+Put the writer inside one of the participants and that participant owns the store for as long
+as it runs. Nothing else writes; a second instance is refused; a command-line tool that wants
+to write is refused. The way out is to give the writer a process of its own.
+
+Which raises the question: **when does that process stop?**
+
+## The requirement, stated as a count
+
+The writer should exist while something wants it and not otherwise. It should not start at
+login, and it should not be registered with launchd or systemd, because a process registered
+to exist is a process that has to be found and stopped by hand.
+
+That shape is a reference count. One count per interested party; the process exits when the
+count reaches zero. Within a single address space this is `Arc`, and the whole of it is three
+lines of Rust.
+
+Across processes it is not.
+
+## Where a destructor cannot reach
+
+Two facts about `Drop` — and about destructors, `defer`, `finally` and every other
+language-level unwinding hook — settle it.
+
+1. **`Drop` does not run on `SIGKILL`**, nor on an out-of-memory kill, a segfault, or a power
+   failure. A count that is correct only when clients exit in an orderly fashion is a count
+   that is incorrect precisely where it is required: the cases that leave a writer running
+   forever are exactly the cases where no cleanup code gets to run.
+2. **`Drop` does not cross an address space.** A destructor in the client cannot decrement a
+   counter in the writer. Whatever the client runs on the way out, the writer learns of it
+   only through something that crosses the process boundary.
+
+The obvious repairs each fail somewhere:
+
+- A **heartbeat** crosses the boundary, but it converts an exact fact into an inference with a
+  timeout attached. Death is noticed only after the timeout elapses, and a client that is
+  merely busy looks dead.
+- **Watching the client's pid** races against pid reuse. Between the check and the conclusion,
+  that number can belong to something else.
+- **`PR_SET_PDEATHSIG`** ties a child's death to its parent, which is the wrong shape here:
+  the writer has to outlive whatever started it. The starter may be a one-shot command that
+  exits a second later, and the writer is supposed to remain for the next one.
+
+## What the kernel already counts
+
+The kernel maintains exactly this count already, and with exactly these semantics.
+
+**A unix socket connection is refcounted by the kernel.** When a process ends — by whatever
+means, including the ones that run no user code — its file descriptors are closed. The other
+end reads end-of-stream. "How many clients are alive" and "how many connections are open" are
+the same quantity, and that quantity is correct under `kill -9` because nothing in userspace
+was asked to maintain it.
+
+This generalises past sockets, and it is the rule worth taking away: **where one process's
+liveness has to be observed by another, use something the kernel maintains** — an open
+connection, an advisory lock, a pipe whose read end reports EOF — and let the language type
+be no more than the RAII face on it. Anything a process has to remember to do on the way out
+is a thing it will sometimes not get to do.
+
+So: `Arc` in the model, the kernel in the implementation, and Rust supplying the shape on
+both sides.
+
+## The lease
+
+On the writer's side the lease is an ordinary RAII type, and the one design decision that
+carries weight is that it is **taken by value by the function that serves the connection**:
+
+```rust
+/// Serves one client until its end of the socket closes.
+///
+/// `lease` is taken by value and never handed on: this function returning is what
+/// releases it, and this function returns when the client's end closes — which the
+/// kernel does whatever became of the client.
+fn serve_client(&self, stream: UnixStream, lease: Lease) -> Result<()> {
+    let mut reader = BufReader::new(stream);
+    while let Some(request) = read_frame::<Request>(&mut reader)? {
+        // ...
+    }
+    Ok(()) // the lease drops here
+}
+```
+
+There is no means of serving a client without holding a lease, and none of retaining one
+after the serving ends. Release is not a step that can be omitted, because it is not a step.
+
+## Why the count is not an `Arc`
+
+A grace period is wanted in practice. Two commands in a shell script, a second apart, should
+not pay to start the writer twice, so it waits — ninety seconds here — after the last client
+departs before it goes.
+
+This breaks the pure last-drop formulation. `Arc` reports that the count reached zero and
+then discards everything, **including the means of recalling whatever that set in motion**. A
+client arriving during the countdown has to cancel it, and nothing remains with which to do
+so.
+
+The count and the moment it reached zero are therefore held explicitly:
+
+```rust
+struct State {
+    live: usize,
+    /// When the count last reached zero, and `None` while anyone holds a lease.
+    /// This is what lets a client cancel a shutdown that is pending.
+    idle_since: Option<Instant>,
+}
+```
+
+and the wait is a condition variable rather than a poll, so a writer with nothing to do costs
+nothing to retain:
+
+```rust
+pub fn wait_until_idle(&self) {
+    let mut state = self.lock();
+    loop {
+        match state.idle_since {
+            // Somebody is connected. Nothing to do until that changes.
+            None => state = self.wait(state),
+            Some(since) => match self.grace.checked_sub(since.elapsed()) {
+                None => return,
+                Some(remaining) => state = self.wait_for(state, remaining),
+            },
+        }
+    }
+}
+```
+
+Extracting this as a type of its own has the property that it can be tested without a socket
+in sight: take a lease, drop it, and assert on when the wait returns.
+
+## Claiming the role in the first place
+
+The other end of the writer's life has the same shape. Two processes that both want a writer
+will both try to start one, and the loser has to stand down.
+
+That decision cannot rest on the presence of a socket file, because a socket file outlives
+the process that created it: finding one says nothing about whether anybody is listening. A
+pid file is worse, since it reintroduces pid reuse — the number in it may belong to something
+else entirely by the time it is read.
+
+An **advisory lock** (`flock`) held for the writer's whole life decides instead, and the
+kernel releases that when the holder dies, by whatever means it dies. A pid file has to be
+second-guessed; a lock cannot misreport.
+
+Both ends of the writer's existence — becoming the writer, and ceasing to be one — therefore
+rest on facts the kernel maintains, for the same reason in each case.
+
+## Readers that do not go through the writer
+
+One invariant does most of the work in a single-writer design, and it is a choice rather than
+an optimisation: **readers do not go through the writer**.
+
+Reading takes no lock, so readers open the store directly, from as many processes at once as
+you like. The socket carries write requests, questions about state, and notices that
+something has been committed. It never carries a query.
+
+That is what makes the writer *optional infrastructure* rather than a dependency. If it is
+down, wedged, or a version behind, reads still answer — from a store somewhat staler than it
+would otherwise be. There is no failure mode in which a reader gets an error because a
+background process it does not know about is unhappy. The same condition also allows the
+writer process to be introduced in stages, and withdrawn again, with the read path untouched
+throughout.
+
+## Testing a termination without notice
+
+The test that matters cannot be written in-process, since the claim concerns what happens
+when a process executes no code at all on the way out. A small helper binary therefore
+connects and sleeps, and the test kills it:
+
+```rust
+let mut held = Command::new(env!("CARGO_BIN_EXE_holds_a_connection"))
+    .arg(&fixture.endpoint.socket)
+    .spawn()
+    .unwrap();
+until("the killable client to be counted", || {
+    probe.status().unwrap().clients == Some(2)
+});
+
+// From here the killable client is the only thing holding the writer up.
+drop(probe);
+std::thread::sleep(GRACE * 2);
+assert!(!gone(&fixture.endpoint.socket), "the writer stopped while a client still held it");
+
+held.kill().unwrap();
+until("the writer to stop", || gone(&fixture.endpoint.socket));
+```
+
+The first wait is what earns its place. Without it the test passes when the helper fails to
+connect at all — which is what occurred on the first run, and is the kind of green that
+establishes nothing.
+
+## The rule
+
+A process's own lifetime is not a reference count that user code can maintain. The moments
+that matter are the ones where user code does not run, and the boundary that matters is one
+destructors do not cross. Both ends of it — who becomes the writer, and when the writer
+stops — belong to the kernel, which is already keeping the count for its own reasons.
+
+The code is in [noh-rs/nohrs](https://github.com/noh-rs/nohrs), where the writer is a search
+index's; the reasoning, including the version of this that was rejected, is in
+[ADR 0009](https://github.com/noh-rs/nohrs/blob/develop/docs/adr/0009-indexd-owns-the-index-writer.md).
