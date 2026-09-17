@@ -855,11 +855,17 @@
   font-size: 0.875em;
 }
 
+/* `overflow-wrap` because inline code is often one unbroken token — a test
+   name, a crate path — with no space for the line to break at. Without it such
+   a token does not wrap, overflows its paragraph, and widens the whole page:
+   `the_fallback_move_claims_the_destination_before_writing_to_it` measured
+   526px against a 342px measure on a phone. */
 .prose :not(pre) > code {
   padding: 0.15em 0.4em;
   background: var(--surface);
   border: 1px solid var(--line-soft);
   border-radius: 4px;
+  overflow-wrap: anywhere;
 }
 
 /* `--line` rather than `--line-soft`: against the page ground the softer rule
