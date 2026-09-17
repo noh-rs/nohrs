@@ -66,7 +66,11 @@ fn read_requests(self: &Arc<Self>, stream: UnixStream, id: u64) -> Result<bool> 
     let mut reader = BufReader::new(stream);
     // `read_frame` が `Ok(None)` を返すのが end-of-stream。
     while let Some(request) = protocol::read_frame::<Request>(&mut reader)? {
-        // ...
+        // ... 要求に答える ...
+        if matches!(request, Request::Stop) {
+            // 呼び出し元が `release` を呼ぶ。後述の `released` がこれである。
+            return Ok(true);
+        }
     }
     Ok(false)
 }
@@ -75,8 +79,8 @@ fn read_requests(self: &Arc<Self>, stream: UnixStream, id: u64) -> Result<bool> 
 クライアントが `kill -9` で殺されたとき、実際に起きることを順に書くとこうなる。
 
 1. カーネルがそのプロセスの fd を閉じる。クライアント側のコードは一行も実行されていない。
-2. 接続のクライアント側の fd がこれで尽きる。
-3. daemon 側のスレッドが `read_frame` で読んでいた先が end-of-stream になり、`Ok(None)` が返る。
+2. その接続を参照する fd が他に残っていなければ、これでクライアント側の最後の fd が閉じられる。子が引き継いだ fd が残っていれば、そちらが閉じるまで接続は開いたままである。daemon が数えているのは保持されている接続なので、これは意図した挙動である。
+3. クライアント側の最後の fd が閉じられた時点で、daemon 側のスレッドが `read_frame` で読んでいた先が end-of-stream になり、`Ok(None)` が返る。
 4. ループが終わり、`read_requests` が返り、`serve_client` が返る。
 5. 引数として持っていた `lease` がスコープを抜けて drop され、カウントが一つ減る。
 
@@ -162,7 +166,7 @@ pub fn take(path: &Path) -> Result<Option<Self>> {
 daemon 側の起動手順は、この判定を軸に組み立てられる。
 
 1. ロックを取る。取れなければ、すでに daemon が動いているか、クライアントが起動処理の途中でロックを握っている。どちらであっても自分は daemon にならず、何もせずに終了する。
-2. ロックが取れたということは、誰も listen していないということである。したがって socket ファイルが残っていれば、それは死んだ daemon が残したものである。bind に失敗するので、先に消す。
+2. ロックが取れたということは、この手順に従う daemon が listen していないということである。ロックはアドバイザリなので、保証が及ぶのはロックを取りに行くプロセスの範囲までであり、socket を bind するのがこの手順を通る `serve` だけであることによって成り立っている。したがって socket ファイルが残っていれば、それは死んだ daemon が残したものである。bind に失敗するので、先に消す。
 3. bind して accept ループに入る。ロックはプロセスが終了するまで持ち続ける。
 
 クライアント側も同じロックを使うが、目的が違う。
