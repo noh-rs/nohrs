@@ -16,8 +16,9 @@ use std::path::Path;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use nohrs_indexd::Endpoint;
 use nohrs_indexd::client::Client;
+use nohrs_indexd::protocol::Response;
+use nohrs_indexd::{Endpoint, Notices};
 use nohrs_services::search::control::IndexControl;
 use nohrs_services::search::indexer::Refresh;
 
@@ -185,6 +186,43 @@ fn a_second_daemon_stands_down_rather_than_fighting_over_the_index() {
     assert!(second.success(), "the second daemon failed: {second:?}");
     // The first one is still the daemon, and still answering.
     assert!(client.status().is_ok(), "the first daemon was displaced");
+}
+
+#[test]
+fn a_client_that_finds_a_daemon_running_uses_it_rather_than_starting_another() {
+    let fixture = Fixture::start();
+    // Held so the daemon is certainly up before the next client looks for one.
+    let first = fixture.connect();
+
+    let second = Client::connect_or_start(&fixture.endpoint).unwrap();
+
+    // Both are talking to the same daemon: it counts them both.
+    assert_eq!(second.status().unwrap().clients, Some(2));
+    assert_eq!(
+        first.status().unwrap().index_path,
+        second.status().unwrap().index_path
+    );
+}
+
+/// The window's reader answers from the segments that existed when it opened,
+/// so without this notice a file saved a moment ago is simply not found: the
+/// index would be current and the window would not know (`nohrs/src/app.rs`).
+#[test]
+fn a_subscriber_is_told_when_a_pass_commits() {
+    let fixture = Fixture::start();
+    // Held so the daemon does not go idle between subscribing and asking.
+    let client = fixture.connect();
+    let mut notices = Notices::subscribe(&fixture.endpoint).unwrap();
+
+    let told =
+        std::thread::spawn(move || notices.find(|notice| matches!(notice, Response::Committed)));
+    client.refresh(Refresh::Everything).unwrap();
+
+    assert_eq!(
+        told.join().unwrap(),
+        Some(Response::Committed),
+        "a pass committed and nothing was told about it"
+    );
 }
 
 #[test]

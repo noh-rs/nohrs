@@ -265,3 +265,247 @@ impl Iterator for Notices {
         }
     }
 }
+
+/// What the client does with an answer it did not expect.
+///
+/// The happy paths are covered against a real daemon over a real socket
+/// (`tests/the_daemon_outlives_no_one.rs`). These are the other half: a daemon
+/// from another build, one that refuses a request, and one that answers
+/// something else entirely. A scripted server reaches them all without a
+/// daemon, because what is under test is how this side reads a reply.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::disallowed_methods)]
+mod tests {
+    use std::io::{BufRead, Read};
+    use std::os::unix::net::UnixListener;
+    use std::thread;
+
+    use super::*;
+
+    /// A server that answers with `replies`, in order, one per request read.
+    ///
+    /// It holds the connection open until it has run out, so a client blocked
+    /// on an answer that never comes fails the test by timing out rather than
+    /// by reading an end-of-stream it would have handled.
+    struct Scripted {
+        endpoint: Endpoint,
+        _directory: tempfile::TempDir,
+        server: Option<thread::JoinHandle<()>>,
+    }
+
+    impl Scripted {
+        fn answering(replies: Vec<Response>) -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let endpoint = Endpoint::under(directory.path());
+            let listener = UnixListener::bind(&endpoint.socket).unwrap();
+
+            let server = thread::spawn(move || {
+                let Ok((stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut writer = stream.try_clone().unwrap();
+                let mut reader = BufReader::new(stream);
+                for reply in replies {
+                    // Only answers already-sent requests, so a notice arrives
+                    // in the same place the daemon would have sent it.
+                    if !reply.is_notice() {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                    }
+                    if protocol::write_frame(&mut writer, &reply).is_err() {
+                        return;
+                    }
+                }
+                // Out of answers: stop talking, but keep listening until the
+                // client goes. Dropping the socket outright would reset the
+                // connection instead, and a client whose *write* fails never
+                // reaches the code that reads the reply.
+                if writer.shutdown(std::net::Shutdown::Write).is_err() {
+                    return;
+                }
+                let mut ignored = Vec::new();
+                let _ = reader.read_to_end(&mut ignored);
+            });
+
+            Self {
+                endpoint,
+                _directory: directory,
+                server: Some(server),
+            }
+        }
+
+        /// A server whose greeting is accepted, so the test can get at what
+        /// comes after it.
+        fn greeting_then(mut replies: Vec<Response>) -> Self {
+            replies.insert(
+                0,
+                Response::Welcome {
+                    version: VERSION,
+                    pid: 0,
+                },
+            );
+            Self::answering(replies)
+        }
+
+        fn client(&self) -> Result<Client> {
+            Client::connect(&self.endpoint)
+        }
+    }
+
+    impl Drop for Scripted {
+        fn drop(&mut self) {
+            if let Some(server) = self.server.take() {
+                let _ = server.join();
+            }
+        }
+    }
+
+    fn failure(message: &str) -> Response {
+        Response::Failed {
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_daemon_from_another_build_is_refused_rather_than_guessed_at() {
+        let server = Scripted::answering(vec![Response::Welcome {
+            version: VERSION + 1,
+            pid: 0,
+        }]);
+
+        let error = server.client().err().unwrap().to_string();
+
+        assert!(error.contains(&(VERSION + 1).to_string()), "{error}");
+    }
+
+    #[test]
+    fn a_refused_greeting_is_reported_in_the_daemons_own_words() {
+        let server = Scripted::answering(vec![failure("the index is not readable")]);
+
+        let error = server.client().err().unwrap().to_string();
+
+        assert_eq!(error, "the index is not readable");
+    }
+
+    #[test]
+    fn an_answer_that_is_not_a_greeting_is_not_taken_for_one() {
+        let server = Scripted::answering(vec![Response::Refreshed {
+            indexed: 1,
+            unchanged: 0,
+            removed: 0,
+        }]);
+
+        let error = server.client().err().unwrap().to_string();
+
+        assert!(error.contains("greeting"), "{error}");
+    }
+
+    #[test]
+    fn a_status_the_daemon_refuses_is_an_error_and_not_an_empty_index() {
+        let server = Scripted::greeting_then(vec![failure("no index yet")]);
+        let client = server.client().unwrap();
+
+        let error = client.status().unwrap_err().to_string();
+
+        assert_eq!(error, "no index yet");
+    }
+
+    #[test]
+    fn an_answer_to_the_wrong_question_is_refused() {
+        let server = Scripted::greeting_then(vec![Response::Welcome {
+            version: VERSION,
+            pid: 0,
+        }]);
+        let client = server.client().unwrap();
+
+        let error = client.status().unwrap_err().to_string();
+
+        assert!(error.contains("status"), "{error}");
+    }
+
+    #[test]
+    fn a_refusal_to_refresh_is_reported_rather_than_read_as_nothing_to_do() {
+        let server = Scripted::greeting_then(vec![failure("the writer is held elsewhere")]);
+        let client = server.client().unwrap();
+
+        let error = client.refresh(Refresh::Changed).unwrap_err().to_string();
+
+        assert_eq!(error, "the writer is held elsewhere");
+    }
+
+    #[test]
+    fn the_notices_sent_while_a_pass_runs_reach_the_progress_channel() {
+        let server = Scripted::greeting_then(vec![
+            Response::Progress { done: 0.25 },
+            Response::Progress { done: 0.75 },
+            Response::Refreshed {
+                indexed: 3,
+                unchanged: 1,
+                removed: 2,
+            },
+        ]);
+        let client = server.client().unwrap();
+        let (sender, progress) = postage::watch::channel();
+
+        let report = client
+            .refresh_reporting(Refresh::Everything, Some(sender))
+            .unwrap();
+
+        assert_eq!(
+            (report.indexed, report.unchanged, report.removed),
+            (3, 1, 2)
+        );
+        // The last one published, the rest having been overwritten: this is a
+        // progress bar's channel, not a queue.
+        assert_eq!(*progress.borrow(), 0.75);
+    }
+
+    #[test]
+    fn a_daemon_that_goes_away_mid_request_is_an_error_and_not_a_wait() {
+        // Nothing to answer with, so the server closes as soon as it is asked.
+        let server = Scripted::greeting_then(vec![]);
+        let client = server.client().unwrap();
+
+        let error = client.status().unwrap_err().to_string();
+
+        assert!(error.contains("closed the connection"), "{error}");
+    }
+
+    #[test]
+    fn a_daemon_that_is_not_there_is_an_error_naming_the_socket() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::under(directory.path());
+
+        let error = Client::connect(&endpoint).err().unwrap().to_string();
+
+        assert!(
+            error.contains(&endpoint.socket.display().to_string()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_notices_end_when_the_daemon_does_rather_than_reporting_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::under(directory.path());
+        let listener = UnixListener::bind(&endpoint.socket).unwrap();
+        let server = thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut writer = stream.try_clone().unwrap();
+            protocol::write_frame(&mut writer, &Response::Committed).unwrap();
+            // And then goes away, which is how this stream ends.
+        });
+
+        let mut notices = Notices {
+            reader: BufReader::new(UnixStream::connect(&endpoint.socket).unwrap()),
+        };
+
+        assert_eq!(notices.next(), Some(Response::Committed));
+        assert_eq!(notices.next(), None, "the daemon leaving was not the end");
+        server.join().unwrap();
+    }
+}
