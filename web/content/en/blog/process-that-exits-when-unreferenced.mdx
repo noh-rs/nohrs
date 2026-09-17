@@ -165,11 +165,15 @@ the process that created it: finding one says nothing about whether anybody is l
 pid file is worse, since it reintroduces pid reuse — the number in it may belong to something
 else entirely by the time it is read.
 
-An **advisory lock** (`flock`) held for the writer's whole life decides instead, and the
-kernel releases that when the holder dies, by whatever means it dies. Advisory means it binds
-only the processes that ask for it, which here is the whole of the set that matters: what is
-being arbitrated is which writer wins, and both of them are asking. Within that set a pid
-file has to be second-guessed, and a lock cannot go stale.
+An **advisory lock** (`flock`) held for the writer's whole life decides instead. The kernel
+releases it once the last descriptor referring to it is closed — which, for a process that
+takes one and hands it to nobody, is when that process dies, by whatever means it dies. That
+is the socket's rule again, and not by coincidence: both ends of this design rest on the same
+count, of descriptors referring to one thing, kept by the same counter.
+
+Advisory means it binds only the processes that ask for it, which here is the whole of the
+set that matters: what is being arbitrated is which writer wins, and both of them are asking.
+Within that set a pid file has to be second-guessed, and a lock cannot go stale.
 
 Both ends of the writer's existence — becoming the writer, and ceasing to be one — therefore
 rest on facts the kernel maintains, for the same reason in each case.
