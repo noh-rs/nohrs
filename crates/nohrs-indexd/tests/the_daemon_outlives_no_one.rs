@@ -260,3 +260,54 @@ fn asking_it_to_stop_does_not_wait_for_the_grace_period() {
         "a stop waited for the grace period anyway"
     );
 }
+
+/// The version handshake has to decide something. A connection told its version
+/// is not this daemon's could go straight on to `Stop` and be obeyed, which
+/// makes the greeting a formality — and `Stop` the one request where being
+/// obeyed by a caller you have just disagreed with is not recoverable.
+#[cfg(unix)]
+#[test]
+fn a_caller_that_has_not_agreed_on_a_version_is_not_obeyed() {
+    use std::io::BufReader;
+    use std::os::unix::net::UnixStream;
+
+    use nohrs_indexd::protocol::{Request, VERSION, read_frame, write_frame};
+
+    let fixture = Fixture::start();
+    // Waits for the daemon and holds a lease, so that what the test observes
+    // afterwards is the daemon refusing rather than the grace period passing.
+    let client = fixture.connect();
+
+    let mut stranger = UnixStream::connect(&fixture.endpoint.socket).unwrap();
+    write_frame(
+        &mut stranger,
+        &Request::Hello {
+            version: VERSION + 1,
+        },
+    )
+    .unwrap();
+    let mut reading = BufReader::new(stranger.try_clone().unwrap());
+    let refusal = read_frame::<Response>(&mut reading).unwrap();
+    assert!(
+        matches!(refusal, Some(Response::Failed { .. })),
+        "a mismatched version was welcomed: {refusal:?}"
+    );
+
+    // The connection is over, so this either fails to write or is never read.
+    // Both are the daemon declining to act, which is what is being asserted.
+    write_frame(&mut stranger, &Request::Stop).ok();
+
+    assert!(
+        read_frame::<Response>(&mut reading)
+            .ok()
+            .flatten()
+            .is_none(),
+        "a caller that never agreed on a version was answered anyway"
+    );
+    // The daemon is still here and still serving the client that did greet it.
+    assert!(
+        fixture.endpoint.socket.exists(),
+        "a caller that never agreed on a version stopped the daemon"
+    );
+    client.status().unwrap();
+}

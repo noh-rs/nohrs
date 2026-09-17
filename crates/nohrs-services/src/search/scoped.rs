@@ -349,7 +349,7 @@ fn walk(
 
         collect_from(
             entry.path(),
-            is_dir,
+            contents_may_be_read(entry.path(), entry.file_type()),
             matcher,
             &mut searcher,
             options,
@@ -363,10 +363,36 @@ fn walk(
     Ok(outcome)
 }
 
+/// Whether `path`'s contents may be opened and read: it is a regular file, or
+/// a link to one.
+///
+/// [`must_be_searchable`] refuses an operand that is neither a regular file nor
+/// a directory, and this is that same rule for everything met along the way.
+/// `Searcher::search_path` opens what it is given, and opening a FIFO blocks
+/// until someone writes to it, so a walk that hands it every non-directory
+/// stops on the first pipe in the tree — the search never comes back at all,
+/// having been asked about a tree that merely contains one.
+///
+/// `metadata` is only consulted for a link, and the only link that reaches here
+/// is the operand: the walk skips every other one before this, and the index
+/// does the same.
+fn contents_may_be_read(path: &Path, kind: Option<std::fs::FileType>) -> bool {
+    match kind {
+        Some(kind) if kind.is_symlink() => {
+            std::fs::metadata(path).is_ok_and(|about| about.is_file())
+        }
+        Some(kind) => kind.is_file(),
+        None => false,
+    }
+}
+
 /// Matches `path` — its name, the lines inside it, or both — into `outcome`.
+///
+/// `readable_contents` says whether the file may be opened at all; a name
+/// matches either way, since a name is knowable without reading anything.
 fn collect_from(
     path: &Path,
-    is_dir: bool,
+    readable_contents: bool,
     matcher: &RegexMatcher,
     searcher: &mut Searcher,
     options: &Options,
@@ -386,7 +412,7 @@ fn collect_from(
     }
 
     let room = remaining(options.limit, outcome.results.len());
-    if options.subject.includes_contents() && room != Some(0) && !is_dir {
+    if options.subject.includes_contents() && room != Some(0) && readable_contents {
         let sink = Collector {
             path,
             results: &mut outcome.results,
@@ -557,7 +583,7 @@ fn from_index(
         let path = as_given(&candidate, &index.canonical_root, &index.given_root);
         collect_from(
             &path,
-            metadata.is_dir(),
+            contents_may_be_read(&candidate, Some(metadata.file_type())),
             matcher,
             &mut searcher,
             options,
@@ -1068,6 +1094,42 @@ mod tests {
             error.to_string().contains("regular file"),
             "the failure did not say why the operand was refused: {error:#}"
         );
+    }
+
+    /// The rule that refuses a FIFO named as the operand has to hold for one
+    /// met along the way too, and for the same reason: `search_path` opens what
+    /// it is given, and opening a pipe nobody is writing to never returns. A
+    /// tree is not searchable only until it happens to contain a pipe.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_in_the_tree_does_not_stop_the_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes.txt", b"a needle in here\n");
+        let fifo = dir.path().join("needle-pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !made {
+            return;
+        }
+
+        // On its own thread, because the failure this guards against is a
+        // search that never comes back rather than one that answers wrongly.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn({
+            let root = dir.path().to_path_buf();
+            move || sender.send(search(&root, "needle", &Options::default()))
+        });
+        let outcome = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the search never came back: a pipe in the tree blocked it")
+            .expect("a tree containing a pipe failed to search");
+
+        // The pipe by its name and the file by its line. The pipe's contents
+        // are never asked for, which is what kept the walk moving.
+        assert_eq!(paths(&outcome).len(), 2, "{:?}", paths(&outcome));
     }
 
     /// A name is knowable without reading the file, so refusing an unreadable

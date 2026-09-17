@@ -323,10 +323,32 @@ impl Daemon {
         served
     }
 
+    /// Serves one connection until it leaves, after it has agreed on a version.
+    ///
+    /// The greeting has to gate the rest or it decides nothing: a caller could
+    /// be told its version is not this one and go straight on to a `Refresh` or
+    /// a `Stop`, which the daemon would carry out against a protocol the two
+    /// had just established they do not share. So a connection is answered once
+    /// and closed until it has said a matching `Hello`. The socket is the
+    /// user's own, so this is the protocol keeping its word rather than a
+    /// defence against anybody.
     fn read_requests(self: &Arc<Self>, stream: UnixStream, id: u64) -> Result<()> {
         let mut reader = BufReader::new(stream);
+        let mut greeted = false;
         while let Some(request) = protocol::read_frame::<Request>(&mut reader)? {
-            let answer = self.answer(&request);
+            let answer = match &request {
+                // `answer` already says which version it speaks when they differ.
+                Request::Hello { version } => {
+                    greeted = *version == VERSION;
+                    self.answer(&request)
+                }
+                _ if greeted => self.answer(&request),
+                _ => Response::Failed {
+                    message: format!(
+                        "this daemon speaks version {VERSION}; say hello before anything else"
+                    ),
+                },
+            };
             let sent = self
                 .subscribers
                 .lock()
@@ -337,6 +359,10 @@ impl Daemon {
                 Some(Ok(())) => {}
                 // The client stopped reading, which is its way of leaving.
                 Some(Err(_)) | None => break,
+            }
+            // The refusal above is the whole of what this connection gets.
+            if !greeted {
+                break;
             }
             if matches!(request, Request::Stop) {
                 self.leases.release();

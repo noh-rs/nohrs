@@ -37,6 +37,11 @@ writer と watcher が `nohrs-indexd` の中だけに居るのがこの図の要
 `noh search` も) はデーモンを経由せず、index を直接読みます** — 読むのにロックが要らないからです
 ([ADR 0009](./adr/0009-indexd-owns-the-index-writer.md))。
 
+ただしデーモンに辿り着けるときの話です。unix socket の無い環境 (Windows) や、デーモンを起動できなかった
+ときは、アプリも `noh index build` もその場で索引を更新し、writer はそのプロセス自身が握ります
+(`docs/cli.md` §5)。writer が一つであることは変わらず、それが誰かが変わるだけです。読み手が index を
+直接読むことも変わりません。
+
 | 担当 | 役割 |
 |------|------|
 | **SQLite** | ファイルメタデータ (path, mtime, size, inode, hash)、削除追跡、状態管理、差分検出。FTS5 で trigram 全文検索 (V2) |
