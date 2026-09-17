@@ -93,14 +93,7 @@ impl Backend for ServicesBackend {
         let (index_path, content_root) = Self::location()?;
         let reader = IndexReader::open(index_path.clone(), content_root.clone())
             .map_err(|error| Error::Other(format!("{error:#}")))?;
-        let documents = match reader {
-            Some(reader) => Some(
-                reader
-                    .document_count()
-                    .map_err(|error| Error::Other(format!("{error:#}")))?,
-            ),
-            None => None,
-        };
+        let documents = reader.map(|reader| reader.document_count());
         Ok(Status {
             index_path,
             content_root,

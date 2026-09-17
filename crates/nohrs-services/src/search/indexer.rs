@@ -2,13 +2,17 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use tantivy::TantivyDocument;
 use tantivy::schema::{FAST, Field, STORED, STRING, Schema, TEXT, Term, Value};
 use tantivy::{Index, IndexWriter}; // Import trait for add_text etc? No, TantivyDocument implements it.
 
 /// How much heap tantivy's writer may use while indexing.
 const WRITER_HEAP_BYTES: usize = 50_000_000;
+
+/// Files larger than this carry no content into the index (`docs/search.md` §3.5).
+const MAX_INDEXED_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// How much of the content root an indexing pass re-reads.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -167,8 +171,10 @@ impl IndexManager {
     fn create_schema() -> Schema {
         let mut schema_builder = Schema::builder();
 
-        // path: stored and indexed as exact string (keyword) for ID/deletion
-        schema_builder.add_text_field("path", STRING | STORED);
+        // path: stored and indexed as exact string (keyword) for ID/deletion,
+        // and columnar so that an incremental pass can read every indexed path
+        // without decompressing the document store (see `indexed_modifications`).
+        schema_builder.add_text_field("path", STRING | STORED | FAST);
 
         // filename: tokenized for full-text search on file names
         schema_builder.add_text_field("filename", TEXT | STORED);
@@ -217,211 +223,428 @@ impl IndexManager {
         mut progress_tx: Option<postage::watch::Sender<f32>>,
     ) -> Result<IndexReport> {
         let fields = Fields::of(&self.index.schema())?;
-        // What the index holds now, by path. Entries are taken out as the walk
-        // reaches them, so whatever is left at the end is a document whose file
-        // is gone.
-        let mut known = self.indexed_modifications(fields.path)?;
+        // What the index holds now, by path. The walk reports back which of
+        // these it reached, so whatever is left at the end is a document whose
+        // file is gone.
+        let mut known = self.indexed_modifications(&fields)?;
 
-        // 1. Count files if progress tracking is enabled
-        let mut total_files = 0;
-        if let Some(tx) = &mut progress_tx {
-            *tx.borrow_mut() = 0.0;
-            let walker = ignore::WalkBuilder::new(&self.content_root)
-                .hidden(false)
-                .git_ignore(true)
-                .build();
-            for entry in walker.flatten() {
-                // Count both files and directories
-                if entry.path().is_file() || entry.path().is_dir() {
-                    total_files += 1;
-                }
+        // The denominator for progress. A warm index knows how many documents
+        // it holds, which is the answer without walking anything; only a cold
+        // one pays for a counting pass, and that pass reads the walker's own
+        // file type rather than calling `stat` on every entry.
+        let tally = Tally::default();
+        let progress = progress_tx.take().map(|mut sender| {
+            *sender.borrow_mut() = 0.0;
+            let total = match known.len() {
+                0 => count_entries(&self.content_root),
+                documents => documents,
+            };
+            ProgressTicker::start(sender, tally.walked.clone(), total)
+        });
+        // Only paths the index already holds need reporting back: orphans are
+        // what the index knows and the walk did not reach, so a path that was
+        // never indexed says nothing about them.
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel::<Vec<String>>();
+        walker(&self.content_root)
+            .threads(indexing_threads())
+            .build_parallel()
+            .run(|| {
+                // Per worker: the batch flushes itself when the walk drops this
+                // visitor, so nothing is lost and nothing is sent per entry.
+                let mut batch = SeenBatch::new(seen_tx.clone());
+                let tally = &tally;
+                let known = &known;
+                let fields = &fields;
+                let writer = &*writer;
+                Box::new(move |result| {
+                    let entry = match result {
+                        Ok(entry) => entry,
+                        Err(error) => {
+                            tracing::warn!("Walk error: {}", error);
+                            return ignore::WalkState::Continue;
+                        }
+                    };
+                    // Counted before anything can skip the entry, so progress
+                    // reaches 1.0 whatever the walk runs into.
+                    tally.walked.fetch_add(1, Ordering::Relaxed);
+
+                    let path = entry.path();
+                    let indexed_path = path.to_string_lossy();
+                    // Reported as reached even when the entry turns out to be
+                    // unreadable below: a file that is here but cannot be read
+                    // is not a file that is gone.
+                    let previously = match known.get(indexed_path.as_ref()) {
+                        Some(modified) => {
+                            batch.reached(&indexed_path);
+                            *modified
+                        }
+                        None => None,
+                    };
+
+                    let metadata = match fs::metadata(path) {
+                        Ok(metadata) => metadata,
+                        Err(error) => {
+                            tracing::debug!("cannot stat {}: {error}", path.display());
+                            return ignore::WalkState::Continue;
+                        }
+                    };
+                    let modified = modified_nanos(&metadata);
+                    // A file with no readable modification time is re-read every
+                    // pass: there is nothing to tell us it has not changed.
+                    if refresh == Refresh::Changed && modified.is_some() && previously == modified {
+                        tally.unchanged.fetch_add(1, Ordering::Relaxed);
+                        return ignore::WalkState::Continue;
+                    }
+
+                    let indexed = if metadata.is_file() {
+                        index_one_file(path, &metadata, modified, writer, fields)
+                    } else if metadata.is_dir() {
+                        index_one_directory(path, modified, writer, fields)
+                    } else {
+                        return ignore::WalkState::Continue;
+                    };
+                    match indexed {
+                        Ok(()) => {
+                            tally.indexed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(error) => tracing::warn!("Failed to index {:?}: {}", path, error),
+                    }
+                    ignore::WalkState::Continue
+                })
+            });
+        drop(seen_tx);
+
+        for batch in seen_rx {
+            for reached in batch {
+                known.remove(&reached);
             }
         }
 
-        // 2. Index files
-        let walker = ignore::WalkBuilder::new(&self.content_root)
-            .hidden(false)
-            .git_ignore(true)
-            .build();
-
-        let mut report = IndexReport::default();
-        let mut processed = 0;
-        for result in walker {
-            let entry = match result {
-                Ok(entry) => entry,
-                Err(err) => {
-                    tracing::warn!("Walk error: {}", err);
-                    continue;
-                }
-            };
-
-            // Counted before anything can skip the entry, so progress reaches
-            // 1.0 whatever the walk runs into.
-            processed += 1;
-            if let Some(tx) = &mut progress_tx {
-                if total_files > 0 && processed % 100 == 0 {
-                    *tx.borrow_mut() = processed as f32 / total_files as f32;
-                }
-            }
-
-            let path = entry.path();
-            let indexed_path = path.to_string_lossy().into_owned();
-            // Taken out even when the entry turns out to be unreadable below:
-            // a file that is here but cannot be read is not a file that is gone.
-            let previously = known.remove(&indexed_path).flatten();
-
-            let metadata = match fs::metadata(path) {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    tracing::debug!("cannot stat {}: {error}", path.display());
-                    continue;
-                }
-            };
-            let modified = modified_nanos(&metadata);
-            // A file with no readable modification time is re-read every pass:
-            // there is nothing to tell us it has not changed.
-            if refresh == Refresh::Changed && modified.is_some() && previously == modified {
-                report.unchanged += 1;
-                continue;
-            }
-
-            let indexed = if metadata.is_file() {
-                self.index_single_file(path, &metadata, modified, writer, &fields)
-            } else if metadata.is_dir() {
-                self.index_single_directory(path, modified, writer, &fields)
-            } else {
-                continue;
-            };
-            match indexed {
-                Ok(()) => report.indexed += 1,
-                Err(error) => tracing::warn!("Failed to index {:?}: {}", path, error),
-            }
-        }
-
-        // 3. Drop what the walk never reached.
-        for (gone, _) in known {
-            writer.delete_term(Term::from_field_text(fields.path, &gone));
+        let mut report = tally.into_report();
+        // Whatever the walk never reached is a document with no file behind it.
+        for gone in known.keys() {
+            writer.delete_term(Term::from_field_text(fields.path, gone));
             report.removed += 1;
         }
 
-        if let Some(tx) = &mut progress_tx {
-            *tx.borrow_mut() = 1.0; // Done
-        }
-
         writer.commit()?;
+        // Reported done only once the commit lands, so nothing reads "finished"
+        // from an index that has not been written yet.
+        if let Some(progress) = progress {
+            progress.finish();
+        }
         Ok(report)
     }
 
     /// The modification time the index holds for each path it knows.
     ///
-    /// The outer `Option` of the value is "the document carries no time", which
-    /// an index written before `last_modified` was stored does for every
+    /// Read from the index's own columns rather than its document store. The
+    /// store keeps documents compressed in blocks, so pulling one field out of
+    /// every document means decompressing the whole index — on every launch,
+    /// before any file has been looked at. The columns are memory-mapped and
+    /// hold exactly these two values.
+    ///
+    /// The `Option` in the value is "the document carries no time", which is
+    /// what an index written before `last_modified` was stored says for every
     /// document; those are re-read once and carry one afterwards.
-    fn indexed_modifications(&self, path_field: Field) -> Result<HashMap<String, Option<u64>>> {
-        let schema = self.index.schema();
-        let modified_field = schema
-            .get_field("last_modified")
-            .context("Schema error: last_modified field missing")?;
-        let reader = self.index.reader()?;
-        let searcher = reader.searcher();
+    fn indexed_modifications(&self, fields: &Fields) -> Result<HashMap<String, Option<u64>>> {
+        let searcher = self.index.reader()?.searcher();
+        let mut known = HashMap::with_capacity(searcher.num_docs() as usize);
 
-        let mut known = HashMap::new();
         for segment_reader in searcher.segment_readers() {
-            let store = segment_reader.get_store_reader(1)?;
+            let columns = segment_reader.fast_fields();
+            let (Ok(Some(paths)), Ok(times)) = (columns.str("path"), columns.u64("last_modified"))
+            else {
+                // No columns to read: an index from a schema that predates
+                // them. Fall back to the store so that the pass still knows
+                // what the index holds — being slow is recoverable, and
+                // treating every document as unknown would drop them all as
+                // orphans.
+                self.indexed_modifications_from_store(fields, segment_reader, &mut known)?;
+                continue;
+            };
+
+            // The dictionary is read once, in its own order, rather than once
+            // per document: resolving each document's term as the document is
+            // reached seeks around a sorted table 20,000 times over, which
+            // measured at 33µs a document — more than the whole walk. Streamed
+            // in order it is a single sequential read.
+            let dictionary = paths.dictionary();
+            let mut by_ordinal: Vec<Option<String>> = Vec::with_capacity(dictionary.num_terms());
+            let mut terms = dictionary.stream()?;
+            while terms.advance() {
+                by_ordinal.push(Some(String::from_utf8_lossy(terms.key()).into_owned()));
+            }
+
             for doc_id in segment_reader.doc_ids_alive() {
-                let document: TantivyDocument = store.get(doc_id)?;
-                let Some(path) = document
-                    .get_first(path_field)
-                    .and_then(|value| value.as_str())
-                else {
+                let Some(ordinal) = paths.term_ords(doc_id).next() else {
                     continue;
                 };
-                let modified = document
-                    .get_first(modified_field)
-                    .and_then(|value| value.as_u64());
-                known.insert(path.to_string(), modified);
+                // Taken rather than cloned: every document holds a distinct
+                // path, so nothing else will ask for this one.
+                let Some(path) = by_ordinal.get_mut(ordinal as usize).and_then(Option::take) else {
+                    continue;
+                };
+                known.insert(path, times.first(doc_id));
             }
         }
         Ok(known)
     }
 
-    fn index_single_directory(
+    fn indexed_modifications_from_store(
         &self,
-        path: &Path,
-        modified: Option<u64>,
-        writer: &mut IndexWriter,
         fields: &Fields,
+        segment_reader: &tantivy::SegmentReader,
+        known: &mut HashMap<String, Option<u64>>,
     ) -> Result<()> {
-        let path_str = path.to_string_lossy();
-        let filename = path.file_name().unwrap_or_default().to_string_lossy();
-
-        let mut doc = TantivyDocument::default();
-        doc.add_text(fields.path, &path_str);
-        doc.add_text(fields.filename, &filename);
-        doc.add_text(fields.content, &filename); // Allow searching dir by name content
-        doc.add_u64(fields.is_directory, 1);
-        if let Some(modified) = modified {
-            doc.add_u64(fields.last_modified, modified);
-        }
-
-        writer.delete_term(Term::from_field_text(fields.path, &path_str));
-        writer.add_document(doc)?;
-        Ok(())
-    }
-
-    fn index_single_file(
-        &self,
-        path: &Path,
-        metadata: &fs::Metadata,
-        modified: Option<u64>,
-        writer: &mut IndexWriter,
-        fields: &Fields,
-    ) -> Result<()> {
-        if metadata.len() > 10 * 1024 * 1024 {
-            // Skip files larger than 10MB
-            tracing::debug!("Skipping large file: {:?}", path);
-            return Ok(());
-        }
-
-        // Try reading as string. If it fails (binary), we skip.
-        // Indexing runs on the search backend's own threads, never the GPUI
-        // foreground loop, so the blocking read is fine here.
-        #[allow(clippy::disallowed_methods)]
-        match fs::read_to_string(path) {
-            Ok(content) => {
-                // Check if it looks like binary (contains null byte) - crude check
-                if content.contains('\0') {
-                    tracing::debug!("Skipping binary file (detected null byte): {:?}", path);
-                    return Ok(());
-                }
-
-                let path_str = path.to_string_lossy();
-                let filename = path.file_name().unwrap_or_default().to_string_lossy();
-
-                // Add path to content so it's searchable via full text query
-                let searchable_content = format!("{}\n{}", path_str, content);
-
-                let mut doc = TantivyDocument::default();
-                doc.add_text(fields.path, &path_str);
-                doc.add_text(fields.filename, &filename);
-                doc.add_text(fields.content, &searchable_content);
-                doc.add_u64(fields.is_directory, 0);
-                if let Some(modified) = modified {
-                    doc.add_u64(fields.last_modified, modified);
-                }
-
-                // Delete existing doc with same path to avoid duplicates (upsert)
-                // Note: This matches exact path string.
-                writer.delete_term(Term::from_field_text(fields.path, &path_str));
-                writer.add_document(doc)?;
-            }
-            Err(_) => {
-                tracing::debug!("Skipping binary/unreadable file: {:?}", path);
-            }
+        let store = segment_reader.get_store_reader(1)?;
+        for doc_id in segment_reader.doc_ids_alive() {
+            let document: TantivyDocument = store.get(doc_id)?;
+            let Some(path) = document
+                .get_first(fields.path)
+                .and_then(|value| value.as_str())
+            else {
+                continue;
+            };
+            let modified = document
+                .get_first(fields.last_modified)
+                .and_then(|value| value.as_u64());
+            known.insert(path.to_string(), modified);
         }
         Ok(())
     }
+}
 
+/// The walk every indexing pass makes, configured in one place so the counting
+/// pass and the indexing pass cannot disagree about what is in the tree.
+fn walker(root: &Path) -> ignore::WalkBuilder {
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder.hidden(false).git_ignore(true);
+    builder
+}
+
+/// How many entries the tree holds, for the progress denominator.
+///
+/// Reads the walker's own file type instead of calling `stat`, which is the
+/// difference between a pass over the tree and two of them.
+fn count_entries(root: &Path) -> usize {
+    let total = AtomicUsize::new(0);
+    walker(root)
+        .threads(indexing_threads())
+        .build_parallel()
+        .run(|| {
+            let total = &total;
+            Box::new(move |result| {
+                if let Ok(entry) = result {
+                    if entry.file_type().is_some_and(|kind| !kind.is_symlink()) {
+                        total.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                ignore::WalkState::Continue
+            })
+        });
+    total.load(Ordering::Relaxed)
+}
+
+/// How many threads an indexing pass walks with.
+///
+/// Half the machine, capped, per the resource policy in `docs/search.md` §7.1:
+/// indexing is background work and must leave the machine usable. The cap also
+/// bounds how many files are held in memory at once.
+fn indexing_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| (count.get() / 2).clamp(1, 4))
+        .unwrap_or(1)
+}
+
+/// The counters an indexing pass keeps, shared across its walk threads.
+#[derive(Debug, Default, Clone)]
+struct Tally {
+    walked: Arc<AtomicUsize>,
+    indexed: Arc<AtomicUsize>,
+    unchanged: Arc<AtomicUsize>,
+}
+
+impl Tally {
+    fn into_report(self) -> IndexReport {
+        IndexReport {
+            indexed: self.indexed.load(Ordering::Relaxed),
+            unchanged: self.unchanged.load(Ordering::Relaxed),
+            removed: 0,
+        }
+    }
+}
+
+/// One walk thread's list of indexed paths it reached.
+///
+/// Batched rather than sent per entry, and flushed when the walk drops the
+/// visitor that owns it, so a worker never contends on the collector and never
+/// loses what it gathered.
+struct SeenBatch {
+    seen: Vec<String>,
+    sink: std::sync::mpsc::Sender<Vec<String>>,
+}
+
+impl SeenBatch {
+    fn new(sink: std::sync::mpsc::Sender<Vec<String>>) -> Self {
+        Self {
+            seen: Vec::new(),
+            sink,
+        }
+    }
+
+    fn reached(&mut self, path: &str) {
+        self.seen.push(path.to_string());
+    }
+}
+
+impl Drop for SeenBatch {
+    fn drop(&mut self) {
+        let seen = std::mem::take(&mut self.seen);
+        if seen.is_empty() {
+            return;
+        }
+        if let Err(error) = self.sink.send(seen) {
+            // The collector is gone, which means the pass is being torn down.
+            // Say so rather than swallow it: the orphan sweep that follows will
+            // be reading an incomplete picture.
+            tracing::warn!("indexing progress could not be reported back: {error}");
+        }
+    }
+}
+
+/// Publishes indexing progress on its own thread.
+///
+/// The walk threads only ever bump an atomic; this reads it on a timer. That
+/// keeps the UI's update rate off the number of files (a tree of 200,000 would
+/// otherwise push 200,000 updates) and keeps the channel out of the hot loop.
+struct ProgressTicker {
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<postage::watch::Sender<f32>>>,
+}
+
+impl ProgressTicker {
+    const INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+    fn start(
+        mut sender: postage::watch::Sender<f32>,
+        walked: Arc<AtomicUsize>,
+        total: usize,
+    ) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker = std::thread::spawn({
+            let stop = stop.clone();
+            move || {
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(Self::INTERVAL);
+                    if total > 0 {
+                        let done = walked.load(Ordering::Relaxed);
+                        let ratio = (done as f32 / total as f32).clamp(0.0, 1.0);
+                        *sender.borrow_mut() = ratio;
+                    }
+                }
+                sender
+            }
+        });
+        Self {
+            stop,
+            worker: Some(worker),
+        }
+    }
+
+    /// Stops the ticker and reports the pass as finished.
+    fn finish(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            match worker.join() {
+                Ok(mut sender) => *sender.borrow_mut() = 1.0,
+                Err(_) => tracing::warn!("the indexing progress thread panicked"),
+            }
+        }
+    }
+}
+
+impl Drop for ProgressTicker {
+    fn drop(&mut self) {
+        // `finish` takes the handle, so this only runs on an early return, and
+        // then only to stop the thread rather than to claim the pass finished.
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+fn index_one_directory(
+    path: &Path,
+    modified: Option<u64>,
+    writer: &IndexWriter,
+    fields: &Fields,
+) -> Result<()> {
+    let path_str = path.to_string_lossy();
+    let filename = path.file_name().unwrap_or_default().to_string_lossy();
+
+    let mut doc = TantivyDocument::default();
+    doc.add_text(fields.path, &path_str);
+    doc.add_text(fields.filename, &filename);
+    doc.add_text(fields.content, &filename); // Allow searching dir by name content
+    doc.add_u64(fields.is_directory, 1);
+    if let Some(modified) = modified {
+        doc.add_u64(fields.last_modified, modified);
+    }
+
+    writer.delete_term(Term::from_field_text(fields.path, &path_str));
+    writer.add_document(doc)?;
+    Ok(())
+}
+
+fn index_one_file(
+    path: &Path,
+    metadata: &fs::Metadata,
+    modified: Option<u64>,
+    writer: &IndexWriter,
+    fields: &Fields,
+) -> Result<()> {
+    if metadata.len() > MAX_INDEXED_FILE_BYTES {
+        tracing::debug!("Skipping large file: {:?}", path);
+        return Ok(());
+    }
+
+    // Indexing runs on the pass's own walk threads, never the GPUI foreground
+    // loop, so the blocking read is fine here.
+    #[allow(clippy::disallowed_methods)]
+    let Ok(content) = fs::read_to_string(path) else {
+        tracing::debug!("Skipping binary/unreadable file: {:?}", path);
+        return Ok(());
+    };
+    // Crude, and the same check the rest of the search stack makes: a NUL byte
+    // means this is not text anyone wants lines quoted from.
+    if content.contains('\0') {
+        tracing::debug!("Skipping binary file (detected null byte): {:?}", path);
+        return Ok(());
+    }
+
+    let path_str = path.to_string_lossy();
+    let filename = path.file_name().unwrap_or_default().to_string_lossy();
+
+    let mut doc = TantivyDocument::default();
+    doc.add_text(fields.path, &path_str);
+    doc.add_text(fields.filename, &filename);
+    // The path is searchable as content, as a second value of the field rather
+    // than concatenated onto the front of it: joining them would copy the whole
+    // file to prepend one line, which on a large tree is the read done twice.
+    doc.add_text(fields.content, &path_str);
+    doc.add_text(fields.content, &content);
+    doc.add_u64(fields.is_directory, 0);
+    if let Some(modified) = modified {
+        doc.add_u64(fields.last_modified, modified);
+    }
+
+    // Delete the existing document for this path first, so a re-index replaces
+    // rather than duplicates.
+    writer.delete_term(Term::from_field_text(fields.path, &path_str));
+    writer.add_document(doc)?;
+    Ok(())
+}
+
+impl IndexManager {
     /// Removes the document for `path` from the index and commits.
     #[tracing::instrument(target = "nohrs::op", name = "index.remove", level = "debug", skip_all, fields(path = %path.display()))]
     pub fn remove_file(&self, path: &Path) -> Result<()> {
@@ -455,9 +678,7 @@ impl IndexManager {
             match fs::metadata(path) {
                 Ok(metadata) if metadata.is_file() => {
                     let modified = modified_nanos(&metadata);
-                    if let Err(e) =
-                        self.index_single_file(path, &metadata, modified, writer, &fields)
-                    {
+                    if let Err(e) = index_one_file(path, &metadata, modified, writer, &fields) {
                         tracing::warn!("Failed to update index for {:?}: {}", path, e);
                     }
                 }
@@ -465,7 +686,7 @@ impl IndexManager {
                 // index, and its children arrive as their own events.
                 Ok(metadata) if metadata.is_dir() => {
                     let modified = modified_nanos(&metadata);
-                    if let Err(e) = self.index_single_directory(path, modified, writer, &fields) {
+                    if let Err(e) = index_one_directory(path, modified, writer, &fields) {
                         tracing::warn!("Failed to update index for {:?}: {}", path, e);
                     }
                 }
@@ -509,7 +730,15 @@ impl IndexManager {
 /// read-only caller goes through this instead and can share the index with a
 /// running GUI.
 pub struct IndexReader {
-    index: Index,
+    // Held open for the life of the reader. Building one per query re-opens the
+    // index's files and rebuilds its searcher pool, which a one-shot command
+    // can afford and a launcher answering every keystroke inside 50ms
+    // (`docs/launcher.md` §12) cannot.
+    reader: tantivy::IndexReader,
+    // Built once as well: parsing a query against a schema is cheap, but
+    // constructing the parser walks every field's options.
+    query_parser: tantivy::query::QueryParser,
+    path_field: Field,
     index_path: PathBuf,
     content_root: PathBuf,
 }
@@ -536,19 +765,46 @@ impl IndexReader {
         let index = Index::open_in_dir(&index_path)
             .with_context(|| format!("cannot open the index at {}", index_path.display()))?;
         let schema = index.schema();
-        for field in ["path", "filename", "content"] {
-            schema.get_field(field).with_context(|| {
+        let field = |name: &str| {
+            schema.get_field(name).with_context(|| {
                 format!(
-                    "the index at {} was built by an older version of nohrs (no `{field}` field); rebuild it",
+                    "the index at {} was built by an older version of nohrs (no `{name}` field); rebuild it",
                     index_path.display()
                 )
-            })?;
-        }
+            })
+        };
+        let path_field = field("path")?;
+        let filename_field = field("filename")?;
+        let content_field = field("content")?;
+
+        // `Manual` rather than tantivy's default: the default installs a
+        // directory watcher per reader to notice commits, which is a thread and
+        // an inotify/FSEvents registration in every process that reads. Readers
+        // are told when to [`IndexReader::reload`] instead, by whoever wrote.
+        let reader = index
+            .reader_builder()
+            .reload_policy(tantivy::ReloadPolicy::Manual)
+            .try_into()
+            .with_context(|| format!("cannot read the index at {}", index_path.display()))?;
+        let query_parser =
+            tantivy::query::QueryParser::for_index(&index, vec![filename_field, content_field]);
+
         Ok(Some(Self {
-            index,
+            reader,
+            query_parser,
+            path_field,
             index_path,
             content_root,
         }))
+    }
+
+    /// Picks up what has been committed to the index since this reader opened.
+    ///
+    /// Cheap enough to call on every notice: it swaps in the new segments and
+    /// leaves any in-flight search reading the old ones.
+    pub fn reload(&self) -> Result<()> {
+        self.reader.reload()?;
+        Ok(())
     }
 
     /// Where the index itself is stored.
@@ -561,10 +817,11 @@ impl IndexReader {
         &self.content_root
     }
 
-    /// How many documents the index holds. Zero means it exists but has not
-    /// been filled in, which answers no query correctly.
-    pub fn document_count(&self) -> Result<u64> {
-        Ok(self.index.reader()?.searcher().num_docs())
+    /// How many documents the index holds as of the last [`IndexReader::reload`].
+    /// Zero means it exists but has not been filled in, which answers no query
+    /// correctly.
+    pub fn document_count(&self) -> u64 {
+        self.reader.searcher().num_docs()
     }
 
     /// Whether `path` is inside the tree the index covers.
@@ -579,18 +836,10 @@ impl IndexReader {
     /// the query's terms, not where in the file they are, so a caller that wants
     /// lines matches them itself.
     pub fn candidates(&self, query: &str, pool: usize) -> Result<Vec<PathBuf>> {
-        let reader = self.index.reader()?;
-        let searcher = reader.searcher();
-        let schema = self.index.schema();
-        let path_field = schema.get_field("path").context("Field not found")?;
-        let filename_field = schema.get_field("filename").context("Field not found")?;
-        let content_field = schema.get_field("content").context("Field not found")?;
-
-        let query_parser = tantivy::query::QueryParser::for_index(
-            &self.index,
-            vec![filename_field, content_field],
-        );
-        let parsed = query_parser
+        let searcher = self.reader.searcher();
+        let path_field = self.path_field;
+        let parsed = self
+            .query_parser
             .parse_query(query)
             .with_context(|| format!("the index cannot read `{query}` as a query"))?;
         // Scored order: this is the BM25 ranking the index exists to provide,
@@ -812,7 +1061,7 @@ mod tests {
             .unwrap()
             .expect("an index that was just built");
 
-        assert!(reader.document_count().unwrap() > 0);
+        assert!(reader.document_count() > 0);
         let candidates = reader.candidates("needle", 10).unwrap();
         assert_eq!(candidates, vec![dir.path().join("content/notes.txt")]);
     }
@@ -826,7 +1075,7 @@ mod tests {
         let reader = IndexReader::open(dir.path().join("index"), dir.path().join("content"))
             .unwrap()
             .expect("an index that was just built");
-        assert!(reader.document_count().unwrap() > 0);
+        assert!(reader.document_count() > 0);
     }
 
     #[test]

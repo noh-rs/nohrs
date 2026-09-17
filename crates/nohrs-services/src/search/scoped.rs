@@ -352,10 +352,8 @@ fn usable_index(
         Ok(None) => return Err(NoIndex::NotBuilt),
         Err(error) => return Err(NoIndex::Unusable(format!("{error:#}"))),
     };
-    match reader.document_count() {
-        Ok(0) => return Err(NoIndex::Empty),
-        Ok(_) => {}
-        Err(error) => return Err(NoIndex::Unusable(format!("{error:#}"))),
+    if reader.document_count() == 0 {
+        return Err(NoIndex::Empty);
     }
 
     // Both sides are canonicalized: either may reach the same directory through
