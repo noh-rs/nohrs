@@ -25,10 +25,17 @@
                      │                        │
                      ▼                        ▼
               ┌──────────────────────────────────┐
-              │     notify-debouncer-mini        │
-              │  (file watcher with debounce)    │
+              │          nohrs-indexd            │
+              │  ┌────────────────────────────┐  │
+              │  │ notify-debouncer-mini (2s) │  │
+              │  └────────────────────────────┘  │
+              │   Tantivy の writer もここだけ    │
               └──────────────────────────────────┘
 ```
+
+writer と watcher が `nohrs-indexd` の中だけに居るのがこの図の要点です。**読み手 (GUI も
+`noh search` も) はデーモンを経由せず、index を直接読みます** — 読むのにロックが要らないからです
+([ADR 0009](./adr/0009-indexd-owns-the-index-writer.md))。
 
 | 担当 | 役割 |
 |------|------|

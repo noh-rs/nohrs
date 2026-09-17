@@ -23,7 +23,11 @@
 |------|------|
 | SQLite | ファイルメタデータ (path / mtime / size / inode / hash)、削除追跡、状態管理、差分検出、trigram 全文検索 (FTS5、V2 段階) |
 | Tantivy | 全文検索インデックス、BM25 ランキング、コード対応 ngrams、identifier 分解 (V3 段階) |
-| notify-debouncer-mini | ファイルシステム変更検出 (debounce 500ms) |
+| notify-debouncer-mini | ファイルシステム変更検出 (debounce 500ms[^debounce]) |
+
+[^debounce]: この 500ms は当時の値です。watcher は [ADR 0009](./0009-indexd-owns-the-index-writer.md)
+    で `nohrs-indexd` に移り、debounce は 2s になりました。この ADR の決定 (SQLite + Tantivy を採る)
+    自体は変わっていないので status はそのままにし、値の現在地だけをここに書き添えます。
 
 段階移行:
 

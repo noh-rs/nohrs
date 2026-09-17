@@ -43,8 +43,10 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   differs from the index's, and `--full` forces the rest. Both ask the daemon
   where there is one, so a build no longer fails because the app is open;
   where there is not — no unix sockets, or a daemon that cannot be started —
-  each falls back to indexing in-process and can still find the writer held
-  elsewhere, which it reports rather than hides. `status` reports
+  `build` indexes in-process and can still find the writer held elsewhere,
+  which it reports rather than hides. `status` needs no writer either way: it
+  opens the index for reading, which is why it runs beside the app. `status`
+  also reports
   whether anything is watching — the difference between "up to date" and "up to
   date as of whenever this last ran". `noh index stop` stops the daemon without
   touching the index. See [`docs/cli.md`](docs/cli.md) §5.

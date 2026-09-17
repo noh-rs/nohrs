@@ -166,9 +166,10 @@ pub struct Outcome {
 ///
 /// Fails when `query` is not a pattern the matcher can build, when
 /// [`Engine::Index`] was insisted on and the index cannot answer, and when
-/// `root` itself is missing or cannot be opened — the caller asked about that
-/// path by name, and "no matches" is the wrong answer for something that was
-/// never searched.
+/// `root` itself cannot be searched for what was asked — the caller named that
+/// path, and "no matches" is the wrong answer for something never searched. A
+/// missing root fails whatever the subject; one that merely cannot be opened
+/// fails only a search that needed to read it (see [`must_be_searchable`]).
 ///
 /// Inside the tree the opposite holds: a directory that cannot be read, or a
 /// file that cannot be searched, is reported through `tracing` and skipped. One
@@ -197,7 +198,7 @@ pub fn search_using(
     open_index: Option<&IndexReader>,
 ) -> Result<Outcome> {
     let matcher = build_matcher(query, options)?;
-    must_be_searchable(root)?;
+    must_be_searchable(root, options.subject)?;
 
     if options.limit == Some(0) {
         return Ok(Outcome::default());
@@ -245,12 +246,20 @@ pub fn search_using(
 /// this question in a syscall would instead be where the command stops. A
 /// symlink is not special here: `metadata` follows it, so an operand naming a
 /// link to a file is a file.
-fn must_be_searchable(root: &Path) -> Result<()> {
+///
+/// What counts as searchable depends on what is being searched for. A name is
+/// knowable without reading the file, so a `--name` search over a file nobody
+/// may open is a search that can be answered — refusing it would report a
+/// failure for a question that has a perfectly good answer. A directory is
+/// listed either way, since its entries' names come from reading it.
+fn must_be_searchable(root: &Path, subject: Subject) -> Result<()> {
     let about = std::fs::metadata(root)?;
     if about.is_dir() {
         std::fs::read_dir(root)?;
     } else if about.is_file() {
-        std::fs::File::open(root)?;
+        if subject.includes_contents() {
+            std::fs::File::open(root)?;
+        }
     } else {
         anyhow::bail!("not a regular file or a directory");
     }
@@ -1051,6 +1060,55 @@ mod tests {
         assert!(
             error.to_string().contains("regular file"),
             "the failure did not say why the operand was refused: {error:#}"
+        );
+    }
+
+    /// A name is knowable without reading the file, so refusing an unreadable
+    /// operand is right for a content search and wrong for `--name`: it reports
+    /// a failure for a question that has an answer.
+    #[cfg(unix)]
+    #[test]
+    fn a_name_search_answers_for_a_file_it_may_not_open() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let locked = write(dir.path(), "needle-named.txt", b"secret\n");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root opens a file whatever its mode, so there is nothing to observe
+        // on a machine where this test cannot lock anything.
+        if std::fs::File::open(&locked).is_ok() {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+            return;
+        }
+
+        let by_name = search(
+            &locked,
+            "needle",
+            &Options {
+                subject: Subject::Names,
+                ..Options::default()
+            },
+        );
+        let by_content = search(
+            &locked,
+            "secret",
+            &Options {
+                subject: Subject::Contents,
+                ..Options::default()
+            },
+        );
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert_eq!(
+            paths(&by_name.expect("a name search was refused a file it never needed to open"))
+                .len(),
+            1
+        );
+        // The content search still fails, because that one really cannot be
+        // answered without opening the file.
+        assert!(
+            by_content.is_err(),
+            "an unreadable file answered a content search"
         );
     }
 
