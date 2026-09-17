@@ -282,6 +282,11 @@ impl Daemon {
     fn serve_client(self: &Arc<Self>, stream: UnixStream, lease: Lease) -> Result<()> {
         let id = self.next_subscriber.fetch_add(1, Ordering::Relaxed);
         let (outbound, outbox) = std::sync::mpsc::channel::<Response>();
+        // Cloned before the subscriber is registered: the `?` below returns
+        // without reaching the removal at the end of this function, so
+        // registering first would leave a sender behind for a client that
+        // never existed, and `notify` does not prune the ones that fail.
+        let writing_end = stream.try_clone().context("cannot split the socket")?;
         self.subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -290,7 +295,7 @@ impl Daemon {
         // Everything written to this client goes through one thread, so a
         // notice can never land in the middle of an answer.
         let writer = std::thread::spawn({
-            let mut stream = stream.try_clone().context("cannot split the socket")?;
+            let mut stream = writing_end;
             move || {
                 for message in outbox {
                     if let Err(error) = protocol::write_frame(&mut stream, &message) {

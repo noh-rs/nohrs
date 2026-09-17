@@ -189,7 +189,7 @@ mod tests {
         let lease = leases.take();
         assert_eq!(leases.live(), 1);
 
-        std::thread::spawn({
+        let leaver = std::thread::spawn({
             let leases = Arc::clone(&leases);
             move || {
                 std::thread::sleep(GRACE * 2);
@@ -200,6 +200,9 @@ mod tests {
 
         let started = Instant::now();
         leases.wait_until_idle();
+        // Joined, because a panic stays in the thread it happened on: without
+        // this the assertion above could not fail the test.
+        leaver.join().unwrap();
 
         assert!(
             started.elapsed() >= GRACE * 3,

@@ -69,6 +69,28 @@ impl Client {
         }
     }
 
+    /// Connects to a daemon that is already running, or reports that none is.
+    ///
+    /// `Ok(None)` means the socket said there is nobody there: absent, or left
+    /// behind by a daemon that has gone. Anything else — a directory this user
+    /// may not enter, a daemon from another build — is a failure rather than an
+    /// empty answer, because the two call for different things from the person
+    /// who ran the command.
+    ///
+    /// Unlike [`Self::connect_or_start`], this never starts one, which is what
+    /// `noh index stop` needs: starting a daemon in order to ask it to stop is
+    /// a fork and an indexing pass to accomplish nothing.
+    pub fn connect_if_running(endpoint: &Endpoint) -> Result<Option<Self>> {
+        match Self::connect(endpoint) {
+            Ok(client) => Ok(Some(client)),
+            Err(error) if nobody_is_listening(&error) => {
+                tracing::debug!("no daemon is running: {error:#}");
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Connects to a daemon that is already running.
     pub fn connect(endpoint: &Endpoint) -> Result<Self> {
         let stream = UnixStream::connect(&endpoint.socket)
@@ -180,6 +202,23 @@ impl IndexControl for Client {
     }
 }
 
+/// Whether connecting failed because there is no daemon, rather than because
+/// there is one we could not talk to.
+///
+/// Read off the `io::Error` that `UnixStream::connect` failed with, which
+/// survives in the error's chain: a socket path that does not exist, or one
+/// left behind by a daemon that has gone (nothing is accepting on it).
+fn nobody_is_listening(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            )
+        })
+    })
+}
+
 /// Starts a daemon, unless one is already starting.
 ///
 /// The claim decides: whoever takes it is the daemon, so a client that cannot
@@ -241,7 +280,14 @@ impl Notices {
         protocol::write_frame(&mut stream, &Request::Hello { version: VERSION })?;
         let mut notices = Self { reader };
         match notices.next() {
-            Some(Response::Welcome { .. }) => {}
+            Some(Response::Welcome { version, .. }) if version == VERSION => {}
+            // Checked here as well as in `connect`: this stream is read on its
+            // own connection, so without it a daemon from another build would
+            // be accepted here and its notices read as though they meant what
+            // this build thinks they mean.
+            Some(Response::Welcome { version, .. }) => {
+                bail!("the running daemon speaks version {version}, not {VERSION}")
+            }
             other => bail!("the daemon answered a greeting with {other:?}"),
         }
         drop(client);
@@ -325,8 +371,10 @@ mod tests {
                 if writer.shutdown(std::net::Shutdown::Write).is_err() {
                     return;
                 }
-                let mut ignored = Vec::new();
-                let _ = reader.read_to_end(&mut ignored);
+                let mut drained = Vec::new();
+                if let Err(error) = reader.read_to_end(&mut drained) {
+                    eprintln!("the scripted server stopped reading: {error}");
+                }
             });
 
             Self {
@@ -356,8 +404,13 @@ mod tests {
 
     impl Drop for Scripted {
         fn drop(&mut self) {
-            if let Some(server) = self.server.take() {
-                let _ = server.join();
+            if let Some(server) = self.server.take()
+                && server.join().is_err()
+            {
+                // Not a `panic!`: this runs during unwinding when the test
+                // itself has already failed, and panicking here would replace
+                // that failure's message with an unhelpful one.
+                eprintln!("the scripted server panicked");
             }
         }
     }

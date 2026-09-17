@@ -192,6 +192,14 @@ pub fn search_using(
     open_index: Option<&IndexReader>,
 ) -> Result<Outcome> {
     let matcher = build_matcher(query, options)?;
+    // Before anything else, including the zero-limit shortcut and the choice of
+    // engine: an operand that is not there is the caller having asked for
+    // something that does not exist, and every path out of here would otherwise
+    // report it as "no matches" — the index one included, since a root the
+    // index covers but the disk no longer has yields candidates that quietly
+    // fail their `symlink_metadata` check.
+    std::fs::metadata(root)?;
+
     if options.limit == Some(0) {
         return Ok(Outcome::default());
     }
@@ -245,14 +253,6 @@ fn walk(
 
     let mut searcher = line_searcher();
 
-    // Asked of the operand before the walk starts, because `ignore` reports
-    // the root's own failure as one more walk error — wrapped in layers that
-    // each spell the path into the message again, and indistinguishable from
-    // an empty directory once the walk simply ends. Here the `io::Error`
-    // arrives whole, so a caller can tell "not there" from "not allowed" and
-    // the message says only what went wrong.
-    std::fs::metadata(root)?;
-
     let mut reached_anything = false;
     for entry in walker {
         let entry = match entry {
@@ -281,6 +281,17 @@ fn walk(
         // The root directory is not itself a candidate. A root that names a
         // single file is: searching one file is a legitimate scope.
         if entry.depth() == 0 && is_dir {
+            continue;
+        }
+        // A symlink met along the way is not searched, because reading it would
+        // read a file the scope does not contain: the operand names a tree, and
+        // a link inside it can point anywhere. The walk already declines to
+        // descend through one; this is the same rule for the file it names, and
+        // it is what `grep -r` and ripgrep do. A symlink named as the operand
+        // itself is still searched — that is the caller pointing at a file, not
+        // the walk wandering out of its tree.
+        if entry.depth() > 0 && entry.path_is_symlink() {
+            tracing::debug!("not following {}", entry.path().display());
             continue;
         }
 
@@ -935,6 +946,48 @@ mod tests {
             Some(std::io::ErrorKind::NotFound),
             "the failure did not say what was wrong with the path: {error:#}"
         );
+    }
+
+    /// A search scoped to a tree must not answer with a file that is not in it.
+    /// The walk already declines to descend through a symlinked directory; a
+    /// symlinked *file* was still opened, so its target's contents came back
+    /// under a path inside the scope.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_does_not_bring_the_outside_into_the_scope() {
+        let outside = tempfile::tempdir().unwrap();
+        write(outside.path(), "secret.txt", b"a needle out here\n");
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            dir.path().join("link.txt"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("dirlink")).unwrap();
+
+        let outcome = search(dir.path(), "needle", &Options::default()).unwrap();
+
+        assert!(
+            outcome.results.is_empty(),
+            "a search read through a symlink and out of its scope: {:?}",
+            paths(&outcome)
+        );
+    }
+
+    /// The other side of that rule: a symlink the caller names is the caller
+    /// pointing at a file, not the walk wandering out of its tree.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_named_as_the_operand_is_still_searched() {
+        let outside = tempfile::tempdir().unwrap();
+        write(outside.path(), "secret.txt", b"a needle out here\n");
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), &link).unwrap();
+
+        let outcome = search(&link, "needle", &Options::default()).unwrap();
+
+        assert_eq!(paths(&outcome).len(), 1, "{:?}", paths(&outcome));
     }
 
     /// The other half of the same distinction: a directory the walk cannot read

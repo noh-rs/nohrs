@@ -110,6 +110,23 @@ fn daemon() -> Result<std::convert::Infallible> {
     ))
 }
 
+/// The daemon that is already running, or `None` when there is none.
+///
+/// Unlike [`daemon`], this never starts one — which is what `stop` needs, since
+/// starting a daemon in order to ask it to stop accomplishes nothing and hides
+/// the difference between "nothing was running" and "one is, and would not talk
+/// to us".
+#[cfg(unix)]
+fn running_daemon() -> Result<Option<nohrs_indexd::Client>> {
+    nohrs_indexd::Client::connect_if_running(&nohrs_indexd::Endpoint::for_session())
+        .map_err(|error| Error::Other(format!("{error:#}")))
+}
+
+#[cfg(not(unix))]
+fn running_daemon() -> Result<Option<std::convert::Infallible>> {
+    Ok(None)
+}
+
 impl Backend for ServicesBackend {
     fn status(&self) -> Result<IndexStatus> {
         Self::control()?
@@ -118,19 +135,16 @@ impl Backend for ServicesBackend {
     }
 
     fn stop(&self) -> Result<bool> {
-        match daemon() {
-            Ok(client) => {
+        // Nothing to stop is the ordinary case, not a failure: the index has
+        // no process of its own unless something started one.
+        match running_daemon()? {
+            Some(client) => {
                 client
                     .stop()
                     .map_err(|error| Error::Other(format!("{error:#}")))?;
                 Ok(true)
             }
-            // Nothing to stop is the ordinary case, not a failure: the index
-            // has no process of its own unless something started one.
-            Err(error) => {
-                tracing::debug!("nothing to stop: {error}");
-                Ok(false)
-            }
+            None => Ok(false),
         }
     }
 

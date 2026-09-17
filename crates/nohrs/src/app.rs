@@ -41,12 +41,30 @@ mod search {
     /// Failing to reach one is not fatal. The writer comes back here, which
     /// costs the live updates and nothing else: searches read the index
     /// directly either way.
-    pub(super) fn open() -> anyhow::Result<SearchService> {
+    /// A search service, and whether the daemon is the one keeping it current.
+    ///
+    /// The flag is not cosmetic: subscribing to notices starts a daemon if
+    /// there is none, so following the index on a service that fell back to
+    /// indexing here would start the very process that could not be reached —
+    /// and then this window and that daemon would both want tantivy's single
+    /// writer.
+    pub(super) struct Opened {
+        pub(super) service: SearchService,
+        pub(super) daemon_backed: bool,
+    }
+
+    pub(super) fn open() -> anyhow::Result<Opened> {
         match daemon() {
-            Ok(client) => SearchService::with_control(Arc::new(client)),
+            Ok(client) => Ok(Opened {
+                service: SearchService::with_control(Arc::new(client))?,
+                daemon_backed: true,
+            }),
             Err(error) => {
                 tracing::warn!("indexing in-process: {error:#}");
-                SearchService::new()
+                Ok(Opened {
+                    service: SearchService::new()?,
+                    daemon_backed: false,
+                })
             }
         }
     }
@@ -179,8 +197,8 @@ impl NohrsApp {
                 move |window, cx| {
                     // Initialize SearchService. Failure is non-fatal: the app starts
                     // with full-text search disabled rather than crashing.
-                    let search_service: Option<Arc<SearchService>> = match search::open() {
-                        Ok(service) => Some(Arc::new(service)),
+                    let opened = match search::open() {
+                        Ok(opened) => Some(opened),
                         Err(e) => {
                             tracing::error!(
                                 "Failed to initialize search service; starting with search disabled: {}",
@@ -189,6 +207,9 @@ impl NohrsApp {
                             None
                         }
                     };
+                    let daemon_backed = opened.as_ref().is_some_and(|opened| opened.daemon_backed);
+                    let search_service: Option<Arc<SearchService>> =
+                        opened.map(|opened| Arc::new(opened.service));
 
                     // Kick off initial indexing on GPUI's background executor, which
                     // is a thread pool (replacing tokio::task::spawn_blocking;
@@ -200,7 +221,13 @@ impl NohrsApp {
                         if let Some(job) = service.take_initial_indexing_job() {
                             cx.background_spawn(async move { job.run() }).detach();
                         }
-                        search::follow_the_index(Arc::clone(service), cx);
+                        // Only when the daemon is what keeps the index current.
+                        // Subscribing starts one if there is none, so doing it
+                        // for a service that fell back to indexing here would
+                        // put two writers on one index.
+                        if daemon_backed {
+                            search::follow_the_index(Arc::clone(service), cx);
+                        }
                     }
 
                     let view = cx.new(|cx| {

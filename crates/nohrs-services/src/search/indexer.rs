@@ -278,6 +278,15 @@ impl IndexManager {
                     tally.walked.fetch_add(1, Ordering::Relaxed);
 
                     let path = entry.path();
+                    // A symlink is not indexed, because its target is a file
+                    // the covered tree does not contain and a search scoped to
+                    // that tree would then answer with it. Deliberately not
+                    // reported as reached either: one that used to be a regular
+                    // file is a document to drop, not one to keep.
+                    if entry.depth() > 0 && entry.path_is_symlink() {
+                        return ignore::WalkState::Continue;
+                    }
+
                     let indexed_path = path.to_string_lossy();
                     // Reported as reached even when the entry turns out to be
                     // unreadable below: a file that is here but cannot be read
@@ -1109,6 +1118,30 @@ mod tests {
         assert!(
             !reader.candidates("deep", 10).unwrap().is_empty(),
             "the documents under an unreadable directory were dropped"
+        );
+    }
+
+    /// The index covers a tree, and a search scoped to that tree answers from
+    /// it — so a symlink's target, which the tree does not contain, must not
+    /// get in. A document that becomes a symlink is dropped rather than kept.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_not_indexed_and_stops_being_indexed() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "a needle out here\n").unwrap();
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        let link = content.join("link.txt");
+        std::os::unix::fs::symlink(outside.path().join("secret.txt"), &link).unwrap();
+
+        manager.index_home(Refresh::Everything, None).unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), content.clone())
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            !reader.candidates("needle", 10).unwrap().contains(&link),
+            "a symlink's target was indexed as though it were in the tree"
         );
     }
 

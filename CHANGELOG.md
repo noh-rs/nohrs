@@ -16,8 +16,10 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 - `nohrs-indexd` owns the search index's writer and the file watcher beside it.
   tantivy allows one writer across all processes, and the watcher's output is a
-  stream of write requests, so with both in one place "the daemon is running"
-  and "the index is keeping up with the filesystem" are the same fact. It is
+  stream of write requests, so putting both in one place makes "the index is
+  keeping up with the filesystem" a single thing to check rather than something
+  inferred from two — the daemon outlives a watcher it failed to install, and
+  says so, which is what `noh index status`'s `watching` line reports. It is
   not installed or started at login: the first process that wants it starts it,
   and it stops once its last client has been gone for 90 seconds — so the only
   thing to quit is nohrs. Searches never go through it; readers open the index
@@ -38,8 +40,11 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   covers and how much it holds, and build it on a machine that never opens the
   GUI. Status opens the index for reading only, so it runs beside the app.
   `build` is incremental: it re-reads only the files whose modification time
-  differs from the index's, and `--full` forces the rest. Both ask the daemon,
-  so a build no longer fails because the app is open, and `status` reports
+  differs from the index's, and `--full` forces the rest. Both ask the daemon
+  where there is one, so a build no longer fails because the app is open;
+  where there is not — no unix sockets, or a daemon that cannot be started —
+  each falls back to indexing in-process and can still find the writer held
+  elsewhere, which it reports rather than hides. `status` reports
   whether anything is watching — the difference between "up to date" and "up to
   date as of whenever this last ran". `noh index stop` stops the daemon without
   touching the index. See [`docs/cli.md`](docs/cli.md) §5.

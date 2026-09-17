@@ -82,11 +82,18 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        // Whatever the test did, nothing is left running.
-        if let Ok(None) = self.daemon.try_wait() {
-            let _ = self.daemon.kill();
+        // Whatever the test did, nothing is left running. Reported rather than
+        // asserted: this runs while a failing test is unwinding, and panicking
+        // here would bury that test's own message. A daemon left behind holds a
+        // socket the next run would trip over, so it is worth saying out loud.
+        if let Ok(None) = self.daemon.try_wait()
+            && let Err(error) = self.daemon.kill()
+        {
+            eprintln!("could not stop the daemon under test: {error}");
         }
-        let _ = self.daemon.wait();
+        if let Err(error) = self.daemon.wait() {
+            eprintln!("could not reap the daemon under test: {error}");
+        }
     }
 }
 

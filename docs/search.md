@@ -34,7 +34,7 @@
 |------|------|
 | **SQLite** | ファイルメタデータ (path, mtime, size, inode, hash)、削除追跡、状態管理、差分検出。FTS5 で trigram 全文検索 (V2) |
 | **Tantivy (V3)** | 全文検索インデックスの本命、BM25 ランキング、コード対応 ngrams、identifier 分解 (camelCase / snake_case) |
-| **notify-debouncer-mini** | ファイルシステム変更検出 (debounce 500ms) |
+| **notify-debouncer-mini** | ファイルシステム変更検出 (debounce 2s、`nohrs-indexd` 内) |
 
 ---
 
@@ -187,8 +187,10 @@ PC のリソースを過度に消費しないよう、適応的に throttle し�
 | **Explorer 内検索バー (`Cmd+F`)** | active pane の current dir 配下のみ scope |
 | **`noh search`** ([`cli.md`](./cli.md) §4) | オペランドで指定したツリー (既定はカレントディレクトリ) |
 
-`noh search` も Explorer も、index が当該スコープを覆っていれば index に候補を選ばせ (BM25 順)、覆っていなければ
-walk に落ちます。**読み手は全員ロックを取らない `IndexReader` 経由で直接 index を読み**、書き込みだけが
+`noh search` も Explorer も、index が当該スコープを覆っていて **かつクエリとオプションを index で表現できる**
+ときに限り、index に候補を選ばせます (BM25 順)。スコープを覆っていない場合に加えて、正規表現クエリ、
+`--max-depth`、隠しファイルを含める指定、ignore ファイルを無視する指定のいずれかがあるときも walk に落ちます
+(index はそれらを表現できないため)。**読み手は全員ロックを取らない `IndexReader` 経由で直接 index を読み**、書き込みだけが
 `nohrs-indexd` に集約されます。デーモンは検索クエリを一切受け取らないので、落ちていても・古くても・居なくても
 検索は動きます (鮮度が止まるだけ) ([ADR 0009](./adr/0009-indexd-owns-the-index-writer.md))。
 
