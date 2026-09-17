@@ -1,0 +1,217 @@
+---
+title: A daemon nobody installs
+date: '2026-09-17'
+description: Our search index needed one writer and no resident process. The refcount that
+  makes that work has to survive a kill -9, which rules out Drop and rules in the kernel.
+author: shuya goto
+tags: ['engineering']
+canonical: en
+---
+
+Nohrs keeps its own search index, so that finding a file does not depend on the operating
+system's indexer having been allowed to look at the directory you keep your work in. The
+index is a [tantivy](https://github.com/quickwit-oss/tantivy) index, and tantivy allows
+exactly one writer across all processes.
+
+For a while we did the simplest thing: the app opened a writer at launch and held it until
+it quit. That is fine right up until anything else wants to write. Run `noh index build`
+from a terminal with the app open and it is refused — by design, by tantivy, correctly, and
+uselessly. The index was the property of whichever process got there first.
+
+So: where does the writer live?
+
+## "There is already a resident process"
+
+The obvious answer is the launcher. Nohrs has a global hotkey, so a process is resident
+whether or not a window is open; putting the index writer in it adds nothing that is not
+already running.
+
+It is the wrong answer, and the reason is worth stating because it is not about residency.
+
+The launcher has a latency budget. Hotkey to window is under 100ms, keystroke to results
+under 50ms. Indexing is the other kind of work entirely: throughput-bound, IO-heavy, and
+about to get heavier — a tantivy writer with a 50MB heap and its merge threads today, an
+embedding model of several hundred megabytes when we get to vector search. Those two things
+in one address space share an allocator, a thread pool and a fate. An out-of-memory kill
+while indexing takes the user's hotkey with it.
+
+There is also a smaller, sharper fact: **the launcher does not read that index**. Its
+keystroke path is an in-memory index of file *names*; the tantivy index answers content
+searches. Co-locating them buys nothing at all.
+
+## "But nobody likes daemons"
+
+They do not, and our own README says "no dependency on the OS search daemon" — which would
+read poorly next to a login item of our own.
+
+But the objection is not really to daemons. It is to processes that start at login, consume
+something invisibly, cannot be found or stopped, and have to be registered with launchd or
+systemd to exist. A process that starts when it is wanted and leaves when it is not is a
+different animal, and people run dozens of them without complaint.
+
+So `nohrs-indexd` is that. Nothing installs it. The first process that wants the index kept
+current starts it, and it exits once its last client has been gone for ninety seconds. The
+launcher is resident anyway, so in practice the daemon's lifetime is the app's: quit nohrs
+and both go. Nothing to find, nothing to stop, nothing in your login items.
+
+Which leaves one question, and it is the interesting one.
+
+## How does it know when to die?
+
+"Exit when the last client goes away" is `Arc`. Hold one per client, drop it when the client
+leaves, and the last drop takes the process down with it. In one address space that is three
+lines of Rust.
+
+Across processes it is not, and `Drop` is the reason:
+
+1. **`Drop` does not run on `SIGKILL`.** It does not run on an out-of-memory kill, or a
+   segfault, or a power failure. A refcount that is correct only when clients exit politely
+   is a refcount that is wrong exactly when you need it.
+2. **`Drop` does not cross an address space.** A destructor in the client cannot decrement a
+   counter in the daemon.
+
+A heartbeat would paper over the first and not the second. Watching client pids races against
+pid reuse. `PR_SET_PDEATHSIG` ties a child to its parent, and our daemon deliberately
+outlives whatever started it — the starter may be a one-shot command that exits a second
+later.
+
+The answer is that the kernel is already doing this, for exactly these semantics. **A unix
+socket connection is refcounted by the kernel**, and when a process ends — however it
+ends — its file descriptors are closed. The other end reads end-of-stream. "How many clients
+are alive" and "how many connections are open" are the same number, and that number is
+correct under `kill -9` because nothing in userspace was asked to maintain it.
+
+So: `Arc` in the model, the kernel in the implementation, and Rust supplying the shape on
+both sides.
+
+## The shape
+
+On the daemon's side the lease is an ordinary RAII type, and the one design decision that
+matters is that it is **taken by value by the function that serves the connection**:
+
+```rust
+/// Serves one client until its end of the socket closes.
+///
+/// `lease` is taken by value and never handed on: this function returning is what
+/// releases it, and this function returns when the client's end closes — which the
+/// kernel does whatever became of the client.
+fn serve_client(&self, stream: UnixStream, lease: Lease) -> Result<()> {
+    let mut reader = BufReader::new(stream);
+    while let Some(request) = read_frame::<Request>(&mut reader)? {
+        // ...
+    }
+    Ok(()) // the lease drops here
+}
+```
+
+There is no way to serve a client without holding a lease, and no way to keep one after the
+serving ends. The releasing is not a step anyone can forget, because it is not a step.
+
+## Why it is not literally an `Arc`
+
+We wanted a grace period. A `noh index build` in a shell script, followed a second later by
+another, should not pay to start a second daemon. So the daemon waits ninety seconds after
+the last client leaves before it goes.
+
+That breaks the pure last-drop formulation, and it is worth being precise about why: `Arc`
+tells you the count reached zero and then forgets everything, **including how to call off what
+that set in motion**. A client arriving during the countdown has to cancel it, and there is
+nothing left to cancel with.
+
+So the count and the moment it reached zero are kept explicitly:
+
+```rust
+struct State {
+    live: usize,
+    /// When the count last reached zero, and `None` while anyone holds a lease.
+    /// This is what lets a client cancel a shutdown that is pending.
+    idle_since: Option<Instant>,
+}
+```
+
+and the wait is a condition variable rather than a poll, so a daemon with nothing to do costs
+nothing to keep around:
+
+```rust
+pub fn wait_until_idle(&self) {
+    let mut state = self.lock();
+    loop {
+        match state.idle_since {
+            // Somebody is connected. Nothing to do until that changes.
+            None => state = self.wait(state),
+            Some(since) => match self.grace.checked_sub(since.elapsed()) {
+                None => return,
+                Some(remaining) => state = self.wait_for(state, remaining),
+            },
+        }
+    }
+}
+```
+
+The nice property of pulling this out as its own type is that it tests without a socket in
+sight: take a lease, drop it, and assert on when the wait returns.
+
+<Callout title="The other half">
+  Two clients that both want a daemon will both try to start one. The loser has to stand
+  down, and it cannot be decided by "is there a socket file", because a socket file outlives
+  the process that made it. An advisory lock (`flock`) held for the daemon's whole life
+  decides instead — and the kernel releases *that* when the holder dies too, however it
+  dies. A pid file would have needed second-guessing; a lock cannot lie.
+</Callout>
+
+## What makes it safe to be a daemon at all
+
+One invariant does most of the work here: **searches never go through the daemon**.
+
+Readers open the tantivy index directly, from as many processes at once as you like, because
+reading needs no lock. The socket carries write requests, questions about state, and notices
+that something has been committed. It never carries a query.
+
+That is not an optimisation. It is what makes the daemon *optional infrastructure* rather
+than a dependency. If it is down, wedged, or a version behind, searches still answer — from
+an index that is a little staler than it would otherwise be. There is no failure mode where
+the user types a query and gets an error because a background process they did not know
+about is unhappy. It also means the thing could be added in stages, and taken out again, with
+the read path untouched throughout.
+
+## Testing a kill
+
+The test that matters cannot be written in-process, because the whole claim is about what
+happens when a process does not get to run any code on the way out. So there is a tiny helper
+binary that connects and sleeps, and the test kills it:
+
+```rust
+let mut held = Command::new(env!("CARGO_BIN_EXE_holds_a_connection"))
+    .arg(&fixture.endpoint.socket)
+    .spawn()
+    .unwrap();
+until("the killable client to be counted", || {
+    probe.status().unwrap().clients == Some(2)
+});
+
+// From here the killable client is the only thing holding the daemon up.
+drop(probe);
+std::thread::sleep(GRACE * 2);
+assert!(!gone(&fixture.endpoint.socket), "the daemon stopped while a client still held it");
+
+held.kill().unwrap();
+until("the daemon to stop", || gone(&fixture.endpoint.socket));
+```
+
+The first assertion is the one that earns its keep. Without it the test passes when the
+helper fails to connect at all — which is exactly what happened on the first run, and exactly
+the kind of green that means nothing.
+
+## Where this leaves us
+
+The writer and the file watcher now live together in `nohrs-indexd`, which means "the daemon
+is running" and "the index is keeping up with the filesystem" are one fact rather than two,
+and something can check it. `noh index status` prints it. Nothing starts at login, nothing is
+registered with the system, and the only thing a person has to quit is nohrs.
+
+When vector search arrives and indexing starts wanting hundreds of megabytes of model
+weights, it has somewhere to go that is not the process holding your hotkey.
+
+The code is in [noh-rs/nohrs](https://github.com/noh-rs/nohrs); the reasoning, including the
+version of this we rejected, is in
+[ADR 0009](https://github.com/noh-rs/nohrs/blob/develop/docs/adr/0009-indexd-owns-the-index-writer.md).
