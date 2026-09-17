@@ -1,4 +1,4 @@
-use super::indexer::IndexManager;
+use super::indexer::{IndexManager, Refresh};
 use super::watcher::FileWatcher;
 use super::{SearchBackend, SearchResult, SearchScope};
 use anyhow::{Context, Result};
@@ -14,52 +14,31 @@ pub struct InitialIndexingJob {
 }
 
 impl InitialIndexingJob {
-    /// Runs initial indexing if the index is empty or its schema is outdated.
+    /// Brings the index up to date with the content root at startup.
     /// Synchronous and blocking — intended to be driven by `cx.background_spawn`.
+    ///
+    /// Runs on every launch rather than only when the index is empty. The
+    /// watcher can only see changes made while the app is running, so what
+    /// happened between quitting and launching again — a checkout, a download,
+    /// an editor session — reached the index nowhere else, and skipping the
+    /// pass left those files answering with their old contents indefinitely.
+    /// The pass is [`Refresh::Changed`], so what it costs on a warm index is a
+    /// walk and a `stat` per file rather than a re-read of the tree.
     pub fn run(self) {
         let InitialIndexingJob {
             index_manager,
             mut progress_tx,
         } = self;
 
-        // Check if schema has required fields (detects schema changes)
-        let schema = index_manager.index().schema();
-        let has_filename_field = schema.get_field("filename").is_ok();
-
-        if !has_filename_field {
-            tracing::info!("Schema outdated (missing filename field), forcing full indexing...");
-            *progress_tx.borrow_mut() = 0.0;
-            if let Err(e) = index_manager.index_home(Some(progress_tx)) {
-                tracing::error!("Initial indexing failed: {}", e);
-            }
-            return;
-        }
-
-        // Check if index already has documents
-        match index_manager.index().reader() {
-            Ok(reader) => {
-                let doc_count = reader.searcher().num_docs();
-                if doc_count == 0 {
-                    tracing::info!("Index is empty, starting full indexing...");
-                    *progress_tx.borrow_mut() = 0.0; // Reset to 0 for indexing
-                    if let Err(e) = index_manager.index_home(Some(progress_tx)) {
-                        tracing::error!("Initial indexing failed: {}", e);
-                    }
-                } else {
-                    tracing::info!(
-                        "Index already has {} documents, skipping initial indexing",
-                        doc_count
-                    );
-                    // Progress stays at 1.0 (done)
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to read index, running full indexing: {}", e);
-                *progress_tx.borrow_mut() = 0.0;
-                if let Err(e) = index_manager.index_home(Some(progress_tx)) {
-                    tracing::error!("Initial indexing failed: {}", e);
-                }
-            }
+        *progress_tx.borrow_mut() = 0.0;
+        match index_manager.index_home(Refresh::Changed, Some(progress_tx)) {
+            Ok(report) => tracing::info!(
+                "index up to date: {} written, {} unchanged, {} removed",
+                report.indexed,
+                report.unchanged,
+                report.removed
+            ),
+            Err(error) => tracing::error!("Initial indexing failed: {}", error),
         }
     }
 }

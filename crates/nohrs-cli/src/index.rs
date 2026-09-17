@@ -15,15 +15,34 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use nohrs_core::errors::{Error, Result};
-use nohrs_services::search::indexer::{IndexManager, IndexReader};
+use nohrs_services::search::indexer::{IndexManager, IndexReader, Refresh};
 
 /// The `noh index` subcommands.
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum Command {
     /// Report where the index is, what it covers, and how much it holds.
     Status,
-    /// Build or refresh the index. Takes the index writer for the duration.
-    Build,
+    /// Bring the index up to date. Takes the index writer for the duration.
+    Build(BuildArgs),
+}
+
+/// Flags for `noh index build`.
+#[derive(clap::Args, Debug, Default, Clone, Copy)]
+pub struct BuildArgs {
+    /// Re-read every file, instead of only those whose modification time has
+    /// changed since the last pass.
+    #[arg(long)]
+    pub full: bool,
+}
+
+impl BuildArgs {
+    fn refresh(self) -> Refresh {
+        if self.full {
+            Refresh::Everything
+        } else {
+            Refresh::Changed
+        }
+    }
 }
 
 /// What `status` found.
@@ -40,9 +59,13 @@ pub struct Status {
 /// What `build` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Built {
-    /// How many documents the index holds afterwards.
-    pub documents: u64,
-    /// How long the build took.
+    /// Documents written, whether new or replacing an older one.
+    pub indexed: usize,
+    /// Files left alone because the index already had them at that time.
+    pub unchanged: usize,
+    /// Documents dropped because the file is no longer there.
+    pub removed: usize,
+    /// How long the pass took.
     pub took: Duration,
 }
 
@@ -51,8 +74,8 @@ pub struct Built {
 pub trait Backend {
     /// Where the index is and what it holds.
     fn status(&self) -> Result<Status>;
-    /// Build or refresh it, returning what it holds afterwards.
-    fn build(&self) -> Result<Built>;
+    /// Bring it up to date, returning what the pass did.
+    fn build(&self, refresh: Refresh) -> Result<Built>;
 }
 
 /// The [`Backend`] used in production, delegating to `nohrs-services`.
@@ -85,17 +108,20 @@ impl Backend for ServicesBackend {
         })
     }
 
-    fn build(&self) -> Result<Built> {
+    fn build(&self, refresh: Refresh) -> Result<Built> {
         let started = Instant::now();
         let manager = IndexManager::new().map_err(|error| Error::Other(format!("{error:#}")))?;
         // No progress channel: a one-shot command has nowhere to put a progress
         // bar that a pipe would not have to read around.
-        manager
-            .index_home(None)
+        let report = manager
+            .index_home(refresh, None)
             .map_err(|error| Error::Other(format!("{error:#}")))?;
-        let took = started.elapsed();
-        let documents = self.status()?.documents.unwrap_or_default();
-        Ok(Built { documents, took })
+        Ok(Built {
+            indexed: report.indexed,
+            unchanged: report.unchanged,
+            removed: report.removed,
+            took: started.elapsed(),
+        })
     }
 }
 
@@ -138,7 +164,7 @@ impl<'a> Session<'a> {
     pub fn run(self, command: &Command) -> io::Result<Summary> {
         match command {
             Command::Status => self.status(),
-            Command::Build => self.build(),
+            Command::Build(args) => self.build(*args),
         }
     }
 
@@ -162,20 +188,25 @@ impl<'a> Session<'a> {
         Ok(Summary::default())
     }
 
-    fn build(self) -> io::Result<Summary> {
+    fn build(self, args: BuildArgs) -> io::Result<Summary> {
         let status = self.backend.status();
         if let Ok(status) = &status {
             writeln!(self.output, "indexing {}", status.content_root.display())?;
-            // Said before the work rather than after it: a full build of a home
-            // directory is minutes of silence otherwise.
+            // Said before the work rather than after it: a first pass over a
+            // home directory is minutes of silence otherwise.
             self.output.flush()?;
         }
-        match self.backend.build() {
+        match self.backend.build(args.refresh()) {
             Ok(built) => {
+                // The counts are what say whether the pass had anything to do,
+                // which is the difference between "nothing has changed" and
+                // "the index is not being updated".
                 writeln!(
                     self.output,
-                    "indexed {} documents in {:.1}s",
-                    built.documents,
+                    "indexed {}, unchanged {}, removed {} in {:.1}s",
+                    built.indexed,
+                    built.unchanged,
+                    built.removed,
                     built.took.as_secs_f64()
                 )?;
                 Ok(Summary::default())
@@ -198,6 +229,7 @@ mod tests {
     struct FakeBackend {
         status: Result<Status>,
         build: Result<Built>,
+        asked_for: std::cell::Cell<Option<Refresh>>,
     }
 
     impl FakeBackend {
@@ -209,9 +241,12 @@ mod tests {
                     documents,
                 }),
                 build: Ok(Built {
-                    documents: documents.unwrap_or_default(),
+                    indexed: documents.unwrap_or_default() as usize,
+                    unchanged: 0,
+                    removed: 0,
                     took: Duration::from_millis(1500),
                 }),
+                asked_for: std::cell::Cell::new(None),
             }
         }
     }
@@ -224,7 +259,8 @@ mod tests {
             }
         }
 
-        fn build(&self) -> Result<Built> {
+        fn build(&self, refresh: Refresh) -> Result<Built> {
+            self.asked_for.set(Some(refresh));
             match &self.build {
                 Ok(built) => Ok(*built),
                 Err(error) => Err(Error::Other(crate::message(error))),
@@ -282,14 +318,25 @@ mod tests {
     fn build_says_what_it_is_about_to_do_and_then_what_it_did() {
         let backend = FakeBackend::holding(Some(7));
 
-        let (output, errors, summary) = run(&backend, &Command::Build);
+        let (output, errors, summary) = run(&backend, &Command::Build(BuildArgs::default()));
 
         assert_eq!(
             output,
-            "indexing /home/me/Documents\nindexed 7 documents in 1.5s\n"
+            "indexing /home/me/Documents\nindexed 7, unchanged 0, removed 0 in 1.5s\n"
         );
         assert!(errors.is_empty());
         assert_eq!(summary.exit_code(), 0);
+    }
+
+    #[test]
+    fn build_reads_only_what_changed_unless_full_is_given() {
+        let backend = FakeBackend::holding(Some(7));
+        run(&backend, &Command::Build(BuildArgs::default()));
+        assert_eq!(backend.asked_for.get(), Some(Refresh::Changed));
+
+        let backend = FakeBackend::holding(Some(7));
+        run(&backend, &Command::Build(BuildArgs { full: true }));
+        assert_eq!(backend.asked_for.get(), Some(Refresh::Everything));
     }
 
     #[test]
@@ -302,7 +349,7 @@ mod tests {
             ..FakeBackend::holding(Some(7))
         };
 
-        let (_, errors, summary) = run(&backend, &Command::Build);
+        let (_, errors, summary) = run(&backend, &Command::Build(BuildArgs::default()));
 
         assert_eq!(
             errors,

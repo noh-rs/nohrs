@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -8,6 +9,68 @@ use tantivy::{Index, IndexWriter}; // Import trait for add_text etc? No, Tantivy
 
 /// How much heap tantivy's writer may use while indexing.
 const WRITER_HEAP_BYTES: usize = 50_000_000;
+
+/// How much of the content root an indexing pass re-reads.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Refresh {
+    /// Read only the files whose modification time differs from the index's.
+    #[default]
+    Changed,
+    /// Read every file, whatever the index already holds. For when the index
+    /// is suspected of being wrong rather than merely out of date.
+    Everything,
+}
+
+/// What one indexing pass did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct IndexReport {
+    /// Documents written, whether new or replacing an older one.
+    pub indexed: usize,
+    /// Files left alone because the index already had them at that time.
+    pub unchanged: usize,
+    /// Documents dropped because the file is no longer there.
+    pub removed: usize,
+}
+
+/// The schema fields an indexing pass writes, looked up once.
+struct Fields {
+    path: Field,
+    filename: Field,
+    content: Field,
+    last_modified: Field,
+    is_directory: Field,
+}
+
+impl Fields {
+    fn of(schema: &Schema) -> Result<Self> {
+        let field = |name: &str| {
+            schema
+                .get_field(name)
+                .with_context(|| format!("Schema error: {name} field missing"))
+        };
+        Ok(Self {
+            path: field("path")?,
+            filename: field("filename")?,
+            content: field("content")?,
+            last_modified: field("last_modified")?,
+            is_directory: field("is_directory")?,
+        })
+    }
+}
+
+/// When the file was last modified, in nanoseconds since the epoch.
+///
+/// `None` where the platform or filesystem does not say, which costs that file
+/// a re-read on every pass — the only safe reading of "no idea when this
+/// changed".
+fn modified_nanos(metadata: &fs::Metadata) -> Option<u64> {
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|since_epoch| u64::try_from(since_epoch.as_nanos()).unwrap_or(u64::MAX))
+}
 
 /// Owns the tantivy index and its writer, and performs full and incremental indexing.
 pub struct IndexManager {
@@ -44,13 +107,14 @@ impl IndexManager {
             let existing_index = Index::open_in_dir(&index_path)?;
             let existing_schema = existing_index.schema();
 
-            // Check if schema has required fields (e.g., filename was added later)
-            if existing_schema.get_field("filename").is_err()
-                || existing_schema.get_field("is_directory").is_err()
-            {
-                tracing::info!(
-                    "Schema outdated (missing filename or is_directory field), recreating index..."
-                );
+            // The whole schema is compared, not just which fields exist: a field
+            // whose options changed is as unusable as a missing one. That is not
+            // hypothetical — `last_modified` became stored so that an
+            // incremental pass has a time to compare against, and an index left
+            // by the older schema would answer "no time recorded" for every
+            // document and re-read the whole tree on every pass, forever.
+            if existing_schema != schema {
+                tracing::info!("Index schema is out of date, recreating index...");
                 drop(existing_index);
                 // Delete old index
                 if let Err(e) = fs::remove_dir_all(&index_path) {
@@ -112,8 +176,11 @@ impl IndexManager {
         // content: indexed but not stored (for full text search)
         schema_builder.add_text_field("content", TEXT);
 
-        // last_modified: fast field for sorting or filtering
-        schema_builder.add_u64_field("last_modified", FAST);
+        // last_modified: stored as well as fast, because an incremental pass
+        // compares it against the file on disk to decide whether to read the
+        // file at all (see `index_home`). Without it in the document there is
+        // nothing to compare, and every pass is a full re-read.
+        schema_builder.add_u64_field("last_modified", FAST | STORED);
 
         // is_directory: fast field (0=false, 1=true)
         schema_builder.add_u64_field("is_directory", FAST | STORED);
@@ -121,37 +188,39 @@ impl IndexManager {
         schema_builder.build()
     }
 
-    // writer() helper removed as we use shared writer
-
-    /// Indexes the content root from scratch, reporting progress through `progress_tx` if given.
+    /// Indexes the content root, reporting progress through `progress_tx` if given.
+    ///
+    /// [`Refresh::Changed`] reads only the files whose modification time differs
+    /// from the one in the index, which is what makes this affordable to run on
+    /// every launch and from `noh index build`. Either way, documents whose file
+    /// has since disappeared are removed: a pass that only ever adds leaves a
+    /// deleted file answering searches forever.
     #[tracing::instrument(
         target = "nohrs::op",
         name = "index.build_home",
         level = "debug",
-        skip_all
+        skip_all,
+        fields(refresh = ?refresh)
     )]
-    pub fn index_home(&self, progress_tx: Option<postage::watch::Sender<f32>>) -> Result<()> {
-        self.with_writer(|writer| self.index_home_with(writer, progress_tx))
+    pub fn index_home(
+        &self,
+        refresh: Refresh,
+        progress_tx: Option<postage::watch::Sender<f32>>,
+    ) -> Result<IndexReport> {
+        self.with_writer(|writer| self.index_home_with(writer, refresh, progress_tx))
     }
 
     fn index_home_with(
         &self,
         writer: &mut IndexWriter,
+        refresh: Refresh,
         mut progress_tx: Option<postage::watch::Sender<f32>>,
-    ) -> Result<()> {
-        let schema = self.index.schema();
-        let path_field = schema
-            .get_field("path")
-            .context("Schema error: path field missing")?;
-        let filename_field = schema
-            .get_field("filename")
-            .context("Schema error: filename field missing")?;
-        let content_field = schema
-            .get_field("content")
-            .context("Schema error: content field missing")?;
-        let is_directory_field = schema
-            .get_field("is_directory")
-            .context("Schema error: is_directory field missing")?;
+    ) -> Result<IndexReport> {
+        let fields = Fields::of(&self.index.schema())?;
+        // What the index holds now, by path. Entries are taken out as the walk
+        // reaches them, so whatever is left at the end is a document whose file
+        // is gone.
+        let mut known = self.indexed_modifications(fields.path)?;
 
         // 1. Count files if progress tracking is enabled
         let mut total_files = 0;
@@ -175,45 +244,64 @@ impl IndexManager {
             .git_ignore(true)
             .build();
 
+        let mut report = IndexReport::default();
         let mut processed = 0;
         for result in walker {
-            match result {
-                Ok(entry) => {
-                    let path = entry.path();
-                    if path.is_file() {
-                        if let Err(e) = self.index_single_file(
-                            path,
-                            writer,
-                            path_field,
-                            filename_field,
-                            content_field,
-                            is_directory_field,
-                        ) {
-                            tracing::warn!("Failed to index file {:?}: {}", path, e);
-                        }
-                    } else if path.is_dir() {
-                        if let Err(e) = self.index_single_directory(
-                            path,
-                            writer,
-                            path_field,
-                            filename_field,
-                            content_field,
-                            is_directory_field,
-                        ) {
-                            tracing::warn!("Failed to index directory {:?}: {}", path, e);
-                        }
-                    }
-
-                    // Update progress
-                    processed += 1;
-                    if let Some(tx) = &mut progress_tx {
-                        if total_files > 0 && processed % 100 == 0 {
-                            *tx.borrow_mut() = processed as f32 / total_files as f32;
-                        }
-                    }
+            let entry = match result {
+                Ok(entry) => entry,
+                Err(err) => {
+                    tracing::warn!("Walk error: {}", err);
+                    continue;
                 }
-                Err(err) => tracing::warn!("Walk error: {}", err),
+            };
+
+            // Counted before anything can skip the entry, so progress reaches
+            // 1.0 whatever the walk runs into.
+            processed += 1;
+            if let Some(tx) = &mut progress_tx {
+                if total_files > 0 && processed % 100 == 0 {
+                    *tx.borrow_mut() = processed as f32 / total_files as f32;
+                }
             }
+
+            let path = entry.path();
+            let indexed_path = path.to_string_lossy().into_owned();
+            // Taken out even when the entry turns out to be unreadable below:
+            // a file that is here but cannot be read is not a file that is gone.
+            let previously = known.remove(&indexed_path).flatten();
+
+            let metadata = match fs::metadata(path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    tracing::debug!("cannot stat {}: {error}", path.display());
+                    continue;
+                }
+            };
+            let modified = modified_nanos(&metadata);
+            // A file with no readable modification time is re-read every pass:
+            // there is nothing to tell us it has not changed.
+            if refresh == Refresh::Changed && modified.is_some() && previously == modified {
+                report.unchanged += 1;
+                continue;
+            }
+
+            let indexed = if metadata.is_file() {
+                self.index_single_file(path, &metadata, modified, writer, &fields)
+            } else if metadata.is_dir() {
+                self.index_single_directory(path, modified, writer, &fields)
+            } else {
+                continue;
+            };
+            match indexed {
+                Ok(()) => report.indexed += 1,
+                Err(error) => tracing::warn!("Failed to index {:?}: {}", path, error),
+            }
+        }
+
+        // 3. Drop what the walk never reached.
+        for (gone, _) in known {
+            writer.delete_term(Term::from_field_text(fields.path, &gone));
+            report.removed += 1;
         }
 
         if let Some(tx) = &mut progress_tx {
@@ -221,28 +309,62 @@ impl IndexManager {
         }
 
         writer.commit()?;
-        Ok(())
+        Ok(report)
+    }
+
+    /// The modification time the index holds for each path it knows.
+    ///
+    /// The outer `Option` of the value is "the document carries no time", which
+    /// an index written before `last_modified` was stored does for every
+    /// document; those are re-read once and carry one afterwards.
+    fn indexed_modifications(&self, path_field: Field) -> Result<HashMap<String, Option<u64>>> {
+        let schema = self.index.schema();
+        let modified_field = schema
+            .get_field("last_modified")
+            .context("Schema error: last_modified field missing")?;
+        let reader = self.index.reader()?;
+        let searcher = reader.searcher();
+
+        let mut known = HashMap::new();
+        for segment_reader in searcher.segment_readers() {
+            let store = segment_reader.get_store_reader(1)?;
+            for doc_id in segment_reader.doc_ids_alive() {
+                let document: TantivyDocument = store.get(doc_id)?;
+                let Some(path) = document
+                    .get_first(path_field)
+                    .and_then(|value| value.as_str())
+                else {
+                    continue;
+                };
+                let modified = document
+                    .get_first(modified_field)
+                    .and_then(|value| value.as_u64());
+                known.insert(path.to_string(), modified);
+            }
+        }
+        Ok(known)
     }
 
     fn index_single_directory(
         &self,
         path: &Path,
+        modified: Option<u64>,
         writer: &mut IndexWriter,
-        path_field: Field,
-        filename_field: Field,
-        content_field: Field,
-        is_directory_field: Field,
+        fields: &Fields,
     ) -> Result<()> {
         let path_str = path.to_string_lossy();
         let filename = path.file_name().unwrap_or_default().to_string_lossy();
 
         let mut doc = TantivyDocument::default();
-        doc.add_text(path_field, &path_str);
-        doc.add_text(filename_field, &filename);
-        doc.add_text(content_field, &filename); // Allow searching dir by name content
-        doc.add_u64(is_directory_field, 1);
+        doc.add_text(fields.path, &path_str);
+        doc.add_text(fields.filename, &filename);
+        doc.add_text(fields.content, &filename); // Allow searching dir by name content
+        doc.add_u64(fields.is_directory, 1);
+        if let Some(modified) = modified {
+            doc.add_u64(fields.last_modified, modified);
+        }
 
-        writer.delete_term(Term::from_field_text(path_field, &path_str));
+        writer.delete_term(Term::from_field_text(fields.path, &path_str));
         writer.add_document(doc)?;
         Ok(())
     }
@@ -250,13 +372,11 @@ impl IndexManager {
     fn index_single_file(
         &self,
         path: &Path,
+        metadata: &fs::Metadata,
+        modified: Option<u64>,
         writer: &mut IndexWriter,
-        path_field: Field,
-        filename_field: Field,
-        content_field: Field,
-        is_directory_field: Field,
+        fields: &Fields,
     ) -> Result<()> {
-        let metadata = fs::metadata(path)?;
         if metadata.len() > 10 * 1024 * 1024 {
             // Skip files larger than 10MB
             tracing::debug!("Skipping large file: {:?}", path);
@@ -282,14 +402,17 @@ impl IndexManager {
                 let searchable_content = format!("{}\n{}", path_str, content);
 
                 let mut doc = TantivyDocument::default();
-                doc.add_text(path_field, &path_str);
-                doc.add_text(filename_field, &filename);
-                doc.add_text(content_field, &searchable_content);
-                doc.add_u64(is_directory_field, 0);
+                doc.add_text(fields.path, &path_str);
+                doc.add_text(fields.filename, &filename);
+                doc.add_text(fields.content, &searchable_content);
+                doc.add_u64(fields.is_directory, 0);
+                if let Some(modified) = modified {
+                    doc.add_u64(fields.last_modified, modified);
+                }
 
                 // Delete existing doc with same path to avoid duplicates (upsert)
                 // Note: This matches exact path string.
-                writer.delete_term(Term::from_field_text(path_field, &path_str));
+                writer.delete_term(Term::from_field_text(fields.path, &path_str));
                 writer.add_document(doc)?;
             }
             Err(_) => {
@@ -326,27 +449,33 @@ impl IndexManager {
     }
 
     fn process_changes_with(&self, writer: &mut IndexWriter, paths: &[PathBuf]) -> Result<()> {
-        let schema = self.index.schema();
-        let path_field = schema.get_field("path").context("Schema error")?;
-        let filename_field = schema.get_field("filename").context("Schema error")?;
-        let content_field = schema.get_field("content").context("Schema error")?;
-        let is_directory_field = schema.get_field("is_directory").context("Schema error")?;
+        let fields = Fields::of(&self.index.schema())?;
 
         for path in paths {
-            if path.exists() {
-                if let Err(e) = self.index_single_file(
-                    path,
-                    writer,
-                    path_field,
-                    filename_field,
-                    content_field,
-                    is_directory_field,
-                ) {
-                    tracing::warn!("Failed to update index for {:?}: {}", path, e);
+            match fs::metadata(path) {
+                Ok(metadata) if metadata.is_file() => {
+                    let modified = modified_nanos(&metadata);
+                    if let Err(e) =
+                        self.index_single_file(path, &metadata, modified, writer, &fields)
+                    {
+                        tracing::warn!("Failed to update index for {:?}: {}", path, e);
+                    }
                 }
-            } else {
-                let path_str = path.to_string_lossy();
-                writer.delete_term(Term::from_field_text(path_field, &path_str));
+                // A directory the watcher reported is its own entry in the
+                // index, and its children arrive as their own events.
+                Ok(metadata) if metadata.is_dir() => {
+                    let modified = modified_nanos(&metadata);
+                    if let Err(e) = self.index_single_directory(path, modified, writer, &fields) {
+                        tracing::warn!("Failed to update index for {:?}: {}", path, e);
+                    }
+                }
+                Ok(_) => {}
+                // Gone, or no longer reachable: either way the document for it
+                // must not keep answering searches.
+                Err(_) => {
+                    let path_str = path.to_string_lossy();
+                    writer.delete_term(Term::from_field_text(fields.path, &path_str));
+                }
             }
         }
 
@@ -611,9 +740,73 @@ mod tests {
     }
 
     #[test]
+    fn a_second_pass_reads_only_what_changed() {
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+
+        let first = manager.index_home(Refresh::Changed, None).unwrap();
+        assert!(first.indexed > 0);
+        assert_eq!(first.unchanged, 0);
+
+        // Nothing touched: the pass should find nothing to write.
+        let second = manager.index_home(Refresh::Changed, None).unwrap();
+        assert_eq!(second.indexed, 0, "a warm index was written to anyway");
+        assert_eq!(second.unchanged, first.indexed);
+
+        // One file edited: only that file is re-read. The directory holding it
+        // has its own modification time bumped, so it is written again too.
+        std::fs::write(content.join("notes.txt"), "a different needle\n").unwrap();
+        let third = manager.index_home(Refresh::Changed, None).unwrap();
+        assert!(
+            (1..=2).contains(&third.indexed),
+            "an edit to one file rewrote {} documents",
+            third.indexed
+        );
+
+        let reader = IndexReader::open(dir.path().join("index"), content.clone())
+            .unwrap()
+            .expect("an index that was just built");
+        assert_eq!(
+            reader.candidates("different", 10).unwrap(),
+            vec![content.join("notes.txt")],
+            "the new contents did not reach the index"
+        );
+    }
+
+    #[test]
+    fn full_rereads_what_an_incremental_pass_would_leave_alone() {
+        let (_dir, manager) = staged();
+        let first = manager.index_home(Refresh::Changed, None).unwrap();
+
+        let full = manager.index_home(Refresh::Everything, None).unwrap();
+
+        assert_eq!(full.indexed, first.indexed);
+        assert_eq!(full.unchanged, 0);
+    }
+
+    #[test]
+    fn a_file_that_is_gone_stops_answering_searches() {
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        manager.index_home(Refresh::Changed, None).unwrap();
+
+        std::fs::remove_file(content.join("notes.txt")).unwrap();
+        let report = manager.index_home(Refresh::Changed, None).unwrap();
+
+        assert_eq!(report.removed, 1);
+        let reader = IndexReader::open(dir.path().join("index"), content)
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            reader.candidates("needle", 10).unwrap().is_empty(),
+            "a deleted file is still in the index"
+        );
+    }
+
+    #[test]
     fn what_a_manager_builds_a_reader_can_read() {
         let (dir, manager) = staged();
-        manager.index_home(None).unwrap();
+        manager.index_home(Refresh::Changed, None).unwrap();
 
         let reader = IndexReader::open(dir.path().join("index"), dir.path().join("content"))
             .unwrap()
@@ -627,7 +820,7 @@ mod tests {
     #[test]
     fn a_reader_can_be_opened_while_a_writer_is_held() {
         let (dir, manager) = staged();
-        manager.index_home(None).unwrap();
+        manager.index_home(Refresh::Changed, None).unwrap();
         // `manager` still owns the writer here; opening for reading must not
         // wait on it, which is what lets `noh search` run beside the app.
         let reader = IndexReader::open(dir.path().join("index"), dir.path().join("content"))

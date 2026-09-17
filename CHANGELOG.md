@@ -26,7 +26,9 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   [`docs/cli.md`](docs/cli.md) §4.
 - `noh index status` / `noh index build` report where the index is, what it
   covers and how much it holds, and build it on a machine that never opens the
-  GUI. Status opens the index for reading only, so it runs beside the app. See
+  GUI. Status opens the index for reading only, so it runs beside the app.
+  `build` is incremental: it re-reads only the files whose modification time
+  differs from the index's, and `--full` forces the rest. See
   [`docs/cli.md`](docs/cli.md) §5.
 - nohrs now records what it does to a rolling JSON Lines file under
   `$XDG_STATE_HOME/nohrs/logs/`, so a GUI session's log survives the window
@@ -41,6 +43,14 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 ### Changed
 
+- Indexing re-reads only what changed. Documents now carry the file's
+  modification time, so a pass compares it against the file on disk and skips
+  what matches, and documents whose file has disappeared are removed instead of
+  answering searches forever. The app therefore runs the pass on every launch
+  rather than only when the index is empty: the file watcher only sees changes
+  made while the app is running, so files that changed between quitting and
+  launching again reached the index nowhere else. An index left by the previous
+  schema is rebuilt once, since it carries no times to compare.
 - The search index takes tantivy's writer lock only when something is actually
   written, instead of from the moment a process opens the index. The app used to
   hold it from launch to quit whether or not it indexed anything, which made the

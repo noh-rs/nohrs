@@ -122,9 +122,9 @@ globs = ["*.iso", "*.mov"]
 
 | 観点 | 仕様 |
 |------|------|
-| 初回フル indexing | 起動時にバックグラウンドで実行、ステータスバーに progress 表示。GUI を開かないマシンでは `noh index build` |
-| ファイル変更検出 | `notify-debouncer-mini` で 500ms debounce、change event を SQLite `files.mtime_ns` と比較し変化があれば re-index |
-| 削除検出 | watcher の delete event + 定期的な orphan scan (起動時 1 回 + 24h ごと) |
+| 起動時 indexing | 毎起動、バックグラウンドで**増分**パス (walk + ファイルごとの `stat`)。watcher は起動中の変更しか見えないため、終了中に変わったファイルはここで拾う。GUI を開かないマシンでは `noh index build` |
+| ファイル変更検出 | 起動中は `notify-debouncer-mini` (debounce 2s)。起動時パスは索引の `last_modified` (ns) とファイルの mtime を突き合わせ、一致するものは読まない |
+| 削除検出 | watcher の delete event + 起動時パスの orphan 掃除 (走査が到達しなかったドキュメントを削除)。定期 orphan scan (24h ごと) は未実装 |
 | concurrent indexing | rayon で並列、CPU の半分 (最大 4 thread) まで |
 | index 整合性 | 起動時に lazy check (`files.content_hash` と Tantivy doc id の対応) |
 
