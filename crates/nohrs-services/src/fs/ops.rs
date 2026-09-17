@@ -1894,4 +1894,61 @@ mod tests {
         fs::write(&src, "x").unwrap();
         assert!(!is_cross_volume(&src, dir.path()).unwrap());
     }
+
+    // Pins the errnos the two entry opens produce for a symbolic link, because
+    // the comment on `empty_dir`'s `NOTDIR | LOOP` arm once named the wrong one
+    // and nothing here contradicted it. Which errno arrives is the kernel's
+    // choice of check order, so it is measured rather than described.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_refused_by_both_entry_opens() {
+        use rustix::fs::{Mode, OFlags, open};
+
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let descending = open(
+            &link,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect_err("empty_dir must not open a link as the directory it points at");
+
+        // No `O_DIRECTORY`: the entry's type is what this open exists to find
+        // out, so it cannot ask for one.
+        let claiming = open(
+            &link,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect_err("nor may open_claimed");
+
+        // The portable part, and the one the match arm rests on: whatever the
+        // platform returns is an errno that arm already handles.
+        for errno in [descending, claiming] {
+            assert!(
+                matches!(errno, rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP),
+                "a symlink at the entry produced an errno neither arm matches: {errno:?}"
+            );
+        }
+
+        // Without `O_DIRECTORY` there is nothing to answer first, so the
+        // refusal is `O_NOFOLLOW`'s own.
+        assert_eq!(claiming, rustix::io::Errno::LOOP);
+
+        // With it, Linux answers `O_DIRECTORY` first. This is the value the
+        // comment on that arm names.
+        #[cfg(target_os = "linux")]
+        assert_eq!(descending, rustix::io::Errno::NOTDIR);
+
+        // Review held that XNU rejects the link in `namei` before the directory
+        // check, making this `ELOOP` instead. That was not measured when this
+        // was written — this assertion is the measurement, and its failure
+        // message carries the real value.
+        #[cfg(target_os = "macos")]
+        assert_eq!(descending, rustix::io::Errno::LOOP);
+    }
 }
