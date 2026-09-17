@@ -164,11 +164,16 @@ pub struct Outcome {
 
 /// Searches `root` for `query` with whichever engine [`Options::engine`] allows.
 ///
-/// Fails when `query` is not a pattern the matcher can build, and when
-/// [`Engine::Index`] was insisted on and the index cannot answer. A root that
-/// cannot be read, or an individual file that cannot be searched, is reported
-/// through `tracing` and skipped: one unreadable directory in a large tree is
-/// normal and must not throw away the rest of the results.
+/// Fails when `query` is not a pattern the matcher can build, when
+/// [`Engine::Index`] was insisted on and the index cannot answer, and when
+/// `root` itself is missing or cannot be opened — the caller asked about that
+/// path by name, and "no matches" is the wrong answer for something that was
+/// never searched.
+///
+/// Inside the tree the opposite holds: a directory that cannot be read, or a
+/// file that cannot be searched, is reported through `tracing` and skipped. One
+/// unreadable directory in a large tree is normal and must not throw away the
+/// rest of the results.
 #[tracing::instrument(
     target = "nohrs::op",
     name = "search.scan",
@@ -192,13 +197,7 @@ pub fn search_using(
     open_index: Option<&IndexReader>,
 ) -> Result<Outcome> {
     let matcher = build_matcher(query, options)?;
-    // Before anything else, including the zero-limit shortcut and the choice of
-    // engine: an operand that is not there is the caller having asked for
-    // something that does not exist, and every path out of here would otherwise
-    // report it as "no matches" — the index one included, since a root the
-    // index covers but the disk no longer has yields candidates that quietly
-    // fail their `symlink_metadata` check.
-    std::fs::metadata(root)?;
+    must_be_searchable(root)?;
 
     if options.limit == Some(0) {
         return Ok(Outcome::default());
@@ -219,6 +218,34 @@ pub fn search_using(
             Err(reason) => walk(root, &matcher, options, Answered::Walk(Some(reason))),
         },
     }
+}
+
+/// Settles whether the operand can be searched at all, before an engine is
+/// chosen and before the zero-limit shortcut.
+///
+/// Existing is not the same as being readable, and neither the walk nor the
+/// index tells the caller apart from an empty tree on its own:
+///
+/// * `ignore` yields a directory it cannot descend into as a perfectly good
+///   entry *first*, and only then the error — which is indistinguishable from
+///   the ordinary unreadable directory further down that a walk must skip.
+/// * A file that cannot be opened has its error swallowed by the searcher,
+///   which is right for one file among thousands and wrong for the one the
+///   caller named.
+/// * The index answers from documents, so a root it still has but the disk does
+///   not comes back as no matches.
+///
+/// All three would report "no matches" for something that is not searchable,
+/// and `docs/cli.md` §4.1 promises `1` for an operand that could not be
+/// searched. One `open` per operand settles it.
+fn must_be_searchable(root: &Path) -> Result<()> {
+    let about = std::fs::metadata(root)?;
+    if about.is_dir() {
+        std::fs::read_dir(root)?;
+    } else {
+        std::fs::File::open(root)?;
+    }
+    Ok(())
 }
 
 /// Walks the tree below `root`, matching every entry it reaches.
@@ -944,6 +971,40 @@ mod tests {
                 .downcast_ref::<std::io::Error>()
                 .map(std::io::Error::kind),
             Some(std::io::ErrorKind::NotFound),
+            "the failure did not say what was wrong with the path: {error:#}"
+        );
+    }
+
+    /// Existing is not being readable. `ignore` hands back a directory it
+    /// cannot descend into as a perfectly good entry and only then an error, so
+    /// a walk that merely skipped that error reported "no matches" for a
+    /// directory it never managed to read.
+    #[cfg(unix)]
+    #[test]
+    fn a_root_that_cannot_be_read_is_a_failure_rather_than_an_empty_result() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        write(&locked, "notes.txt", b"a needle in here\n");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads a directory whatever its mode, so there is nothing to
+        // observe on a machine where this test cannot lock anything.
+        if std::fs::read_dir(&locked).is_ok() {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        let outcome = search(&locked, "needle", &Options::default());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = outcome.expect_err("an unreadable root came back as an answer");
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::PermissionDenied),
             "the failure did not say what was wrong with the path: {error:#}"
         );
     }
