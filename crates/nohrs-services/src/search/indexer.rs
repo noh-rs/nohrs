@@ -1718,9 +1718,11 @@ mod tests {
 
         std::fs::remove_dir_all(&content).unwrap();
         std::fs::write(&content, "a beacon in here\n").unwrap();
-        manager.process_changes(&[content.clone()]).unwrap();
+        manager
+            .process_changes(std::slice::from_ref(&content))
+            .unwrap();
 
-        let reader = IndexReader::open(dir.path().join("index"), content.clone())
+        let reader = IndexReader::open(dir.path().join("index"), content)
             .unwrap()
             .expect("an index that was just built");
         assert!(
