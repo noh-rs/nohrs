@@ -72,7 +72,10 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 - Indexing re-reads only what changed. Documents now carry the file's
   modification time, so a pass compares it against the file on disk and skips
   what matches, and documents whose file has disappeared are removed instead of
-  answering searches forever. The app therefore runs the pass on every launch
+  answering searches forever — though not the ones under a directory the pass
+  could not read, since an unreadable directory is reported once and not
+  descended into, and "the walk could not look there" is not "the files are
+  gone". The app therefore runs the pass on every launch
   rather than only when the index is empty: the file watcher only sees changes
   made while the app is running, so files that changed between quitting and
   launching again reached the index nowhere else. An index left by the previous

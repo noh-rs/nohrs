@@ -197,7 +197,7 @@ pub fn search_using(
     }
 
     match options.engine {
-        Engine::Walk => Ok(walk(root, &matcher, options, Answered::Walk(None))),
+        Engine::Walk => walk(root, &matcher, options, Answered::Walk(None)),
         Engine::Index => match usable_index(root, query, options, open_index) {
             Ok(index) => from_index(&index, query, &matcher, options),
             Err(reason) => Err(anyhow::anyhow!(
@@ -208,13 +208,26 @@ pub fn search_using(
             Ok(index) => from_index(&index, query, &matcher, options),
             // The index not being able to answer is not a failure: the files
             // themselves are still there to be read, which is slower and right.
-            Err(reason) => Ok(walk(root, &matcher, options, Answered::Walk(Some(reason)))),
+            Err(reason) => walk(root, &matcher, options, Answered::Walk(Some(reason))),
         },
     }
 }
 
 /// Walks the tree below `root`, matching every entry it reaches.
-fn walk(root: &Path, matcher: &RegexMatcher, options: &Options, answered_by: Answered) -> Outcome {
+///
+/// Fails when the operand itself cannot be walked, and only then. A missing or
+/// unreadable *operand* is the caller having asked for something that is not
+/// there, which `noh search` reports and exits `1` for; an unreadable directory
+/// found part-way down is ordinary (permissions, races) and must not turn the
+/// rest of the answer into a failure. Without the difference, `noh search
+/// needle ./typo` would print nothing and exit `0` — "no matches", which is a
+/// lie about a path that does not exist.
+fn walk(
+    root: &Path,
+    matcher: &RegexMatcher,
+    options: &Options,
+    answered_by: Answered,
+) -> Result<Outcome> {
     let mut outcome = Outcome {
         answered_by,
         ..Outcome::default()
@@ -232,11 +245,35 @@ fn walk(root: &Path, matcher: &RegexMatcher, options: &Options, answered_by: Ans
 
     let mut searcher = line_searcher();
 
+    // Asked of the operand before the walk starts, because `ignore` reports
+    // the root's own failure as one more walk error — wrapped in layers that
+    // each spell the path into the message again, and indistinguishable from
+    // an empty directory once the walk simply ends. Here the `io::Error`
+    // arrives whole, so a caller can tell "not there" from "not allowed" and
+    // the message says only what went wrong.
+    std::fs::metadata(root)?;
+
+    let mut reached_anything = false;
     for entry in walker {
         let entry = match entry {
-            Ok(entry) => entry,
-            // An unreadable directory is normal (permissions, races) and must
-            // not abort the walk; record it for diagnosis and move on.
+            Ok(entry) => {
+                reached_anything = true;
+                entry
+            }
+            // The operand is the first thing the walk yields, so an error
+            // before anything has been reached is the operand itself failing.
+            // `depth` does not tell these apart: it is `None` both for the
+            // root's error and for an unparseable ignore file.
+            Err(error) if !reached_anything => {
+                // Only what went wrong, not where: every caller already names
+                // the operand it asked about, and the error `ignore` hands
+                // back spells the path into its own message twice more. Rebuilt
+                // from the OS code rather than reworded, so the kind survives
+                // for a caller telling "not there" from "not allowed".
+                return Err(anyhow::anyhow!("{error}"));
+            }
+            // An unreadable directory further down is normal (permissions,
+            // races) and must not abort the walk; record it and move on.
             Err(error) => {
                 tracing::debug!("skipping unreadable entry: {error}");
                 continue;
@@ -262,7 +299,7 @@ fn walk(root: &Path, matcher: &RegexMatcher, options: &Options, answered_by: Ans
         }
     }
 
-    outcome
+    Ok(outcome)
 }
 
 /// Matches `path` — its name, the lines inside it, or both — into `outcome`.
@@ -879,10 +916,53 @@ mod tests {
         assert!(has_hidden_component(&root.join(".cache/blob"), root));
     }
 
+    /// This asserted the opposite until it was noticed that "no matches" and
+    /// "there is no such directory" are different answers, and that a search
+    /// which gives the first for the second exits `0` — telling a script that
+    /// a path it misspelled holds nothing, rather than that it is not there.
     #[test]
-    fn a_missing_root_is_an_empty_result_rather_than_a_failure() {
+    fn a_missing_root_is_a_failure_rather_than_an_empty_result() {
         let dir = tempfile::tempdir().unwrap();
-        let outcome = run(&dir.path().join("nowhere"), "needle", &Options::default());
-        assert!(outcome.results.is_empty());
+        let missing = dir.path().join("nowhere");
+
+        let error = search(&missing, "needle", &Options::default())
+            .expect_err("searching a path that is not there came back with an answer");
+
+        // Kept as the `io::Error` it was, so a caller can tell a path that is
+        // not there from one it is not allowed to read.
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::NotFound),
+            "the failure did not say what was wrong with the path: {error:#}"
+        );
+    }
+
+    /// The other half of the same distinction: a directory the walk cannot read
+    /// part-way down is ordinary, and must not turn the rest of the answer into
+    /// a failure.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_directory_below_the_root_does_not_fail_the_search() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes.txt", b"a needle in here\n");
+        let locked = dir.path().join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads a directory whatever its mode, so there is nothing to
+        // observe on a machine where this test cannot lock anything.
+        if std::fs::read_dir(&locked).is_ok() {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        let outcome = search(dir.path(), "needle", &Options::default());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let outcome = outcome.expect("one unreadable directory failed the whole search");
+        assert_eq!(paths(&outcome).len(), 1, "{:?}", paths(&outcome));
     }
 }

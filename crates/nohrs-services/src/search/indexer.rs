@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use tantivy::TantivyDocument;
 use tantivy::schema::{FAST, Field, STORED, STRING, Schema, TEXT, Term, Value};
 use tantivy::{Index, IndexWriter}; // Import trait for add_text etc? No, TantivyDocument implements it.
@@ -245,6 +245,10 @@ impl IndexManager {
         // what the index knows and the walk did not reach, so a path that was
         // never indexed says nothing about them.
         let (seen_tx, seen_rx) = std::sync::mpsc::channel::<Vec<String>>();
+        // Where the walk could not see. An unreadable directory is reported
+        // once and not descended into, so without this every document beneath
+        // it would look like a document whose file is gone.
+        let unseen = Mutex::new(Unseen::default());
         walker(&self.content_root)
             .threads(indexing_threads())
             .build_parallel()
@@ -252,6 +256,7 @@ impl IndexManager {
                 // Per worker: the batch flushes itself when the walk drops this
                 // visitor, so nothing is lost and nothing is sent per entry.
                 let mut batch = SeenBatch::new(seen_tx.clone());
+                let unseen = &unseen;
                 let tally = &tally;
                 let known = &known;
                 let fields = &fields;
@@ -261,6 +266,10 @@ impl IndexManager {
                         Ok(entry) => entry,
                         Err(error) => {
                             tracing::warn!("Walk error: {}", error);
+                            unseen
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .note(&error);
                             return ignore::WalkState::Continue;
                         }
                     };
@@ -321,8 +330,17 @@ impl IndexManager {
         }
 
         let mut report = tally.into_report();
-        // Whatever the walk never reached is a document with no file behind it.
+        let unseen = unseen.into_inner().unwrap_or_else(PoisonError::into_inner);
+        // Whatever the walk never reached is a document with no file behind it
+        // — unless the walk could not look there, in which case nothing is
+        // known about it either way. Keeping such a document costs one stale
+        // answer until a pass does reach it; deleting it loses the document on
+        // a directory that was merely busy or briefly unreadable, which no
+        // later pass puts back short of a full rebuild.
         for gone in known.keys() {
+            if unseen.covers(Path::new(gone)) {
+                continue;
+            }
             writer.delete_term(Term::from_field_text(fields.path, gone));
             report.removed += 1;
         }
@@ -472,6 +490,56 @@ impl Tally {
             unchanged: self.unchanged.load(Ordering::Relaxed),
             removed: 0,
         }
+    }
+}
+
+/// The parts of the tree a pass could not look at.
+///
+/// A pass decides a document is stale by not reaching its file, so it has to
+/// tell "the file is gone" apart from "the walk could not get there". `ignore`
+/// reports an unreadable directory once and does not descend, so one `EACCES`
+/// or one busy mount stands for everything beneath it.
+#[derive(Default)]
+struct Unseen {
+    /// Paths the walk reported an error for, whose contents it never saw.
+    roots: Vec<PathBuf>,
+    /// Whether an error arrived naming no path at all. Nothing then says what
+    /// went unwalked, so nothing can be called gone.
+    anywhere: bool,
+}
+
+impl Unseen {
+    fn note(&mut self, error: &ignore::Error) {
+        match unwalked(error) {
+            Some(path) => self.roots.push(path.to_path_buf()),
+            None => self.anywhere = true,
+        }
+    }
+
+    /// Whether `path` is somewhere this pass could not see.
+    fn covers(&self, path: &Path) -> bool {
+        self.anywhere || self.roots.iter().any(|root| path.starts_with(root))
+    }
+}
+
+/// The path a walk error says was not walked, if it names one.
+///
+/// `ignore` wraps its errors — a depth around a path around the `io::Error` —
+/// so the path is found by unwrapping rather than by matching one variant.
+/// `None` is not "no path exists" but "this pass cannot say what it missed",
+/// which is why it is treated as the whole tree rather than as nothing.
+fn unwalked(error: &ignore::Error) -> Option<&Path> {
+    match error {
+        ignore::Error::WithPath { path, .. } => Some(path),
+        // The ancestor, not the child: the loop is entered at the ancestor and
+        // everything below it goes unwalked.
+        ignore::Error::Loop { ancestor, .. } => Some(ancestor),
+        ignore::Error::WithDepth { err, .. } | ignore::Error::WithLineNumber { err, .. } => {
+            unwalked(err)
+        }
+        // The first that names one: they are all errors from the same failure.
+        ignore::Error::Partial(errors) => errors.iter().find_map(unwalked),
+        _ => None,
     }
 }
 
@@ -955,6 +1023,92 @@ mod tests {
         assert!(
             reader.candidates("needle", 10).unwrap().is_empty(),
             "a deleted file is still in the index"
+        );
+    }
+
+    #[test]
+    fn a_place_the_walk_could_not_look_is_not_a_place_where_files_are_gone() {
+        let unseen = {
+            let mut unseen = Unseen::default();
+            unseen.note(&ignore::Error::WithPath {
+                path: PathBuf::from("/home/someone/locked"),
+                err: Box::new(ignore::Error::Io(std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied,
+                ))),
+            });
+            unseen
+        };
+
+        assert!(unseen.covers(Path::new("/home/someone/locked/notes.txt")));
+        assert!(unseen.covers(Path::new("/home/someone/locked")));
+        // The rest of the tree was walked and is still judged on what it holds.
+        assert!(!unseen.covers(Path::new("/home/someone/elsewhere/notes.txt")));
+        // Not a prefix match on the string: a sibling that merely starts with
+        // the same letters was walked like any other.
+        assert!(!unseen.covers(Path::new("/home/someone/locked-out/notes.txt")));
+    }
+
+    #[test]
+    fn an_error_that_names_nowhere_stands_for_the_whole_tree() {
+        let mut unseen = Unseen::default();
+        unseen.note(&ignore::Error::Io(std::io::Error::other("a broken mount")));
+
+        assert!(
+            unseen.covers(Path::new("/anywhere/at/all")),
+            "an error saying nothing about where it happened let documents be dropped"
+        );
+    }
+
+    #[test]
+    fn the_path_is_found_however_the_walk_wrapped_it() {
+        let wrapped = ignore::Error::WithDepth {
+            depth: 3,
+            err: Box::new(ignore::Error::WithPath {
+                path: PathBuf::from("/home/someone/locked"),
+                err: Box::new(ignore::Error::Io(std::io::Error::other("nope"))),
+            }),
+        };
+
+        assert_eq!(unwalked(&wrapped), Some(Path::new("/home/someone/locked")));
+    }
+
+    /// A directory that cannot be read is reported once and not descended into,
+    /// so everything the index holds beneath it goes unvisited. Treating that
+    /// as "the files are gone" empties the index for a directory that was only
+    /// briefly unreadable, and no later pass puts those documents back.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_directory_does_not_empty_the_index_beneath_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        let locked = content.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("deep.txt"), "a needle in the deep\n").unwrap();
+        manager.index_home(Refresh::Changed, None).unwrap();
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads a directory whatever its mode, so there is nothing to
+        // observe on a machine where this test cannot lock anything.
+        if std::fs::read_dir(&locked).is_ok() {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        let report = manager.index_home(Refresh::Changed, None).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(
+            report.removed, 0,
+            "a directory that could not be read was read as a directory that is gone"
+        );
+        let reader = IndexReader::open(dir.path().join("index"), content)
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            !reader.candidates("deep", 10).unwrap().is_empty(),
+            "the documents under an unreadable directory were dropped"
         );
     }
 
