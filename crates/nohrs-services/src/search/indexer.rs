@@ -896,9 +896,17 @@ fn index_one_directory(
 enum Readable {
     /// The text to index beside the name.
     Text(String),
-    /// A regular file whose contents do not go in — too large, not text, or
-    /// not readable. Its name still does.
+    /// A regular file whose contents are not going in because of what they are:
+    /// too large to index. Its name still does, and the document keeps the
+    /// file's modification time, because that decision holds for as long as the
+    /// file does not change.
     NameOnly,
+    /// A regular file whose contents could not be read at all. Its name goes in
+    /// without a modification time, so that the next pass reads it again rather
+    /// than taking the name-only document for one that is up to date — a
+    /// permission or a lock that lasted a minute would otherwise leave the
+    /// contents out of the index until the file was next written to.
+    Unreadable,
     /// Not a regular file any more: a link took its place between the walk's
     /// check and this read. Nothing about it belongs in the index, the name
     /// included, because the index covers one tree and a link points anywhere.
@@ -921,8 +929,15 @@ fn read_without_following(path: &Path) -> Readable {
             .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(path)
     };
+    // `File::open` follows a link, so where `O_NOFOLLOW` is not available the
+    // refusal has to be made before the open. It is a check rather than a
+    // refusal the kernel performs: a link put in place between the two is
+    // followed, where `O_NOFOLLOW` cannot be raced at all.
     #[cfg(not(unix))]
-    let opened = fs::File::open(path);
+    let opened = match fs::symlink_metadata(path) {
+        Ok(about) if about.is_symlink() => return Readable::NotAFile,
+        _ => fs::File::open(path),
+    };
 
     let mut file = match opened {
         Ok(file) => file,
@@ -933,11 +948,11 @@ fn read_without_following(path: &Path) -> Readable {
         Err(error) if error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) => {
             return Readable::NotAFile;
         }
-        Err(_) => return Readable::NameOnly,
+        Err(_) => return Readable::Unreadable,
     };
 
     let Ok(about) = file.metadata() else {
-        return Readable::NameOnly;
+        return Readable::Unreadable;
     };
     if !about.is_file() {
         return Readable::NotAFile;
@@ -954,7 +969,9 @@ fn read_without_following(path: &Path) -> Readable {
         .take(MAX_INDEXED_FILE_BYTES + 1)
         .read_to_string(&mut content)
     else {
-        return Readable::NameOnly;
+        // Not text, or gone unreadable mid-read. Either way this is not a
+        // decision about the file's contents that will hold next time.
+        return Readable::Unreadable;
     };
     if read as u64 > MAX_INDEXED_FILE_BYTES {
         return Readable::NameOnly;
@@ -977,6 +994,13 @@ fn index_one_file(
     // searches with what the file used to hold.
     let path_str = path.to_string_lossy();
 
+    // Whether what went in reflects the file as it is now, or stands in for a
+    // read that did not happen. The document keeps its modification time only in
+    // the first case: recording the time beside a name-only document written
+    // because the file could not be read would make every later incremental
+    // pass consider it up to date, and the contents would stay out of the index
+    // until something wrote to the file.
+    let mut stands_for_a_read_that_failed = false;
     let content = if metadata.len() > MAX_INDEXED_FILE_BYTES {
         tracing::debug!("Indexing the name only, the file is large: {:?}", path);
         None
@@ -990,7 +1014,12 @@ fn index_one_file(
             }
             Readable::Text(text) => Some(text),
             Readable::NameOnly => {
+                tracing::debug!("Indexing the name only, the file is large: {:?}", path);
+                None
+            }
+            Readable::Unreadable => {
                 tracing::debug!("Indexing the name only, the file was not read: {:?}", path);
+                stands_for_a_read_that_failed = true;
                 None
             }
             // A link took the file's place between the walk's check and this
@@ -1018,7 +1047,9 @@ fn index_one_file(
         doc.add_text(fields.content, content);
     }
     doc.add_u64(fields.is_directory, 0);
-    if let Some(modified) = modified {
+    if let Some(modified) = modified
+        && !stands_for_a_read_that_failed
+    {
         doc.add_u64(fields.last_modified, modified);
     }
 
@@ -1656,6 +1687,49 @@ mod tests {
         assert!(
             !reader.candidates("deep", 10).unwrap().is_empty(),
             "a file that could not be stat'd was taken for a file that is gone"
+        );
+    }
+
+    /// A file that could not be read still gets a document, so that searches by
+    /// name find it — but that document stands in for a read that did not
+    /// happen, and recording the file's modification time beside it would make
+    /// every later incremental pass consider it up to date. A permission that
+    /// lasted a minute would leave the contents out of the index until
+    /// something wrote to the file.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_could_not_be_read_is_read_again_by_the_next_pass() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        let locked = content.join("locked.txt");
+        std::fs::write(&locked, "a beacon in here\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads a file whatever its mode, so there is nothing to observe
+        // on a machine where this test cannot lock anything.
+        if std::fs::read_to_string(&locked).is_ok() {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+            return;
+        }
+
+        manager.index_home(Refresh::Changed, None).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // Nothing has been written to the file, so only a pass that does not
+        // take the name-only document for an up-to-date one reads it now.
+        let report = manager.index_home(Refresh::Changed, None).unwrap();
+        assert!(
+            report.indexed > 0,
+            "a file that could not be read last time was not read again: {report:?}"
+        );
+
+        let reader = IndexReader::open(dir.path().join("index"), content)
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            !reader.candidates("beacon", 10).unwrap().is_empty(),
+            "the contents of a file that became readable never reached the index"
         );
     }
 

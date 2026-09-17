@@ -34,6 +34,13 @@ const PATIENCE: Duration = Duration::from_secs(30);
 /// provokes is inside the window rather than after it.
 const SILENCE: Duration = Duration::from_secs(4);
 
+/// How long the daemon is watched for passes that provoke one another.
+///
+/// Half of it is the margin: a daemon feeding itself commits at the watcher's
+/// debounce plus the length of a pass, and this catches it for any cadence
+/// under `WATCHED / 2` rather than for any cadence under one fixed gap.
+const WATCHED: Duration = Duration::from_secs(16);
+
 struct Fixture {
     _home: tempfile::TempDir,
     endpoint: Endpoint,
@@ -118,12 +125,15 @@ fn gone(path: &Path) -> bool {
     !path.exists()
 }
 
-/// Waits for the daemon to stop announcing commits and says how many it made
-/// getting there, or gives up on one that will not stop.
+/// Waits out whatever the daemon is in the middle of, so that what a test
+/// collects afterwards is a pass it asked for.
 ///
-/// Giving up rather than waiting is the point: a daemon whose passes provoke
-/// the next one is not slow, it is never going to be quiet, and a test that
-/// waits for it to be hangs the job instead of reporting what it found.
+/// This settles, it does not decide: a gap of `SILENCE` is taken for the end of
+/// a burst, which is true of a daemon that has finished and also of one whose
+/// next pass is merely slow in coming. Anything asserted about a daemon that
+/// will not stop belongs in [`watch_for_a_pass_that_provokes_the_next`], which
+/// does not rest on the size of a gap. Giving up at `PATIENCE` is what keeps a
+/// daemon that never goes quiet from hanging the job instead of failing it.
 fn falls_quiet(heard: &std::sync::mpsc::Receiver<()>) -> usize {
     let quiet_by = Instant::now() + PATIENCE;
     let mut commits = 0;
@@ -136,6 +146,43 @@ fn falls_quiet(heard: &std::sync::mpsc::Receiver<()>) -> usize {
         );
     }
     commits
+}
+
+/// Watches the daemon for a while after a pass and fails if it was still
+/// committing towards the end of that watch.
+///
+/// The question is whether the passes stop, and that cannot be answered by how
+/// long one gap is: a pass that provokes the next one leaves a gap of the
+/// watcher's debounce plus however long a pass takes, and on a loaded runner
+/// that can be longer than any interval it would be reasonable to call silence.
+/// So what is asserted is the shape of the whole window — a daemon that has
+/// finished says nothing in the second half of it, and one that is feeding
+/// itself says something in every half, whatever its cadence.
+fn watch_for_a_pass_that_provokes_the_next(heard: &std::sync::mpsc::Receiver<()>) {
+    let started = Instant::now();
+    let ends = started + WATCHED;
+    let mut commits = 0;
+    let mut last = None;
+    while let Some(left) = ends.checked_duration_since(Instant::now()) {
+        match heard.recv_timeout(left) {
+            Ok(()) => {
+                commits += 1;
+                last = Some(started.elapsed());
+            }
+            Err(_) => break,
+        }
+    }
+
+    assert!(
+        commits > 0,
+        "the pass this test asked for committed nothing, so there is nothing here to watch"
+    );
+    let latest = last.unwrap_or_default();
+    assert!(
+        latest < WATCHED / 2,
+        "the daemon committed {commits} times and was still going {latest:?} into a {WATCHED:?} \
+         watch, with nothing touching its tree: each pass is provoking the next"
+    );
 }
 
 #[test]
@@ -417,7 +464,7 @@ fn a_pass_does_not_feed_the_watcher_its_own_reads() {
     // The pass itself commits, and the events its own reads raised commit again
     // a debounce later — those passes finding nothing changed, and so reading
     // nothing, which is where it has to stop. What is asserted is that it does
-    // stop: a daemon whose passes provoke the next one never goes quiet, so the
-    // count is not what separates the two, termination is.
-    falls_quiet(&heard);
+    // stop, and neither the number of passes it takes to get there nor the gap
+    // between them is what says so.
+    watch_for_a_pass_that_provokes_the_next(&heard);
 }

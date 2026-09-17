@@ -321,6 +321,17 @@ impl Daemon {
                 for message in outbox {
                     if let Err(error) = protocol::write_frame(&mut stream, &message) {
                         tracing::debug!("cannot write to a client: {error:#}");
+                        // The connection goes with the write, rather than this
+                        // thread alone. The reader is blocked on the same
+                        // socket, and nothing else will wake it: a client that
+                        // has stopped reading has usually stopped sending too,
+                        // so its thread would sit there holding a lease while
+                        // notices piled up in an outbox no one drains. A
+                        // shutdown is on the socket rather than on a descriptor,
+                        // so it ends the read as well as the write.
+                        if let Err(error) = stream.shutdown(std::net::Shutdown::Both) {
+                            tracing::trace!("cannot shut down a client's socket: {error}");
+                        }
                         break;
                     }
                 }

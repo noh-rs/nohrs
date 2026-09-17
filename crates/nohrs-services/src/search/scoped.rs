@@ -229,6 +229,10 @@ pub fn search_using(
             options,
             &mut outcome,
         );
+        // Asked for the same reason the walk asks it after every entry: a
+        // result that filled the limit is reported as having filled it,
+        // whichever path produced it.
+        reached_limit(options, &mut outcome);
         return Ok(outcome);
     }
 
