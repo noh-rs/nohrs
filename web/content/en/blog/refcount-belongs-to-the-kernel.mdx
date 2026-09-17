@@ -206,9 +206,11 @@ held.kill().unwrap();
 until("the writer to stop", || gone(&fixture.endpoint.socket));
 ```
 
-The first wait is what earns its place. Without it the test passes when the helper fails to
-connect at all — which is what occurred on the first run, and is the kind of green that
-establishes nothing.
+The first wait is what earns its place. Without it the probe can be dropped before the helper
+has connected, leaving the writer with nothing to count and a countdown running — against a
+test about to assert that it is still there. What the wait establishes is that the kernel has
+counted the helper, so that from the drop onwards the helper is the only thing holding the
+writer up, which is the claim everything below it rests on.
 
 ## The rule
 

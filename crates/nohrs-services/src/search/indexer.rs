@@ -62,6 +62,14 @@ impl Fields {
     }
 }
 
+/// What the index already holds for one path, as far as deciding whether to
+/// write it again goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Indexed {
+    modified: Option<u64>,
+    is_directory: bool,
+}
+
 /// When the file was last modified, in nanoseconds since the epoch.
 ///
 /// `None` where the platform or filesystem does not say, which costs that file
@@ -475,17 +483,23 @@ impl IndexManager {
         Ok(beneath)
     }
 
-    /// What the index holds as `path`'s modification time.
+    /// What the index holds for `path`: the modification time it was written
+    /// with, and whether it was written as a directory.
     ///
-    /// `None` when it holds no document for that path at all, which is not the
-    /// same as `Some(None)`: a document written from a file whose modification
-    /// time could not be read.
-    fn indexed_modification(
+    /// The kind belongs here beside the time because the two change
+    /// independently. A path replaced by one of the other kind keeps its
+    /// modification time whenever whatever replaced it preserved the time —
+    /// `tar -x` and `rsync -a` both do — and a document that then went
+    /// unwritten would answer for a directory that is now a file.
+    ///
+    /// `None` when the index holds no document for that path at all, which is
+    /// not the same as a document whose modification time could not be read.
+    fn indexed_as(
         &self,
         fields: &Fields,
         searcher: &tantivy::Searcher,
         path: &str,
-    ) -> Result<Option<Option<u64>>> {
+    ) -> Result<Option<Indexed>> {
         let query = tantivy::query::TermQuery::new(
             Term::from_field_text(fields.path, path),
             tantivy::schema::IndexRecordOption::Basic,
@@ -498,11 +512,15 @@ impl IndexManager {
             return Ok(None);
         };
         let document: TantivyDocument = searcher.doc(*address)?;
-        Ok(Some(
-            document
+        Ok(Some(Indexed {
+            modified: document
                 .get_first(fields.last_modified)
                 .and_then(|value| value.as_u64()),
-        ))
+            is_directory: document
+                .get_first(fields.is_directory)
+                .and_then(|value| value.as_u64())
+                .is_some_and(|written| written != 0),
+        }))
     }
 
     fn indexed_modifications_from_store(
@@ -1093,11 +1111,15 @@ impl IndexManager {
                         let held = match viewing.as_ref() {
                             Some(searcher) => {
                                 let path = path.to_string_lossy();
-                                self.indexed_modification(&fields, searcher, &path)?
+                                self.indexed_as(&fields, searcher, &path)?
                             }
                             None => None,
                         };
-                        if held == Some(modified) {
+                        let already = Indexed {
+                            modified,
+                            is_directory: false,
+                        };
+                        if held == Some(already) {
                             continue;
                         }
                     }
@@ -1540,6 +1562,47 @@ mod tests {
         assert!(
             reader.candidates("needle", 10).unwrap().is_empty(),
             "the watcher indexed a symlink's target as though it were in the tree"
+        );
+    }
+
+    /// A pass skips a reported path whose modification time the index already
+    /// holds, so that indexing does not re-read what its own last read woke the
+    /// watcher over. A path that changed kind keeps its modification time
+    /// whenever whatever replaced it preserved the time, so the time alone
+    /// cannot decide: the document would go on saying "directory" for something
+    /// that is now a file with contents to search.
+    #[test]
+    fn a_directory_replaced_by_a_file_of_the_same_age_is_still_read() {
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        let notes = content.join("notes.txt");
+
+        let was = std::fs::metadata(&notes).unwrap().modified().unwrap();
+        std::fs::remove_file(&notes).unwrap();
+        std::fs::create_dir(&notes).unwrap();
+        std::fs::File::open(&notes)
+            .unwrap()
+            .set_modified(was)
+            .unwrap();
+        manager.index_home(Refresh::Everything, None).unwrap();
+
+        // Back to a file, at the age the directory was indexed with.
+        std::fs::remove_dir(&notes).unwrap();
+        std::fs::write(&notes, "a needle in here\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&notes)
+            .unwrap()
+            .set_modified(was)
+            .unwrap();
+        manager.update_file(&notes).unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), content)
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            !reader.candidates("needle", 10).unwrap().is_empty(),
+            "a directory that became a file of the same age was left in the index as a directory"
         );
     }
 
