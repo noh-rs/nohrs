@@ -198,10 +198,33 @@ pub fn search_using(
     open_index: Option<&IndexReader>,
 ) -> Result<Outcome> {
     let matcher = build_matcher(query, options)?;
-    must_be_searchable(root, options)?;
+    // Validated unless the operand is a link with nothing behind it, which
+    // `must_be_searchable` would refuse for the same reason everything else
+    // does: it resolves the link.
+    let only_the_name = names_all_that_is_left(root, options);
+    if !only_the_name {
+        must_be_searchable(root, options)?;
+    }
 
     if options.limit == Some(0) {
         return Ok(Outcome::default());
+    }
+
+    // Answered here rather than by an engine, because neither can reach it: the
+    // walk resolves the root before yielding it, so it reports an error for a
+    // name that is plainly still there, and the index holds no document for a
+    // link at all.
+    if only_the_name {
+        let mut outcome = Outcome::default();
+        collect_from(
+            root,
+            false,
+            &matcher,
+            &mut line_searcher(),
+            options,
+            &mut outcome,
+        );
+        return Ok(outcome);
     }
 
     match options.engine {
@@ -240,6 +263,19 @@ pub fn search_using(
 /// and `docs/cli.md` §4.1 promises `1` for an operand that could not be
 /// searched. One `open` per operand settles it.
 ///
+/// Whether the operand is a link with nothing behind it any more, leaving its
+/// name as the only thing about it that can still be searched.
+///
+/// Such an operand defeats every other route to an answer. `metadata` resolves
+/// the link and reports the target's absence, and `ignore` resolves the root
+/// before yielding it, so the walk hands back an error rather than the entry.
+/// A name search has no need of any of that: the name is in the operand.
+fn names_all_that_is_left(root: &Path, options: &Options) -> bool {
+    !options.subject.includes_contents()
+        && std::fs::symlink_metadata(root).is_ok_and(|about| about.is_symlink())
+        && std::fs::metadata(root).is_err()
+}
+
 /// What counts as searchable depends on what is being searched for, so this
 /// asks of the operand only what the search it was given actually needs:
 ///
@@ -1143,6 +1179,43 @@ mod tests {
         // The pipe by its name and the file by its line. The pipe's contents
         // are never asked for, which is what kept the walk moving.
         assert_eq!(paths(&outcome).len(), 2, "{:?}", paths(&outcome));
+    }
+
+    /// A link whose target is gone still has a name, and a name search can
+    /// answer for it. Nothing else reaches it: `metadata` resolves the link and
+    /// reports the target missing, and the walk resolves the root before
+    /// yielding it, so both report a missing operand for a name that is there.
+    #[cfg(unix)]
+    #[test]
+    fn a_name_search_answers_for_a_link_whose_target_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("needle-link");
+        std::os::unix::fs::symlink(dir.path().join("nothing-here"), &link).unwrap();
+
+        let by_name = search(
+            &link,
+            "needle",
+            &Options {
+                subject: Subject::Names,
+                ..Options::default()
+            },
+        )
+        .expect("a name search was refused a link whose name it could read");
+        assert_eq!(paths(&by_name), vec![link.clone()]);
+
+        // The contents genuinely cannot be answered for, and still fail.
+        let by_content = search(
+            &link,
+            "needle",
+            &Options {
+                subject: Subject::Contents,
+                ..Options::default()
+            },
+        );
+        assert!(
+            by_content.is_err(),
+            "a content search answered for a link with nothing behind it"
+        );
     }
 
     /// A name is knowable without reading the file, so refusing an unreadable

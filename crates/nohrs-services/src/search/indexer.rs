@@ -428,6 +428,44 @@ impl IndexManager {
         Ok(known)
     }
 
+    /// The paths the index holds strictly beneath `path`.
+    ///
+    /// Seeks rather than scans. The term dictionary is sorted, so the documents
+    /// under one directory are a contiguous range in it, and a watcher batch
+    /// must not cost a pass over everything the index holds: a deleted file is
+    /// ordinary, and answering "nothing is beneath it" has to be cheap.
+    fn indexed_beneath(&self, fields: &Fields, path: &str) -> Result<Vec<String>> {
+        // Everything below `path` and nothing else: `foo/` excludes `foo` and
+        // stops short of `foo!`, `foo.txt` and any other sibling sharing the
+        // prefix without the separator.
+        let prefix = format!("{path}/");
+        let mut beneath = Vec::new();
+        let searcher = self.index.reader()?.searcher();
+
+        for segment_reader in searcher.segment_readers() {
+            let Ok(Some(paths)) = segment_reader.fast_fields().str("path") else {
+                // No column to seek in: an index from a schema that predates
+                // it. Read the store instead — slow, and the alternative is
+                // leaving documents behind that answer for a tree that is gone.
+                let mut known = HashMap::new();
+                self.indexed_modifications_from_store(fields, segment_reader, &mut known)?;
+                beneath.extend(known.into_keys().filter(|held| held.starts_with(&prefix)));
+                continue;
+            };
+
+            let mut terms = paths.dictionary().range().ge(&prefix).into_stream()?;
+            while terms.advance() {
+                let held = String::from_utf8_lossy(terms.key()).into_owned();
+                // Sorted, so the first key past the prefix ends the range.
+                if !held.starts_with(&prefix) {
+                    break;
+                }
+                beneath.push(held);
+            }
+        }
+        Ok(beneath)
+    }
+
     fn indexed_modifications_from_store(
         &self,
         fields: &Fields,
@@ -449,6 +487,54 @@ impl IndexManager {
             known.insert(path.to_string(), modified);
         }
         Ok(())
+    }
+}
+
+/// Whether the directories above a changed path are ones a walk would descend
+/// through, remembered for the length of one batch.
+///
+/// The batch is usually several changes in one directory — a build writing into
+/// `target/`, an editor saving — so the same ancestors are asked about
+/// repeatedly, and the answer cannot change under a debounce that has already
+/// elapsed.
+#[derive(Default)]
+struct Ancestors {
+    walkable: std::collections::HashSet<PathBuf>,
+}
+
+impl Ancestors {
+    /// Whether `path` can be reached from `root` without passing through a
+    /// symlink, which is the rule the walk applies to everything it meets.
+    ///
+    /// A path outside `root` is not walkable at all: the index covers one tree,
+    /// and a document keyed inside it must have come from inside it.
+    fn are_walkable(&mut self, root: &Path, path: &Path) -> bool {
+        let Ok(relative) = path.strip_prefix(root) else {
+            return false;
+        };
+        let mut walked = root.to_path_buf();
+        let mut components: Vec<_> = relative.components().collect();
+        // The last component is the path itself, which the caller asks about
+        // separately — it is allowed to be a link there, and is then handled as
+        // a document that must go.
+        components.pop();
+
+        for component in components {
+            walked.push(component);
+            if self.walkable.contains(&walked) {
+                continue;
+            }
+            // Unreadable counts as not walkable: nothing below a directory the
+            // walk cannot enter is reachable, whatever the reason.
+            let followable = fs::symlink_metadata(&walked)
+                .map(|about| !about.is_symlink())
+                .unwrap_or(false);
+            if !followable {
+                return false;
+            }
+            self.walkable.insert(walked.clone());
+        }
+        true
     }
 }
 
@@ -789,6 +875,7 @@ impl IndexManager {
 
     fn process_changes_with(&self, writer: &mut IndexWriter, paths: &[PathBuf]) -> Result<()> {
         let fields = Fields::of(&self.index.schema())?;
+        let mut ancestors = Ancestors::default();
 
         for path in paths {
             // Asked without following the link, because a symlink is not
@@ -796,10 +883,14 @@ impl IndexManager {
             // A path that has become one is handled below as a path that is
             // gone, which is what it is as far as the index is concerned —
             // otherwise a live change would put back what a full pass refuses
-            // to index.
+            // to index. `symlink_metadata` spares only the final component and
+            // resolves the rest, so the same has to be asked of the directories
+            // above it: a file under one that has become a link is reported as
+            // an ordinary file, at a path inside the tree.
             let about = fs::symlink_metadata(path)
                 .ok()
-                .filter(|about| !about.is_symlink());
+                .filter(|about| !about.is_symlink())
+                .filter(|_| ancestors.are_walkable(&self.content_root, path));
             match about {
                 Some(metadata) if metadata.is_file() => {
                     let modified = modified_nanos(&metadata);
@@ -818,9 +909,18 @@ impl IndexManager {
                 Some(_) => {}
                 // Gone, unreachable, or now a symlink: for the index all three
                 // are the same, a document that must stop answering searches.
+                //
+                // Its descendants go with it. A directory takes its children
+                // when it goes and nothing touched them, so no event ever
+                // arrives on their behalf; left alone they answer for files
+                // that are not there, and where the directory was replaced by a
+                // link, at paths that now resolve outside the tree.
                 None => {
                     let path_str = path.to_string_lossy();
                     writer.delete_term(Term::from_field_text(fields.path, &path_str));
+                    for beneath in self.indexed_beneath(&fields, &path_str)? {
+                        writer.delete_term(Term::from_field_text(fields.path, &beneath));
+                    }
                 }
             }
         }
@@ -1228,6 +1328,97 @@ mod tests {
         assert!(
             reader.candidates("needle", 10).unwrap().is_empty(),
             "the watcher indexed a symlink's target as though it were in the tree"
+        );
+    }
+
+    /// A directory takes its descendants with it when it goes, and the watcher
+    /// reports only the directory: the children were not touched, so no event
+    /// ever arrives for them. Deleting the one term leaves every document
+    /// beneath it answering — and where the directory was replaced by a link,
+    /// each of those paths now resolves through it to a file the covered tree
+    /// does not contain.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_that_is_gone_takes_its_descendants_out_of_the_index() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside.path().join("project")).unwrap();
+        std::fs::write(
+            outside.path().join("project/notes.txt"),
+            "a beacon out here\n",
+        )
+        .unwrap();
+
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        let project = content.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("notes.txt"), "a beacon in here\n").unwrap();
+        manager.index_home(Refresh::Everything, None).unwrap();
+
+        // Established first, so that its later absence is the fix working
+        // rather than the document never having been there.
+        let reader = IndexReader::open(dir.path().join("index"), content.clone())
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            reader
+                .candidates("beacon", 10)
+                .unwrap()
+                .contains(&project.join("notes.txt")),
+            "the descendant was never indexed, so its removal would prove nothing"
+        );
+
+        // The directory is replaced by a link to one outside the tree. Only the
+        // directory is reported: nothing touched the children.
+        std::fs::remove_dir_all(&project).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("project"), &project).unwrap();
+        manager
+            .process_changes(std::slice::from_ref(&project))
+            .unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), content)
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            reader.candidates("beacon", 10).unwrap().is_empty(),
+            "a document under a directory that is gone still answers, at a path \
+             that now resolves outside the tree"
+        );
+    }
+
+    /// The same rule for a descendant reported on its own. `symlink_metadata`
+    /// does not follow the final component, but it does resolve the rest of the
+    /// path — so a file under a directory that has become a link is reported as
+    /// an ordinary file, and indexing it puts the link's target into the index
+    /// under a path inside the tree.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_reached_through_a_symlinked_directory_is_not_indexed() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside.path().join("project")).unwrap();
+        std::fs::write(
+            outside.path().join("project/notes.txt"),
+            "a beacon out here\n",
+        )
+        .unwrap();
+
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        let project = content.join("project");
+        manager.index_home(Refresh::Everything, None).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("project"), &project).unwrap();
+
+        manager
+            .process_changes(&[project.join("notes.txt")])
+            .unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), content)
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            reader.candidates("beacon", 10).unwrap().is_empty(),
+            "a file reached through a symlinked directory was indexed as though \
+             the tree contained it"
         );
     }
 
