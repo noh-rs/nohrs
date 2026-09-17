@@ -806,31 +806,49 @@ fn index_one_directory(
 /// The remaining exposure is worth naming rather than implying a guarantee that
 /// does not hold.
 ///
+/// The size is asked of the open handle and the read is bounded, because the
+/// caller's `metadata` describes whatever was at that name a syscall ago. A
+/// file can grow past the limit, or be replaced by one that is already past it,
+/// in between — a log being appended to is enough, and nothing adversarial is
+/// needed. An unbounded read would then pull the whole of it into memory, on a
+/// pass whose entire point is to stay out of the way.
+///
 /// Indexing runs on the pass's own walk threads, never the GPUI foreground
 /// loop, so the blocking read is fine here.
 #[allow(clippy::disallowed_methods)]
 fn read_without_following(path: &Path) -> Option<String> {
+    use std::io::Read;
+
     #[cfg(unix)]
-    {
-        use std::io::Read;
+    let mut file = {
         use std::os::unix::fs::OpenOptionsExt;
 
         // Via rustix rather than a hand-written constant: `O_NOFOLLOW` is a
         // different value on Linux and macOS, and the wrong one silently opens
         // the link instead of refusing it.
-        let mut file = fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .read(true)
             .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(path)
-            .ok()?;
-        let mut content = String::new();
-        file.read_to_string(&mut content).ok()?;
-        Some(content)
-    }
+            .ok()?
+    };
     #[cfg(not(unix))]
-    {
-        fs::read_to_string(path).ok()
+    let mut file = fs::File::open(path).ok()?;
+
+    let about = file.metadata().ok()?;
+    if !about.is_file() || about.len() > MAX_INDEXED_FILE_BYTES {
+        return None;
     }
+
+    // One byte past the limit, so that a file which grew after that check is
+    // caught by the length of what came back rather than read to its end.
+    let mut content = String::new();
+    let read = file
+        .by_ref()
+        .take(MAX_INDEXED_FILE_BYTES + 1)
+        .read_to_string(&mut content)
+        .ok()?;
+    (read as u64 <= MAX_INDEXED_FILE_BYTES).then_some(content)
 }
 
 fn index_one_file(
@@ -840,21 +858,30 @@ fn index_one_file(
     writer: &IndexWriter,
     fields: &Fields,
 ) -> Result<()> {
-    if metadata.len() > MAX_INDEXED_FILE_BYTES {
-        tracing::debug!("Skipping large file: {:?}", path);
-        return Ok(());
-    }
-
-    let Some(content) = read_without_following(path) else {
-        tracing::debug!("Skipping binary/unreadable file: {:?}", path);
-        return Ok(());
+    // A file too large, unreadable, or not text carries its name into the index
+    // and not its contents, which is what `docs/search.md` §3.5 promises for
+    // one. Writing the document matters as much as leaving the contents out of
+    // it: a file that was small and textual when it was last indexed already
+    // has one, and returning here would leave that older document answering
+    // searches with what the file used to hold.
+    let content = if metadata.len() > MAX_INDEXED_FILE_BYTES {
+        tracing::debug!("Indexing the name only, the file is large: {:?}", path);
+        None
+    } else {
+        match read_without_following(path) {
+            // Crude, and the same check the rest of the search stack makes: a
+            // NUL byte means this is not text anyone wants lines quoted from.
+            Some(text) if text.contains('\0') => {
+                tracing::debug!("Indexing the name only, the file is binary: {:?}", path);
+                None
+            }
+            Some(text) => Some(text),
+            None => {
+                tracing::debug!("Indexing the name only, the file was not read: {:?}", path);
+                None
+            }
+        }
     };
-    // Crude, and the same check the rest of the search stack makes: a NUL byte
-    // means this is not text anyone wants lines quoted from.
-    if content.contains('\0') {
-        tracing::debug!("Skipping binary file (detected null byte): {:?}", path);
-        return Ok(());
-    }
 
     let path_str = path.to_string_lossy();
     let filename = path.file_name().unwrap_or_default().to_string_lossy();
@@ -866,7 +893,9 @@ fn index_one_file(
     // than concatenated onto the front of it: joining them would copy the whole
     // file to prepend one line, which on a large tree is the read done twice.
     doc.add_text(fields.content, &path_str);
-    doc.add_text(fields.content, &content);
+    if let Some(content) = &content {
+        doc.add_text(fields.content, content);
+    }
     doc.add_u64(fields.is_directory, 0);
     if let Some(modified) = modified {
         doc.add_u64(fields.last_modified, modified);
@@ -1468,6 +1497,66 @@ mod tests {
             reader.candidates("beacon", 10).unwrap().is_empty(),
             "a document under a directory that is gone still answers, at a path \
              that now resolves outside the tree"
+        );
+    }
+
+    /// A file that stops being indexable — grown past the limit, replaced by
+    /// something binary — still has the document it got when it was neither.
+    /// Returning without writing would leave that document answering with the
+    /// contents the file no longer has.
+    #[test]
+    fn a_file_that_stops_being_indexable_stops_answering_with_what_it_held() {
+        let (dir, manager) = staged();
+        let content = dir.path().join("content");
+        let notes = content.join("notes.txt");
+        manager.index_home(Refresh::Everything, None).unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), content.clone())
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            reader.candidates("needle", 10).unwrap().contains(&notes),
+            "the file was never indexed by content, so losing it proves nothing"
+        );
+
+        // The same name, now holding something that carries no text into the
+        // index. The name is still indexed; the old contents must not be.
+        std::fs::write(&notes, b"\0\0\0 binary now\n").unwrap();
+        manager.index_home(Refresh::Everything, None).unwrap();
+
+        let reader = IndexReader::open(dir.path().join("index"), content)
+            .unwrap()
+            .expect("an index that was just built");
+        assert!(
+            !reader.candidates("needle", 10).unwrap().contains(&notes),
+            "a file that is no longer text still answers with the text it used to hold"
+        );
+        assert!(
+            reader.candidates("notes", 10).unwrap().contains(&notes),
+            "the name was dropped along with the contents"
+        );
+    }
+
+    /// The size the caller checked belongs to whatever was at that name a
+    /// syscall ago. The read is bounded on its own account, so a file that grew
+    /// past the limit in between is not pulled into memory whole.
+    #[test]
+    fn a_file_that_grew_past_the_limit_is_not_read_to_its_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("big.txt");
+        let oversized = usize::try_from(MAX_INDEXED_FILE_BYTES).unwrap() + 1024;
+        std::fs::write(&big, vec![b'a'; oversized]).unwrap();
+
+        assert!(
+            read_without_following(&big).is_none(),
+            "a file past the limit was read anyway"
+        );
+
+        let small = dir.path().join("small.txt");
+        std::fs::write(&small, b"a beacon in here\n").unwrap();
+        assert!(
+            read_without_following(&small).is_some(),
+            "an ordinary file was refused, so refusing a large one proves nothing"
         );
     }
 
