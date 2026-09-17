@@ -194,21 +194,29 @@ interface commands {
 
   variant command-result {
     instant(option<string>),
-    view(tuple<session-id, view-node>),   // セッションを開いてビューを返す
+    view(tuple<session-id, view-node>),   // セッションを開いてビューを返す (revision = 0)
     failure(string),
   }
 
-  // host → plugin: セッションにイベントを届け、新しいビューを受け取る
-  handle-event: func(session: session-id, event: ui-event) -> result<view-update, string>;
+  // host → plugin: セッションにイベントを届け、新しいビューを受け取る。
+  // revision は「このイベントを起こした時点で host が表示しているビュー」の版。
+  handle-event: func(session: session-id, revision: u64, event: ui-event)
+      -> result<view-update, string>;
 
   // host → plugin: セッション終了 (launcher が閉じた / pop された)
   close-session: func(session: session-id);
 
   // 差分だけ返せるようにしておく (全置換も可)
   variant view-update {
-    replace(view-node),
-    patch(list<view-patch>),
+    replace(view-node),      // 絶対。常に適用される
+    patch(patch-batch),      // 相対。base が一致するときだけ適用される
     close,
+  }
+
+  record patch-batch {
+    // どの版のビューを土台に計算したか。handle-event で渡された revision をそのまま返す。
+    base: u64,
+    ops:  list<view-patch>,
   }
 
   // 差分の最小形。効くのは「大きなリストの一部だけが変わる」場合だけなので、
@@ -231,12 +239,24 @@ interface commands {
   現在のビューに適用して `replace` 相当に畳む — plugin 側から見た意味は同じで、host の最適化は後から入れられます。
   それでも**型として最初から置く**のは、WIT の variant にケースを足すのが破壊的変更だからです
   (Raycast が JSON Patch を使っているのと同じ理由で、大きなリストの再送は最終的に避けたい)。
-- **差分は 1 バッチが全か無か**です。`target` が現在のビューに存在しないものが 1 つでもあれば、
-  そのバッチは**丸ごと捨てて前のビューを保ち**、host は当該セッションに `ui-event::resync` を送ります。
+- **1 セッションにつき、`handle-event` の実行は同時に 1 つまで**です。応答待ちの間に届いたイベントは
+  キューに積み、`search-changed` の連続は**最後の 1 つに畳んで**から渡します (打鍵ごとに 1 往復させない、という
+  実利も兼ねます)。host は `cx.background_spawn` から plugin を呼ぶので ([`plugin-api.md`](./plugin-api.md) §5)、
+  直列化を明示的に書いておかないと、2 つのイベントの応答が入れ替わって返る余地が残ります。
+- **差分は 1 バッチが全か無か**で、適用条件は 2 つあります。`base` が host の現在の revision と一致すること、
+  そして `target` がすべて現在のビューに存在すること。どちらか一方でも欠ければ、そのバッチは
+  **丸ごと捨てて前のビューを保ち**、host は当該セッションに `ui-event::resync` を送ります。
   plugin はそれに `replace` で答える契約です (`resync` に対して再び `patch` を返したら、host は
   プロトコル違反としてセッションを閉じる — 直らないループを回すよりエラーとして見えるほうがよい)。
+  適用された更新は `replace` / `patch` のどちらでも revision を 1 つ進めます (捨てられたバッチは進めない)。
 
-  当てられなかった差分を**黙って捨てるのは誤り**です。差分は「host の現在のビュー」を土台に計算されるので、
+  **`target` の存在確認だけでは足りません。** 直列化が (将来の host 側の変更やバグで) 破れたとき、古いビューを
+  土台に計算された差分が新しいビューに当たることがあり、その差分が触る id がたまたますべて残っていれば、
+  検査を素通りして間違った内容が適用されます。`base` は「この差分はどの版に対するものか」を明示するので、
+  id の生き死にに依存せずに検出できます。直列化が効いていれば `base` の不一致は起きないので、これは
+  規約が破れたことを**静かに壊れる前に**知らせるための検査です。
+
+  当てられなかった差分を**黙って捨てるのも誤り**です。差分は「host の現在のビュー」を土台に計算されるので、
   1 回取りこぼした時点で plugin が信じているビューと host のビューがずれ、以降の差分はすべて誤った土台の上に
   乗ります。画面には消えたはずの行や、もう無いアクションが残り続け、しかも plugin はそれを知りません。
   部分適用も同じ理由で禁止で、どこまで当たったかが plugin から見えない状態を作ります。
