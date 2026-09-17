@@ -60,7 +60,7 @@ SemVer の `0.x.y` を使い、刻みは次の基準で決める。
 
 ## 参照ドキュメント (20)
 
-ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキュメントを参照します。各ドキュメントは骨子を P1 で作成し、対応フェーズで詳細化します。
+ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキュメントを参照します。P1 で列挙した 17 本は骨子を P1 で作成し、対応フェーズで詳細化します。P1 より後に必要性が判明したもの (`launcher-requirements` / `notch` / `migration`) は、起票したフェーズで作成します。
 
 | ドキュメント | 対応 Phase | 内容 |
 |------------|-----------|------|
@@ -129,7 +129,7 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
 - `cargo fmt --check && cargo clippy -- -D warnings -W clippy::unwrap_used -W clippy::expect_used && cargo test --all-features` が CI で green
 - `cargo publish --dry-run` がメタ情報エラーを出さない
 - `nohrs.app` が GA、`noh.rs` リダイレクト稼働
-- 全 spec doc 16 本の骨子が `docs/` 配下に存在
+- P1 で列挙した spec doc 17 本の骨子が `docs/` 配下に存在 (後続フェーズで追加されたものは対象外)
 
 ---
 

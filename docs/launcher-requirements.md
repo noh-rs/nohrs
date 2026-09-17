@@ -460,7 +460,10 @@ Supaste を包含する、という前提で要件を置きます。**単なる�
 Hyper Key 相当を載せると、**プロセス全体で N 個のホットキーを登録・衝突検出・再バインド**する必要があります。
 
 **提案**: `hotkey` モジュールを `nohrs-launcher` から昇格させ、`KeyChord` 型・登録レジストリ・衝突検出・
-Wayland portal 経路をまとめて持つ。macOS/X11/Windows の passive grab と Wayland portal の 2 経路の分岐は
+Wayland portal 経路をまとめて持つ。**衝突検出はグローバル同士だけでなく、アプリ内キーマップに対しても行う**:
+グローバル登録は前面アプリのキーを奪うので、explorer の `Cmd+Shift+N` (新規フォルダ、
+[`explorer-essentials.md`](./explorer-essentials.md) §6) のような既存バインドと重なると、explorer が前面のときに
+両方が走る。macOS/X11/Windows の passive grab と Wayland portal の 2 経路の分岐は
 そのまま維持 ([`launcher.md`](./launcher.md) §13)。**Wayland では portal のバインド数に上限がある可能性**が
 あるため、コマンド単位ホットキーは Wayland で `△` になり得る (要実機検証)。
 
@@ -500,6 +503,7 @@ CREATE TABLE clips (
     preview       TEXT,               -- 一覧表示用の短いテキスト
     body          BLOB,               -- 小さい値は inline
     blob_path     TEXT,               -- 大きい値は外部ファイル
+    ocr_text      TEXT,               -- 画像から起こしたテキスト (4.6、P5 まで常に NULL)
     source_app    TEXT,               -- bundle id / .desktop id
     source_title  TEXT,
     byte_size     INTEGER NOT NULL,
@@ -508,7 +512,12 @@ CREATE TABLE clips (
     copied_at     INTEGER NOT NULL
 );
 CREATE INDEX idx_clips_time ON clips(copied_at DESC);
-CREATE VIRTUAL TABLE clips_fts USING fts5(preview, ocr_text, content='clips');
+
+-- external content table。列は clips に実在するものだけを並べる (content='clips' は
+-- rowid で引きに行くので、無い列を書くと問い合わせが `no such column` で落ちる)。
+-- OCR は P5 だが列は最初から置く: 後から足すと FTS 側の作り直しになる。
+CREATE VIRTUAL TABLE clips_fts USING fts5(preview, ocr_text, content='clips', content_rowid='id');
+-- 同期は insert / update / delete の 3 トリガで行う (external content の定石)。
 
 -- コマンド使用履歴 (既存 history テーブルの kind="command" を昇格)
 CREATE TABLE command_usage (
@@ -535,8 +544,8 @@ Raycast 互換と、そもそもの対話的なプラグイン UI のために�
 
 | Phase | 版 | 追加する内容 |
 |-------|----|------------|
-| **P3** (現行の範囲を維持) | `0.2.0` | コマンドフレームワーク (5.3) / アプリ起動 (5.2) / 計算機 / 詳細ペイン / push-pop / 履歴 boost / 検索 V2 |
-| **P3.5** (新規) | `0.2.x` | クリップボード履歴 + 機微情報除外 (5.4) / スニペット + プレースホルダ (5.5) / Quicklink / エイリアス / コマンド単位ホットキー / per-app hotkey / システムアクション / **移行ウィザード v1** ([`migration.md`](./migration.md)) / `noh export`・`import` |
+| **P3** (現行の範囲を維持) | `0.2.0` | コマンドフレームワーク (5.3) / アプリ起動 (5.2) / エイリアス / 計算機 / 詳細ペイン / push-pop / 履歴 boost / 検索 V2 |
+| **P3.5** (新規) | `0.2.x` | クリップボード履歴 + 機微情報除外 (5.4) / スニペット + プレースホルダ (5.5) / Quicklink / コマンド単位ホットキー / per-app hotkey / システムアクション / **移行ウィザード v1** ([`migration.md`](./migration.md)) / `noh export`・`import` |
 | **P4** | `0.3.0` | plugin host (現行どおり) + **WIT のセッション/イベント拡張** / notch v1 (シェルフ・進捗・クリップ覗き見) / 常駐モードとメニューバー / ウィンドウ管理・メニュー検索 (Accessibility 群) / Notes / 絵文字 |
 | **P5** | `0.4.0` | プラグインストア (現行どおり) + **Raycast 拡張ソース互換 SDK** / OCR / AI (BYOK) / notch v2 (メディア・HUD・ウィジェット) / テーマ |
 | **P6** | `0.5.0` | 性能ゲートに **常駐アイドル CPU / RSS** を追加 / Linux での劣化マトリクスを文書化 |

@@ -18,7 +18,7 @@
 |---|------|--------|
 | **G1** | 初回起動から **5 分以内**に、以前の環境の「毎日使う部分」が動く | スニペット・Quicklink・ホットキー・エイリアス・お気に入り・クリップボード履歴が移っている |
 | **G2** | 移行は**差分レポート**を出す。移せなかったものを黙って落とさない | 「移行: 42 / 未対応: 3 (理由つき)」の画面 |
-| **G3** | 移行は**取り消せる** | 実行前にスナップショットを取り、`noh migrate --undo` で戻る |
+| **G3** | 移行は**取り消せる** | 実行前にスナップショットを取り、`noh migrate undo` で戻る |
 | **G4** | 既存の Raycast 拡張を**ソースから**再ビルドして動かせる | `@nohrs/raycast-compat` + `jco componentize` で主要拡張が動く |
 | **G5** | nohrs の全データを平文で持ち出せる | `noh export --all` が JSON + blob の zip を吐く |
 
@@ -123,7 +123,25 @@ Tinycast はこれを JavaScriptCore + SwiftUI で再現しています。
 | **C. 非対応** | 互換を作らない | 実装ゼロ | 乗り換え障壁が最大 |
 
 **採用: B**。ただし「ビルドが要る」を **`noh plugin import-raycast <repo>` の 1 コマンド**に隠します
-(内部で `npm install` → shim 差し替え → `jco componentize` → インストール)。
+(内部で 依存取得 → shim 差し替え → `jco componentize` → インストール)。
+
+#### ビルド自体をサンドボックスの穴にしない
+
+この経路には、成果物が WASM であることでは塞げない穴があります。**ビルドはホスト上で走る**ので、
+他人のリポジトリの `package.json` にある `preinstall` / `postinstall` が、権限モデルを一切通らずに
+ユーザーの権限で実行されます。「サンドボックスされたプラグイン」を謳いながら、導入の過程が
+任意コード実行では意味がありません。
+
+| 規則 | 内容 |
+|------|------|
+| ライフサイクルスクリプトを既定で走らせない | 依存取得は `npm ci --ignore-scripts` (lockfile が無ければ `npm install --ignore-scripts`)。これで大半の拡張は通る |
+| スクリプトが要る場合は明示オプトイン | `--allow-build-scripts` を付けたときだけ。**何が走るのかを実行前に列挙して見せ**、確認を取る |
+| 可能なら隔離して走らせる | macOS は `sandbox-exec`、Linux は `bwrap` / コンテナ。無い環境では上の 2 つに倒し、隔離できていないことを明示する |
+| ネットワークはレジストリのみ | 依存取得以外の外向き通信を許さない |
+| 取り込み元を記録する | 由来 (repo / commit) と、スクリプトを許可したかどうかを `plugin.toml` に残す |
+
+同じ注意は [`plugin-templates.md`](./plugin-templates.md) の `nohrs plugin build` にも本来必要です
+(こちらは作者が自分のコードをビルドする前提なので危険度は下がりますが、ゼロではない)。
 
 > **ライセンス上の注意**: 拡張のソースは各作者のライセンスに従います。互換 SDK は**ユーザーが自分の手元で
 > ビルドする**ためのものであり、nohrs が拡張を再配布することはしません。Raycast Store からの一括取得も行いません。
@@ -191,11 +209,29 @@ interface commands {
     patch(list<view-patch>),
     close,
   }
+
+  // 差分の最小形。効くのは「大きなリストの一部だけが変わる」場合だけなので、
+  // 対象は list-item に絞る。detail / form は replace で十分。
+  record view-patch {
+    // 変更対象。list-item の id、または append 時は section-info の id。
+    target: string,
+    op:     patch-op,
+  }
+
+  variant patch-op {
+    set-item(list-item),      // target の item を差し替える
+    remove-item,              // target の item を消す
+    append-item(list-item),   // target のセクション末尾に足す
+  }
 }
 ```
 
-- **`patch` は最初は使わなくてよい** (`replace` のみ実装)。Raycast が JSON Patch を使っているのと同じ理由で、
-  大きなリストの再送を避ける余地を**型として**残しておくことが目的です。
+- **`patch` は最初は使わなくてよい**。P4 の host は `replace` だけを実装し、`patch` を受け取ったら
+  現在のビューに適用して `replace` 相当に畳む — plugin 側から見た意味は同じで、host の最適化は後から入れられます。
+  それでも**型として最初から置く**のは、WIT の variant にケースを足すのが破壊的変更だからです
+  (Raycast が JSON Patch を使っているのと同じ理由で、大きなリストの再送は最終的に避けたい)。
+- `target` が現在のビューに存在しない場合は**エラーにせず無視**し、host のログに残します。
+  plugin と host のビューが食い違ったときに、画面が固まるより崩れて進むほうが直しやすいためです。
 - セッションはプラグイン側の状態 (React の state) の寿命を定義します。`close-session` で確実に解放する。
 - host 側のタイムアウト: `handle-event` が **200ms** を超えたら UI に loading を出し、**5 秒**で打ち切る。
 

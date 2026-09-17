@@ -16,10 +16,11 @@ notch アプリ (NotchNook / Boring Notch / Alcove など) は現在、**ラン�
 
 - 常駐してファイルインデックスを持ち ([`search.md`](./search.md))、
 - ファイル操作を実行し ([`explorer-essentials.md`](./explorer-essentials.md))、
-- クリップボード履歴を持ち ([`launcher-requirements.md`](./launcher-requirements.md) §5.4)、
-- ドラッグ & ドロップの送り手と受け手の両方である
+- ドラッグ & ドロップの送り手と受け手の両方であり、
+- notch の前フェーズ (P3.5) でクリップボード履歴を持つ ([`launcher-requirements.md`](./launcher-requirements.md) §5.4)
 
-ため、**notch に出したいものをすでに全部持っています**。別プロセスを増やさずに出せるのは構造的な優位です。
+ため、notch v1 に着手する時点で、**notch に出したいものをすでに全部持っている**ことになります。
+別プロセスを増やさずに出せるのは構造的な優位です。
 
 逆に言えば、nohrs の notch は「メディアコントロールの置き場所」ではなく、
 **Explorer × Launcher の常駐面**として設計します。他社の notch アプリが持てないのは次の 3 つです。
@@ -135,12 +136,17 @@ nohrs 自身が抱えている長時間処理を出します。**他アプリの
 | ファイルをドラッグして上端へ | Open (シェルフタブ) |
 | 下スワイプ / 二本指スクロール↓ | Open |
 | 上スワイプ | Close |
-| `Cmd+Shift+N` (既定、変更可) | Open / Close トグル |
+| `Cmd+Shift+B` (既定、変更可) | Open / Close トグル |
 | `Esc` | Close |
 | `Tab` / `Shift+Tab` | タブ切り替え |
 | `1`-`9` | クリップ / シェルフの n 番目を実行 |
 
 ホットキーは launcher と**同じホットキーレジストリ**を使います ([`launcher-requirements.md`](./launcher-requirements.md) §7.2)。
+
+既定が `Cmd+Shift+B` なのは、`Cmd+Shift+N` が explorer の「新規フォルダ」
+([`explorer-essentials.md`](./explorer-essentials.md) §6) だからです。notch のトグルは**グローバル**登録なので、
+アプリ内キーマップと重なると explorer が前面のときに両方が走ります。既定値を選ぶときは §7.2 の衝突検出を
+アプリ内キーマップに対しても通すこと — レジストリがグローバル同士の衝突しか見ないなら、この種の事故は防げません。
 
 ---
 
@@ -229,7 +235,7 @@ display = "builtin"        # "builtin" | "main" | "all"
 fallback_bar = true        # notch が無い環境で浮遊バーを出すか
 idle_indicator = true      # Idle (pill) を出すか
 open_on_drag = true        # ドラッグで上端に近づけたら開くか
-hotkey = "Cmd+Shift+N"
+hotkey = "Cmd+Shift+B"
 
 [notch.tabs]
 shelf = true
