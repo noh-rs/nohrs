@@ -77,10 +77,13 @@ importer とストア書き込みを分けることで、(a) 新しい移行元�
   ステージングルートの外に出るものは、すべて拒否して `unsupported` に落とす。
   移行アーカイブは他人から渡され得るので、ここが緩いとインポートが任意の場所への書き込みになります。
 - **上に挙げた 7 種類は移行元から来るものだけ**です。`noh export --all` (G5) はこれに加えて
-  `config` (config.toml のスナップショット) / `history` (開封・検索・コマンドの履歴) / `command_usage` /
-  `window_state` / `shelf` / `plugins` (id・バージョン・由来・許可した権限) / `plugin_kv`
+  `config` (config.toml のスナップショット) / `history` (開封・検索・コマンドの履歴。**使用統計 `command_usage` は含めません** — `history` の `kind="command"` から再生成できる派生値で、二重に持つと import 時にどちらが正かを決める羽目になります) /
+  `window_state` / `shelf` / `plugins` (id・バージョン・由来・許可した権限 + **`plugin.toml` と `component.wasm` の blob 本体と sha256**) / `plugin_kv`
   (plugin ごとの KV、[`persistence.md`](./persistence.md) §3 の隔離単位のまま) を含みます。
   **含まないもの**は再生成可能なキャッシュ (検索インデックス / サムネイル) だけで、それは export に入れません。
+  plugin は**実体を同梱します**。メタデータだけでは、移行先に同じ plugin が無ければ復元できず、
+  再取得はネットワークと配布元の生存に依存するからです。`--no-plugin-blobs` で由来だけにもでき、
+  その場合の import は取得を試み、**失敗したものを 1 件ずつ理由つきで報告**します (黙って減らさない)。
 - `unsupported` は**importer が自分で埋める**。これが G2 の差分レポートの元データになります。
 - MIF は `docs/mif.schema.json` として JSON Schema を生成・コミットする ([`config.md`](./config.md) §4 と同じ運用)。
 
@@ -91,6 +94,7 @@ importer とストア書き込みを分けることで、(a) 新しい移行元�
 | 衝突 | 既定は **skip** (既存を壊さない)。`--on-conflict=overwrite \| rename \| skip` で変更可 |
 | dry-run | 既定。`--apply` を付けるまで書き込まない |
 | スナップショット | 適用前に `noh export --all` 相当を `$XDG_DATA_HOME/nohrs/backups/pre-migrate-<ts>.zip` に取る (G3)。これは [`persistence.md`](./persistence.md) §7 の export/import を **P3.5 に前倒しする**ということで、同書もそう更新済み |
+| **スナップショットは 1 時点** | データは SQLite・redb・blob ディレクトリに**分かれて**います。書き込みが走ったまま順に読むと、SQLite は新しく redb は古い、という**どの瞬間にも存在しなかった状態**が保存され、undo がそれを復元します。取得中は全ストアへの書き込みを止め、共通の世代番号を固定してから読みます。止められない場合 (長いファイル操作の途中など) は**スナップショットを取らず、移行を始めません** — 戻せない移行は「取り消せる」と言えないので |
 | **undo の安全規則** | `noh migrate undo` はスナップショットで**丸ごと戻す**操作なので、適用後に足したデータを消し得ます。適用時点のストア世代を記録しておき、**適用後に変更があったら既定で拒否**し、何が失われるかを示したうえで `--force` を要求します。「取り消せる」と「後の作業を消す」は別物です |
 | 検証 | ホットキーは**衝突検出**を通し、衝突したものは `unsupported` に落として報告する (黙って上書きしない) |
 | 機微情報 | 取り込むクリップにも除外ルール ([`launcher-requirements.md`](./launcher-requirements.md) §5.4) を適用する。移行元に残っていたパスワードを nohrs に持ち込まない |
@@ -281,9 +285,15 @@ interface commands {
   実行中の呼び出しの足元で状態を解放させない。
 - host 側のタイムアウト: `handle-event` が **200ms** を超えたら UI に loading を出し、**5 秒**で打ち切る。
   打ち切りの順序を決めておきます: host はまずセッションを closed にして**以降の結果を捨てる**状態にし、
-  `close-session` を呼ぶのは **in-flight の呼び出しが返るか、インスタンスが停止し終えてから**です。
-  P4 の plugin 呼び出しはキャンセルできない ([`plugin-api.md`](./plugin-api.md) §5) ので、
-  「まだ走っている呼び出しの足元で状態を解放する」ことがないように、この順番が要ります。
+  `close-session` を呼ぶのは **in-flight の呼び出しが実際に停止し終えてから**です。
+
+  **「待つ」だけでは終わらない場合があります。** guest が無限ループに入っていれば `handle-event` は永遠に
+  返らず、`close-session` も永遠に呼べません。P4 に協調的キャンセルが無い ([`plugin-api.md`](./plugin-api.md) §5)
+  ことは、**中断できない**ことを意味しません。5 秒は wasmtime の **epoch interruption** (または fuel) の
+  期限として設定し、期限が来たら guest は trap で戻ります。tokio runtime や `Instance` を drop するのは
+  停止ではない — drop は「もう見ない」であって「止まった」ではないので、**trap が戻るのを待って**から
+  セッションを解放します。guest ではなく host import の中でブロックしている場合は epoch では抜けないため、
+  host import 側にも個別のタイムアウトが要ります (`network` の HTTP、`process` の spawn が該当)。
 
 この拡張は P4 (plugin host) で入れる必要があります。P5 まで遅らせると、Raycast 互換のために WIT を
 破壊的変更することになります (ROADMAP のバージョニング方針では破壊的変更はフェーズ完了時に集約するため)。

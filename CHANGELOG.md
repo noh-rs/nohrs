@@ -31,7 +31,10 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   does elsewhere, so the surface is specified around a file shelf, the progress
   of a copy, and an undo for a delete that outlives the window it was done in.
   Media, HUD and widgets fail the last test and are assigned to plugins rather
-  than core. Machines with no notch are to get the same panel as a floating bar.
+  than core. Machines with no notch are to get the same panel as a floating bar,
+  where the platform allows one — a Wayland compositor without `wlr-layer-shell`
+  gets no notch surface at all, and reaches the shelf from the launcher and the
+  explorer instead.
   [`docs/migration.md`](docs/migration.md) defines an
   interchange format so an import is a dry run with a difference report rather
   than a silent overwrite, and settles on rebuilding Raycast extensions from
