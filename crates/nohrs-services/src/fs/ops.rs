@@ -262,13 +262,14 @@ fn empty_dir(dir: &fs::File) -> Result<()> {
                 already_gone_is_fine(unlinkat(dir, name, AtFlags::REMOVEDIR))?;
             }
             // Not a directory. A symbolic link lands here too: `O_NOFOLLOW`
-            // refuses to open its target, and which errno carries that refusal
-            // depends on the order the kernel checks the flags in. Measured on
-            // Linux 6.18 it is `ENOTDIR`, `O_DIRECTORY` being answered first —
-            // not the `ELOOP` the same flag gives on its own in `open_claimed`,
-            // which carries no `O_DIRECTORY`. Both are matched because that
-            // order is the kernel's to choose, not something the condition
-            // decides.
+            // refuses to open its target, and `O_DIRECTORY` is answered first,
+            // so that refusal arrives as `ENOTDIR` rather than the `ELOOP` the
+            // same flag gives on its own in `open_claimed`, which carries no
+            // `O_DIRECTORY`. Measured on both supported targets. `LOOP` stays
+            // matched because the order is the kernel's to choose rather than
+            // anything this call guarantees, and
+            // `a_symlink_is_refused_by_both_entry_opens` is what would notice a
+            // kernel choosing otherwise.
             Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
                 already_gone_is_fine(unlinkat(dir, name, AtFlags::empty()))?;
             }
@@ -1893,5 +1894,55 @@ mod tests {
         let src = dir.path().join("a.txt");
         fs::write(&src, "x").unwrap();
         assert!(!is_cross_volume(&src, dir.path()).unwrap());
+    }
+
+    // Pins the errnos the two entry opens produce for a symbolic link, because
+    // the comment on `empty_dir`'s `NOTDIR | LOOP` arm once named the wrong one
+    // and nothing here contradicted it. Which errno arrives is the kernel's
+    // choice of check order, so it is measured rather than described.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_refused_by_both_entry_opens() {
+        use rustix::fs::{Mode, OFlags, open};
+
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let descending = open(
+            &link,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect_err("empty_dir must not open a link as the directory it points at");
+
+        // No `O_DIRECTORY`: the entry's type is what this open exists to find
+        // out, so it cannot ask for one.
+        let claiming = open(
+            &link,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect_err("nor may open_claimed");
+
+        // The portable part, and the one the match arm rests on: whatever the
+        // platform returns is an errno that arm already handles.
+        for errno in [descending, claiming] {
+            assert!(
+                matches!(errno, rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP),
+                "a symlink at the entry produced an errno neither arm matches: {errno:?}"
+            );
+        }
+
+        // Without `O_DIRECTORY` there is nothing to answer first, so the
+        // refusal is `O_NOFOLLOW`'s own.
+        assert_eq!(claiming, rustix::io::Errno::LOOP);
+
+        // With it, both supported targets answer `O_DIRECTORY` first. Review
+        // expected macOS to differ, XNU refusing the link in `namei` before the
+        // directory check and so reporting `ELOOP`; the runner says otherwise.
+        assert_eq!(descending, rustix::io::Errno::NOTDIR);
     }
 }
