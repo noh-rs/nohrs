@@ -682,6 +682,21 @@ WASM export です。ロード時に登録すると「検索に出ないとロ�
 | **dispatch** | `id` の名前空間で plugin を引き、`run-command` に回す。core コマンドは直接呼ぶ |
 | **update** | 旧登録を外して新しい `list-commands` で入れ直す。消えた `id` に付いていたホットキー・エイリアスは**孤児として保持**し、同じ `id` が戻ったら復活させる |
 
+**discover で登録する以上、`plugin.toml` の `[[commands]]` と WIT の `command-info` は
+[§5.3](#53-コマンドフレームワーク) のメタデータを全部運べないといけません。** いま両方に無いのは
+`required_permissions` / `surfaces` / `mode` の `Background` で、これが無いと discover 時点の登録が
+core コマンドと同じ形になりません。既定を置いて埋めるのではなく、**マニフェストと WIT の両方に足します**:
+
+- `required_permissions` — 無いと「権限が要るコマンド」を実行するまで判別できず、
+  [§5.6](#56-ウィンドウ管理メニュー検索貼り戻し-accessibility-権限グループ) の「出すが実行時に説明する」が
+  成立しません。空配列は「権限不要」の明示であって、未記入とは区別します。
+- `surfaces` — 未記入を「全サーフェスに出す」と解釈すると、plugin のコマンドが既定で notch にまで出ます。
+  **未記入は launcher のみ**とします。
+- `mode` — `Background` が表現できないと、結果を notch に出して閉じるコマンドを plugin が書けません。
+- マニフェストと `list-commands` がズレたときに実体を正とするのは上の表のとおりですが、
+  **`required_permissions` だけは広い方を採ります**。マニフェストに無い権限を実体が要求してきた場合、
+  それは同意を取り直す対象です。
+
 ### 7.2 ホットキーレジストリ
 
 現在の `hotkey.rs` は「summon キー 1 つ」を前提にしています。per-app hotkey (2.3)、コマンド単位ホットキー (1.5)、
@@ -783,7 +798,10 @@ Raycast 互換と、そもそもの対話的なプラグイン UI のために�
 | **P6** | `0.5.0` | 性能ゲートに **常駐アイドル CPU / RSS** を追加 / Linux での劣化マトリクスを文書化 |
 
 各フェーズの完了条件には、[`ROADMAP.md`](./ROADMAP.md) 共通の CI ゲート
-(`cargo fmt --check` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test` が CI で green) が**そのまま適用**されます。
+(`cargo fmt --check` / `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` を
+**ubuntu-latest と macos-latest の両方**で / `cargo test` が CI で green) が**そのまま適用**されます。
+`--workspace` を落とすと GUI のメンバーが lint されないまま通り、OS を 1 つに絞ると gpui 側の破損が
+片方でしか出ません。
 本書の各フェーズは成果物を定義するだけで、この条件を緩めません。
 
 > **なぜ P3.5 を切るか**: クリップボードとスニペットは「ランチャーを毎日使う理由」そのもので、
