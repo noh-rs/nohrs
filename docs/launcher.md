@@ -83,6 +83,10 @@ pub trait Command: Send + Sync + 'static {
     fn mode(&self) -> Mode;
     fn arguments(&self) -> &[ArgSpec];
     fn default_hotkey(&self) -> Option<KeyChord>;
+    fn required_permissions(&self) -> &[Permission];
+    fn surfaces(&self) -> Surfaces;
+    fn layout(&self) -> Layout;
+    fn restores_focus(&self) -> bool;
     fn execute(&self, ctx: &CommandContext, args: &Args) -> CommandResult;
 }
 
@@ -103,7 +107,11 @@ inventory::collect!(&'static dyn Command);
 | `icon` | 16-24px、SF Symbols 互換 or 自前 SVG |
 | `keywords` | 検索マッチ強化用 (例: "calc", "math") |
 | `category` | "Productivity", "Developer Tools", "Media", "Cloud", "Theme" |
-| `mode` | `Instant` (即実行)、`View` (結果を launcher 内に表示)、`External` (別 window 開く) |
+| `mode` | `Instant` (即実行)、`View` (結果を launcher 内に表示)、`External` (別 window 開く)、`Background` (結果を HUD / notch に出して launcher を閉じる) |
+| `required_permissions` | このコマンドが要る権限。空配列は「不要」の明示。正規化された集合は [`plugin-permissions.md`](./plugin-permissions.md) の `[permissions]` と同じ語彙 ([`launcher-requirements.md`](./launcher-requirements.md) §5.3) |
+| `surfaces` | どのサーフェスに出すか (launcher / explorer / notch)。未記入は launcher のみ |
+| `layout` | `List` (750×500) か `Split` (左一覧 + 右プレビュー)。未記入は `List` ([`launcher-requirements.md`](./launcher-requirements.md) §5.9) |
+| `restores_focus` | 終了時に元のアプリへフォーカスを返すか。未記入は `false` ([`launcher-requirements.md`](./launcher-requirements.md) §5.11) |
 | `arguments` | `Vec<ArgSpec>` (string / path / number / enum)、検索バーに inline 入力 `> command arg1 arg2` |
 | `default_hotkey` | 任意のコマンド固有グローバルホットキー |
 

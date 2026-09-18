@@ -63,27 +63,57 @@ importer とストア書き込みを分けることで、(a) 新しい移行元�
   "source": { "app": "raycast", "version": "2.x", "exported_at": "2026-09-16T00:00:00Z" },
   "snippets":   [ { "id": "...", "name": "Email", "keyword": ";em", "body": "...", "placeholders": ["clipboard"] } ],
   "quicklinks": [ { "id": "...", "name": "GitHub Search", "target": "https://github.com/search?q={argument}", "app": null } ],
-  "hotkeys":    [ { "command": "launcher.toggle", "chord": "Cmd+Space" } ],
-  "aliases":    [ { "command": "clipboard.history", "alias": "cb" } ],
-  "favorites":  [ { "command": "explorer.open_path", "rank": 1 } ],
+  // ホットキー・エイリアス・お気に入り・Quicklink は同じ bound_command を指します (§5.10 の束縛済みコマンド)
+  "hotkeys":    [ { "bound": { "command": "app.launch", "args": { "bundle_id": "com.tinyspeck.slackmacgap" }, "title": "Slack" },
+                    "chord": "Cmd+Opt+S", "scope": "global", "leader": null } ],
+  "aliases":    [ { "bound": { "command": "clipboard.history", "args": {}, "title": "クリップ履歴" }, "alias": "cb" } ],
+  "favorites":  [ { "bound": { "command": "explorer.open_path", "args": { "path": "~/src" }, "title": "src" }, "rank": 1 } ],
   "clips":      [ { "kind": "text", "preview": "...", "body_ref": "blobs/0001.txt", "source_app": "com.apple.Safari", "copied_at": 0, "pinned": false } ],
   "notes":      [ { "title": "...", "body_ref": "notes/foo.md" } ],
   "unsupported":[ { "kind": "extension", "id": "raycast/spotify", "reason": "拡張は再ビルドが必要 (§4)" } ]
 }
 ```
 
+- **`bound` は 4 箇所で同じ形**です (`command` + `args` + `title`)。ホットキー・エイリアス・
+  お気に入り・Quicklink をそれぞれ別の形にすると、「Slack を `Cmd+Opt+S` で開く」の**引数と表示名が
+  往復で落ちます** ([`launcher-requirements.md`](./launcher-requirements.md) §5.10 の D10)。
+  Quicklink は `bound` に加えて `target` (URL やパス) を持ちます。ホットキーだけは `scope`
+  (`global` / `local`) と `leader` (リーダーの後の 1 文字。無ければ `null`) を持ちます。
+  この 3 つのどれかを表現できない移行元の記録は、`unsupported` に落として報告します。
 - `*_ref` は**アーカイブ内の相対パス**。大きい値 (画像・ファイル・メモ) は blob として同梱。
   **展開前に必ず検証します**: 絶対パス・`..` を含むもの・シンボリックリンク・展開後の実パスが
   ステージングルートの外に出るものは、すべて拒否して `unsupported` に落とす。
   移行アーカイブは他人から渡され得るので、ここが緩いとインポートが任意の場所への書き込みになります。
+- **展開を始める前に、アーカイブ全体の大きさを見ます。** 1 アイテム 50MB / 総量 2GB は展開後の blob に
+  対する上限で、**圧縮されたまま**の入力や、blob ですらないメタデータの件数は縛れません。
+  メンバ数 (既定 10 万) と圧縮後の総バイト数 (既定 500MB)、そして**展開後の総バイト数 / 圧縮後の総バイト数**
+  の比 (既定 100 倍) を先に見て、超えたら**1 バイトも書かずに**拒否します。
+  ストリームしながら数え、途中で超えたらそこで止めます。拒否・失敗のどちらで終わっても
+  ステージングは消します。これが無いと、数 KB のファイルで CPU とディスクを使い切らせられます。
 - **上に挙げた 7 種類は移行元から来るものだけ**です。`noh export --all` (G5) はこれに加えて
   `config` (config.toml のスナップショット) / `history` (開封・検索・コマンドの履歴。**使用統計 `command_usage` は含めません** — `history` の `kind="command"` から再生成できる派生値で、二重に持つと import 時にどちらが正かを決める羽目になります) /
   `window_state` / `shelf` / `plugins` (id・バージョン・由来・**以前に許可された権限** + **`plugin.toml` と `component.wasm` の blob 本体と sha256**) / `plugin_kv`
   (plugin ごとの KV、[`persistence.md`](./persistence.md) §3 の隔離単位のまま) を含みます。
   **含まないもの**は再生成可能なキャッシュ (検索インデックス / サムネイル) だけで、それは export に入れません。
+- **このアーカイブは平文です。** クリップボードの中身・設定・履歴・シェルフ・plugin の KV が
+  そのまま入るので、**読めた者はそれを全部読めます**。暗号化は付けません — 鍵の管理と復旧を背負うと、
+  「ロックインしない」の逆側に倒れるからです。代わりに扱いを決めます:
+  - 作るときは**所有者のみ** (`0600`、置くディレクトリは `0700`)。Windows は mode が無いので、
+    ユーザープロファイル配下の ACL を継ぐ場所に置きます ([`logging.md`](./logging.md) と同じ扱い)。
+  - **一時ファイルに書いてから rename** します。途中の中身が他から読める時間を作りません。
+  - **書き出したあとに 1 行出します**: 平文であること、共有するなら自分で暗号化すること。
+  - 適用前スナップショット (`backups/pre-migrate-<ts>.zip`) も**まったく同じ扱い**です。
+    あれは自動で作られるぶん、忘れられたまま残りやすいので、なおさら同じにします。
   plugin は**実体を同梱します**。メタデータだけでは、移行先に同じ plugin が無ければ復元できず、
   再取得はネットワークと配布元の生存に依存するからです。`--no-plugin-blobs` で由来だけにもでき、
   その場合の import は取得を試み、**失敗したものを 1 件ずつ理由つきで報告**します (黙って減らさない)。
+  ただし**由来元に取りに行くのは、それ自体が通信**なので、原則 1 のとおり**別途の明示的な許可**を
+  求めます。plugin の権限同意とは**別の確認**です (権限を許すことと、外に取りに行かせることは違います)。
+  許可しなければ、その plugin は「実体が無い」として `unsupported` に落ちます。
+  取りに行く先は**アーカイブに書かれた URL** — 他人が書いた文字列なので、OGP と同じく
+  スキームを `https` に限り、プライベート IP・ループバック・リンクローカルへは行きません
+  ([`launcher-requirements.md`](./launcher-requirements.md) §5.9)。取得した実体は
+  記録された sha256 と照合し、合わなければ捨てます。
 - **アーカイブに入っている権限は「以前に許可された」という記録であって、許可そのものではありません。**
   import はこれを**要求として扱い**、インストール時の同意フローを通常どおり出します。アーカイブは
   他人から渡され得るので (上の展開前検証と同じ理由)、中の `granted_permissions` をそのまま信じると、
@@ -103,7 +133,7 @@ importer とストア書き込みを分けることで、(a) 新しい移行元�
 | 衝突 | 既定は **skip** (既存を壊さない)。`--on-conflict=overwrite \| rename \| skip` で変更可 |
 | dry-run | 既定。`--apply` を付けるまで書き込まない |
 | スナップショット | 適用前に `noh export --all` 相当を `$XDG_DATA_HOME/nohrs/backups/pre-migrate-<ts>.zip` に取る (G3)。これは [`persistence.md`](./persistence.md) §7 の export/import を **P3.5 に前倒しする**ということで、同書もそう更新済み |
-| **スナップショットは 1 時点** | データは SQLite・redb・blob ディレクトリに**分かれて**います。書き込みが走ったまま順に読むと、SQLite は新しく redb は古い、という**どの瞬間にも存在しなかった状態**が保存され、undo がそれを復元します。取得中は全ストアへの書き込みを止め、共通の世代番号を固定してから読みます。止められない場合 (長いファイル操作の途中など) は**スナップショットを取らず、移行を始めません** — 戻せない移行は「取り消せる」と言えないので |
+| **スナップショットは 1 時点** | データは SQLite・redb・blob ディレクトリに**分かれて**います。書き込みが走ったまま順に読むと、SQLite は新しく redb は古い、という**どの瞬間にも存在しなかった状態**が保存され、undo がそれを復元します。取得中は全ストアへの書き込みを止め、共通の世代番号を固定してから読みます。止められない場合 (長いファイル操作の途中など) は**スナップショットを取らず、移行を始めません** — 戻せない移行は「取り消せる」と言えないので。**blob も同じ柵の内側です**: SQLite の行は blob を参照しているだけなので、blob の作成・差し替え・削除を止めずに撮ると、undo が「行はあるが blob が無い」か「行より新しい blob」を復元します。blob の書き手も同時に止め、世代に紐づいた blob の一覧 (パスと sha256) をスナップショットに入れ、undo はその一覧どおりに戻します |
 | **undo の安全規則** | `noh migrate undo` はスナップショットで**丸ごと戻す**操作なので、適用後に足したデータを消し得ます。適用時点のストア世代を記録しておき、**適用後に変更があったら既定で拒否**し、何が失われるかを示したうえで `--force` を要求します。「取り消せる」と「後の作業を消す」は別物です |
 | 検証 | ホットキーは**衝突検出**を通し、衝突したものは `unsupported` に落として報告する (黙って上書きしない) |
 | 機微情報 | 取り込むクリップにも除外ルール ([`launcher-requirements.md`](./launcher-requirements.md) §5.4) を適用する。移行元に残っていたパスワードを nohrs に持ち込まない |
