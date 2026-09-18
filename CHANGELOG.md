@@ -23,14 +23,16 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   `Command` registry lives so the explorer, the notch and plugins can all
   register into it, where OS-specific capabilities live now that commands call
   them, and whether the workspace's `unsafe_code = "deny"` gets one exception.
-  Two documents come with it: [`docs/notch.md`](docs/notch.md), which treats the
-  notch as a third surface and gives it an admission test — a thing earns that
-  spot only if it arrives on its own, can be acted on there, is passing through,
-  and is something nohrs knows that Control Center does not. What passes is the
-  work the app is already doing: a file shelf, the progress of a copy, the undo
-  for a delete after the window is gone. Media, HUD and widgets fail the last
-  test and become plugin territory rather than core. Machines with no notch get
-  the same panel as a floating bar. And [`docs/migration.md`](docs/migration.md), which defines an
+  Two documents come with it, both describing work that is planned rather than
+  built. [`docs/notch.md`](docs/notch.md) treats the notch as a third surface and
+  gives it an admission test — a thing earns that spot only if it arrives on its
+  own, can be acted on there, is passing through, and is something nohrs knows
+  that Control Center does not. What the test admits is what the app already
+  does elsewhere, so the surface is specified around a file shelf, the progress
+  of a copy, and an undo for a delete that outlives the window it was done in.
+  Media, HUD and widgets fail the last test and are assigned to plugins rather
+  than core. Machines with no notch are to get the same panel as a floating bar.
+  [`docs/migration.md`](docs/migration.md) defines an
   interchange format so an import is a dry run with a difference report rather
   than a silent overwrite, and settles on rebuilding Raycast extensions from
   source against a compatibility shim instead of embedding a JavaScript runtime.
