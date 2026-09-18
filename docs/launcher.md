@@ -26,7 +26,7 @@ requirements §7.1 の結論で置き場所が変わります (`nohrs-launcher` 
 | **移動** | 検索バー上部の数十 px (drag handle) をマウスでドラッグして移動可能 |
 | **位置リセット** | `Cmd+0` でデフォルト位置に戻す |
 | **マルチディスプレイ** | ドラッグで別ディスプレイへ移動可、移動先で位置記憶 |
-| **サイズ** | **750 × 500** 固定 (リサイズ不可、検索 UI なので幅固定で十分) |
+| **サイズ** | **750 × 500** 固定 (リサイズ不可、検索 UI なので幅固定で十分)。**P3.5 以降は読む用途のビューがもう 1 段 (1100 × 700 の二枚組) を宣言します** — [`launcher-requirements.md`](./launcher-requirements.md) §5.9。ユーザーによるリサイズが無いのは変わりません |
 | **デコレーション** | borderless + 丸角 + blur background (mica / vibrancy) |
 | **フォーカス喪失時** | 自動 close (`ESC` でも close)、設定で disable 可 |
 | **再 hotkey** | 既に開いている場合は toggle (close)。位置は記憶のまま |
@@ -174,6 +174,11 @@ inventory::collect!(&'static dyn Command);
 | command 選択時 | コマンド説明 + 引数フォーム |
 
 詳細ペインの中身は plugin から push 可能 (`launcher.push-view`)。詳細は [`docs/plugin-api.md`](./plugin-api.md) §`view-node`。
+
+ここで言う詳細ペインは **`List` レイアウトの中の開閉するペイン**です。クリップボード履歴のように
+一覧と中身を**常に並べて見比べる**ビューは、これとは別の `Split` レイアウトを宣言します
+([`launcher-requirements.md`](./launcher-requirements.md) §5.9)。プレビューの描き分け (テキスト / リンクの
+OGP / 画像 / 色 / ファイル / コード) は両方で共通です。
 
 ---
 
