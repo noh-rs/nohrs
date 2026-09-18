@@ -373,5 +373,3 @@ interface commands {
 | R12 | `jco componentize` (StarlingMonkey) で React の reconciler が実用速度で動くか | §4 の前提そのもの。**先に小さな PoC を打つべき** |
 | R13 | Raycast 拡張の上位 50 個が使っている API の分布 | shim の実装順を決める材料 |
 | R14 | Raycast 拡張ソースのライセンス分布 (再ビルド配布の可否) | §4.1 の注意書きの精度 |
-</content>
-</invoke>
