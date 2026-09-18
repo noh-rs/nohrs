@@ -14,6 +14,59 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 ### Added
 
+- The launcher now has a requirements document behind it, not just an
+  implementation spec. [`docs/launcher-requirements.md`](docs/launcher-requirements.md)
+  takes the feature sets of Raycast, Tinycast, Supaste and the macOS notch apps,
+  lays them out as one inclusion matrix, and says for each row whether nohrs
+  builds it, builds a reduced version, or does not build it and why. It also
+  names the decisions that have to be made before the code lands — where the
+  `Command` registry lives so the explorer, the notch and plugins can all
+  register into it, where OS-specific capabilities live now that commands call
+  them, and whether the workspace's `unsafe_code = "deny"` gets one exception.
+  It also proposes that the launcher window stop being one fixed size: views
+  that are read rather than shot through — clipboard history, snippets — would
+  declare a two-pane layout with the list on the left and the selection's
+  contents on the right, laid out inside a window created once at its largest
+  so that no window is ever resized and, where that single window proves
+  possible, the search field does not move at all.
+  Filling that right pane for a link would mean asking the site for its title
+  and image, which tells that site you copied the link, so the document puts it
+  behind an explicit opt-in and bars it from private and link-local addresses,
+  with the connection pinned to the IP that was checked. It proposes that
+  anything the launcher can do can be given a shortcut, including one carrying
+  an argument, so "open Slack" is expressible, and a leader key so the
+  app holds three OS-level hotkey registrations no matter how many bindings are
+  configured; and a way back to the window you were just in,
+  which `Cmd+Tab` cannot do when both windows belong to the same app, with the
+  focus history kept in memory and never written down. None of this is
+  implemented here. Two documents come with it, both describing work that is
+  planned rather than built. [`docs/notch.md`](docs/notch.md) treats the notch as a third surface and
+  gives it an admission test — a thing earns that spot only if it arrives on its
+  own, can be acted on there, is passing through, and is something nohrs knows
+  that Control Center does not. What the test admits is what the app already
+  does elsewhere, so the surface is specified around a file shelf, the progress
+  of a copy, and an undo for a delete that outlives the window it was done in.
+  Media, HUD and widgets fail the last test and are assigned to plugins rather
+  than core. Machines with no notch are to get the same panel as a floating bar,
+  where the platform allows one — a Wayland compositor without `wlr-layer-shell`
+  gets no notch surface at all, and reaches the shelf from the launcher and the
+  explorer instead. Clipboard history is proposed for that surface rather than
+  the launcher: a fixed 760x440 panel opened by key, with a search field, tabs,
+  five rows that roll rather than a panel that grows, and a preview beside
+  them — a quarter of the screen where the launcher's two-pane size would be
+  three fifths of it. That panel needs a text field, so the notch stops being a
+  surface that never takes focus, and the window itself is created once at its
+  largest and never resized, because animating an OS window's frame cannot be
+  smooth on macOS whatever the toolkit does. The drop targets that fan out during a drag are specified
+  against what each platform will tell a program before the drop lands: all
+  three can name the payload's type, but Wayland only once the pointer is over
+  the surface, so the targets' positions are settled before the type is known
+  and only their labels resolve late.
+  [`docs/migration.md`](docs/migration.md) defines an
+  interchange format so an import is a dry run with a difference report rather
+  than a silent overwrite, and settles on rebuilding Raycast extensions from
+  source against a compatibility shim instead of embedding a JavaScript runtime.
+
 - nohrs now records what it does to a rolling JSON Lines file under
   `$XDG_STATE_HOME/nohrs/logs/`, so a GUI session's log survives the window
   closing, and `noh log show` / `path` / `clear` read it back. Every operation
