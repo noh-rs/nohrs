@@ -34,8 +34,9 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   behind an explicit opt-in and bars it from private and link-local addresses,
   with the connection pinned to the IP that was checked. It proposes that
   anything the launcher can do can be given a shortcut, including one carrying
-  an argument, so "open Slack" is expressible, with a leader key holding the
-  real OS registrations to a fixed three however many bindings exist; and a way back to the window you were just in,
+  an argument, so "open Slack" is expressible, and a leader key so the
+  app holds three OS-level hotkey registrations no matter how many bindings are
+  configured; and a way back to the window you were just in,
   which `Cmd+Tab` cannot do when both windows belong to the same app, with the
   focus history kept in memory and never written down. None of this is
   implemented here. Two documents come with it, both describing work that is
