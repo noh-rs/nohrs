@@ -121,7 +121,7 @@ inventory::collect!(&'static dyn Command);
 | `layout` | `List` (750×500) か `Split` (左一覧 + 右プレビュー)。未記入は `List` ([`launcher-requirements.md`](./launcher-requirements.md) §5.9) |
 | `restores_focus` | 終了時に元のアプリへフォーカスを返すか。未記入は `false` ([`launcher-requirements.md`](./launcher-requirements.md) §5.11) |
 | `arguments` | `Vec<ArgSpec>` (string / path / number / enum)、検索バーに inline 入力 `> command arg1 arg2` |
-| `default_hotkey` | コマンド固有の既定キー。**OS への登録を増やしません** — 実体は「リーダーの後の 1 打鍵」か、launcher が開いている間だけのローカルキーです。OS に登録するのは summon / リーダー / シェルフのトグルの 3 つだけ ([`launcher-requirements.md`](./launcher-requirements.md) §5.10)。コマンドごとにグローバル登録を足せる形にすると、コマンドが増えるほど登録が増え、Wayland の portal の上限に当たります。ユーザーが明示的にグローバルを割り当てることは可能で、そのときだけ 4 つ目以降になります |
+| `default_hotkey` | コマンド固有の既定キー。**OS への登録を増やしません** — 実体は「リーダーの後の 1 打鍵」か、launcher が開いている間だけのローカルキーです。OS に登録するのは summon / リーダー / シェルフのトグルの 3 つだけ ([`launcher-requirements.md`](./launcher-requirements.md) §5.10)。コマンドごとにグローバル登録を足せる形にすると、コマンドが増えるほど登録が増えます — 他のアプリとの衝突が増え、Wayland の portal にバインド数の上限があれば ([`launcher-requirements.md`](./launcher-requirements.md) §11 R2、未検証) そこに当たって「設定したのに効かないキー」が出ます。ユーザーが明示的にグローバルを割り当てることは可能で、そのときだけ 4 つ目以降になります |
 
 ### 4.3 plugin command (P4)
 
