@@ -61,6 +61,8 @@ importer とストア書き込みを分けることで、(a) 新しい移行元�
 {
   "mif_version": 1,
   "source": { "app": "raycast", "version": "2.x", "exported_at": "2026-09-16T00:00:00Z" },
+  // このアーカイブが実際に持っているストアの一覧。空のストアと「入っていないストア」を区別します
+  "stores": ["snippets", "quicklinks", "hotkeys", "aliases", "favorites", "clips", "config", "history", "window_state", "shelf"],
   "snippets":   [ { "id": "...", "name": "Email", "keyword": ";em", "body": "...", "placeholders": ["clipboard"] } ],
   "quicklinks": [ { "id": "...", "name": "GitHub Search", "target": "https://github.com/search?q={argument}", "app": null } ],
   // ホットキー・エイリアス・お気に入り・Quicklink は同じ bound_command を指します (§5.10 の束縛済みコマンド)
@@ -73,6 +75,16 @@ importer とストア書き込みを分けることで、(a) 新しい移行元�
   "unsupported":[ { "kind": "extension", "id": "raycast/spotify", "reason": "拡張は再ビルドが必要 (§4)" } ]
 }
 ```
+
+- **`stores` は「このアーカイブが持っていると主張するもの」の一覧**です。
+  `plugins` と `plugin_kv` は plugin host (P4) が無いと存在しないので、P3.5 に作ったアーカイブには
+  入りません ([`persistence.md`](./persistence.md) §7)。これを書いておかないと、
+  **「元から無かった」と「入っているはずが欠けている」が区別できません**。
+  import は apply の前に検証します:
+  - `stores` に挙がっているのに中身が無い → **エラーで止めます** (壊れたアーカイブ)。
+  - `stores` に無い → そのストアは移行対象外。エラーにも `unsupported` にもしません。
+  - `stores` にあるが**こちらが知らない名前** → `unsupported` に落として報告します
+    (新しい版の nohrs が作ったアーカイブを古い版で開いた場合)。
 
 - **`bound` は 4 箇所で同じ形**です (`command` + `args` + `title`)。ホットキー・エイリアス・
   お気に入り・Quicklink をそれぞれ別の形にすると、「Slack を `Cmd+Opt+S` で開く」の**引数と表示名が
