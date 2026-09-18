@@ -27,14 +27,15 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   that are read rather than shot through — clipboard history, snippets — would
   declare a two-pane layout with the list on the left and the selection's
   contents on the right, laid out inside a window created once at its largest
-  so the search field never moves and no window is ever resized.
+  so that no window is ever resized and, where that single window proves
+  possible, the search field does not move at all.
   Filling that right pane for a link would mean asking the site for its title
   and image, which tells that site you copied the link, so the document puts it
   behind an explicit opt-in and bars it from private and link-local addresses,
   with the connection pinned to the IP that was checked. It proposes that
   anything the launcher can do can be given a shortcut, including one carrying
   an argument, so "open Slack" is expressible, with a leader key holding the
-  real OS registrations at two; and a way back to the window you were just in,
+  real OS registrations to a fixed three however many bindings exist; and a way back to the window you were just in,
   which `Cmd+Tab` cannot do when both windows belong to the same app, with the
   focus history kept in memory and never written down. None of this is
   implemented here. Two documents come with it, both describing work that is

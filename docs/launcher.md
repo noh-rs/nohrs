@@ -85,9 +85,13 @@ pub trait Command: Send + Sync + 'static {
     fn default_hotkey(&self) -> Option<KeyChord>;
     fn execute(&self, ctx: &CommandContext, args: &Args) -> CommandResult;
 
-    // 既定を持つものは default 実装を置きます。Rust の trait は全メソッドの実装を要求するので、
+    // required_permissions に既定は置きません。`&[]` を返す default があると、
+    // 「権限不要と明示した」と「宣言し忘れた」が同じ値になり、後者を警告できません。
+    // 権限が要るコマンドが「不要」として登録される経路を作らないため、ここは必須にします。
+    fn required_permissions(&self) -> &[Permission];
+
+    // 残りは既定を持ちます。Rust の trait は全メソッドの実装を要求するので、
     // ここに body が無いと「省略時は launcher のみ」のような規定が書けません (§4.2)。
-    fn required_permissions(&self) -> &[Permission] { &[] }
     fn surfaces(&self) -> Surfaces { Surfaces::LAUNCHER }
     fn layout(&self) -> Layout { Layout::List }
     fn restores_focus(&self) -> bool { false }
@@ -111,8 +115,8 @@ inventory::collect!(&'static dyn Command);
 | `keywords` | 検索マッチ強化用 (例: "calc", "math") |
 | `category` | "Productivity", "Developer Tools", "Media", "Cloud", "Theme" |
 | `mode` | `Instant` (即実行)、`View` (結果を launcher 内に表示)、`External` (別 window 開く)、`Background` (結果を HUD / notch に出して launcher を閉じる) |
-| | **`Background` は `surfaces` に `notch` を含めなければなりません。** 未記入の既定は「launcher のみ」なので、そのままだと**結果の行き先が無いまま launcher を閉じる**ことになります。宣言していないコマンドはロード時に弾きます。notch が使えない環境 ([`notch.md`](./notch.md) §2.2 の Wayland 等) では、`Background` は `Instant` に落として**結果を launcher 内に 1 行出してから閉じます** — 出す先が無いときに黙って捨てない、が要件です |
-| `required_permissions` | このコマンドが要る権限。空配列は「不要」の明示。正規化された集合は [`plugin-permissions.md`](./plugin-permissions.md) の `[permissions]` と同じ語彙 ([`launcher-requirements.md`](./launcher-requirements.md) §5.3) |
+| | **`Background` は `surfaces` に `notch` を含めなければなりません。** 未記入の既定は「launcher のみ」なので、そのままだと**結果の行き先が無いまま launcher を閉じる**ことになります。宣言していないコマンドはロード時に弾きます。notch が使えない環境 ([`notch.md`](./notch.md) §2.2 の Wayland 等) では、`Background` は `Instant` に落として**結果を launcher 内に 1 行出してから閉じます** — 出す先が無いときに黙って捨てない、が要件です。さらに **plugin のコマンドの `Background` 結果は、notch へのアクティビティ寄与そのもの**なので、[`notch.md`](./notch.md) §3.9 の plugin 寄与と**同じ認可**を通します: `notch` の権限を持たない plugin は `Background` のコマンドを**登録できません** (実行時に弾くのではなく discover の時点で弾く)。core のコマンドは権限モデルの外なので、この検査は plugin 由来のものにだけ掛かります |
+| `required_permissions` | このコマンドが要る権限。**必須** (既定なし) — 空配列は「不要」の明示で、未記入とは別物です。正規化された集合は [`plugin-permissions.md`](./plugin-permissions.md) の `[permissions]` と同じ語彙 ([`launcher-requirements.md`](./launcher-requirements.md) §5.3) |
 | `surfaces` | どのサーフェスに出すか (launcher / explorer / notch)。未記入は launcher のみ |
 | `layout` | `List` (750×500) か `Split` (左一覧 + 右プレビュー)。未記入は `List` ([`launcher-requirements.md`](./launcher-requirements.md) §5.9) |
 | `restores_focus` | 終了時に元のアプリへフォーカスを返すか。未記入は `false` ([`launcher-requirements.md`](./launcher-requirements.md) §5.11) |
