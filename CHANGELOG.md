@@ -34,7 +34,11 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   than core. Machines with no notch are to get the same panel as a floating bar,
   where the platform allows one — a Wayland compositor without `wlr-layer-shell`
   gets no notch surface at all, and reaches the shelf from the launcher and the
-  explorer instead.
+  explorer instead. The drop targets that fan out during a drag are specified
+  against what each platform will tell a program before the drop lands: all
+  three can name the payload's type, but Wayland only once the pointer is over
+  the surface, so the targets' positions are settled before the type is known
+  and only their labels resolve late.
   [`docs/migration.md`](docs/migration.md) defines an
   interchange format so an import is a dry run with a difference report rather
   than a silent overwrite, and settles on rebuilding Raycast extensions from
