@@ -83,11 +83,14 @@ pub trait Command: Send + Sync + 'static {
     fn mode(&self) -> Mode;
     fn arguments(&self) -> &[ArgSpec];
     fn default_hotkey(&self) -> Option<KeyChord>;
-    fn required_permissions(&self) -> &[Permission];
-    fn surfaces(&self) -> Surfaces;
-    fn layout(&self) -> Layout;
-    fn restores_focus(&self) -> bool;
     fn execute(&self, ctx: &CommandContext, args: &Args) -> CommandResult;
+
+    // 既定を持つものは default 実装を置きます。Rust の trait は全メソッドの実装を要求するので、
+    // ここに body が無いと「省略時は launcher のみ」のような規定が書けません (§4.2)。
+    fn required_permissions(&self) -> &[Permission] { &[] }
+    fn surfaces(&self) -> Surfaces { Surfaces::LAUNCHER }
+    fn layout(&self) -> Layout { Layout::List }
+    fn restores_focus(&self) -> bool { false }
 }
 
 inventory::collect!(&'static dyn Command);

@@ -25,8 +25,9 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   them, and whether the workspace's `unsafe_code = "deny"` gets one exception.
   It also proposes that the launcher window stop being one fixed size: views
   that are read rather than shot through — clipboard history, snippets — would
-  declare a two-pane size with the list on the left and the selection's
-  contents on the right, growing downward so the search field never moves.
+  declare a two-pane layout with the list on the left and the selection's
+  contents on the right, laid out inside a window created once at its largest
+  so the search field never moves and no window is ever resized.
   Filling that right pane for a link would mean asking the site for its title
   and image, which tells that site you copied the link, so the document puts it
   behind an explicit opt-in and bars it from private and link-local addresses,
