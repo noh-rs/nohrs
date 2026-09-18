@@ -23,20 +23,21 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   `Command` registry lives so the explorer, the notch and plugins can all
   register into it, where OS-specific capabilities live now that commands call
   them, and whether the workspace's `unsafe_code = "deny"` gets one exception.
-  The launcher window stops being one fixed size: views that are read rather
-  than shot through — clipboard history, snippets — declare a two-pane size
-  with the list on the left and the selection's contents on the right, and the
-  window grows downward so the search field never moves. Filling that right
-  pane for a link means asking the site for its title and image, which tells
-  that site you copied the link, so it is off until asked for and is barred
-  from private and link-local addresses, resolved IP by resolved IP. Anything
-  the launcher can do can be given a shortcut, including one carrying an
-  argument, so "open Slack" is expressible; a leader key keeps the count of
-  real OS registrations at two. And the launcher learns to go back to the
-  window you were just in, which `Cmd+Tab` cannot do when both windows belong
-  to the same app — with the focus history kept in memory and never written
-  down. Two documents come with it, both describing work that is planned rather
-  than built. [`docs/notch.md`](docs/notch.md) treats the notch as a third surface and
+  It also proposes that the launcher window stop being one fixed size: views
+  that are read rather than shot through — clipboard history, snippets — would
+  declare a two-pane size with the list on the left and the selection's
+  contents on the right, growing downward so the search field never moves.
+  Filling that right pane for a link would mean asking the site for its title
+  and image, which tells that site you copied the link, so the document puts it
+  behind an explicit opt-in and bars it from private and link-local addresses,
+  with the connection pinned to the IP that was checked. It proposes that
+  anything the launcher can do can be given a shortcut, including one carrying
+  an argument, so "open Slack" is expressible, with a leader key holding the
+  real OS registrations at two; and a way back to the window you were just in,
+  which `Cmd+Tab` cannot do when both windows belong to the same app, with the
+  focus history kept in memory and never written down. None of this is
+  implemented here. Two documents come with it, both describing work that is
+  planned rather than built. [`docs/notch.md`](docs/notch.md) treats the notch as a third surface and
   gives it an admission test — a thing earns that spot only if it arrives on its
   own, can be acted on there, is passing through, and is something nohrs knows
   that Control Center does not. What the test admits is what the app already
