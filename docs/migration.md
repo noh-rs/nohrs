@@ -72,7 +72,15 @@ importer とストア書き込みを分けることで、(a) 新しい移行元�
 }
 ```
 
-- `*_ref` はアーカイブ内の相対パス。大きい値 (画像・ファイル・メモ) は blob として同梱。
+- `*_ref` は**アーカイブ内の相対パス**。大きい値 (画像・ファイル・メモ) は blob として同梱。
+  **展開前に必ず検証します**: 絶対パス・`..` を含むもの・シンボリックリンク・展開後の実パスが
+  ステージングルートの外に出るものは、すべて拒否して `unsupported` に落とす。
+  移行アーカイブは他人から渡され得るので、ここが緩いとインポートが任意の場所への書き込みになります。
+- **上に挙げた 7 種類は移行元から来るものだけ**です。`noh export --all` (G5) はこれに加えて
+  `config` (config.toml のスナップショット) / `history` (開封・検索・コマンドの履歴) / `command_usage` /
+  `window_state` / `shelf` / `plugins` (id・バージョン・由来・許可した権限) / `plugin_kv`
+  (plugin ごとの KV、[`persistence.md`](./persistence.md) §3 の隔離単位のまま) を含みます。
+  **含まないもの**は再生成可能なキャッシュ (検索インデックス / サムネイル) だけで、それは export に入れません。
 - `unsupported` は**importer が自分で埋める**。これが G2 の差分レポートの元データになります。
 - MIF は `docs/mif.schema.json` として JSON Schema を生成・コミットする ([`config.md`](./config.md) §4 と同じ運用)。
 
@@ -82,7 +90,8 @@ importer とストア書き込みを分けることで、(a) 新しい移行元�
 |------|------|
 | 衝突 | 既定は **skip** (既存を壊さない)。`--on-conflict=overwrite \| rename \| skip` で変更可 |
 | dry-run | 既定。`--apply` を付けるまで書き込まない |
-| スナップショット | 適用前に `noh export --all` 相当を `$XDG_DATA_HOME/nohrs/backups/pre-migrate-<ts>.zip` に取る (G3) |
+| スナップショット | 適用前に `noh export --all` 相当を `$XDG_DATA_HOME/nohrs/backups/pre-migrate-<ts>.zip` に取る (G3)。これは [`persistence.md`](./persistence.md) §7 の export/import を **P3.5 に前倒しする**ということで、同書もそう更新済み |
+| **undo の安全規則** | `noh migrate undo` はスナップショットで**丸ごと戻す**操作なので、適用後に足したデータを消し得ます。適用時点のストア世代を記録しておき、**適用後に変更があったら既定で拒否**し、何が失われるかを示したうえで `--force` を要求します。「取り消せる」と「後の作業を消す」は別物です |
 | 検証 | ホットキーは**衝突検出**を通し、衝突したものは `unsupported` に落として報告する (黙って上書きしない) |
 | 機微情報 | 取り込むクリップにも除外ルール ([`launcher-requirements.md`](./launcher-requirements.md) §5.4) を適用する。移行元に残っていたパスワードを nohrs に持ち込まない |
 
@@ -138,6 +147,7 @@ Tinycast はこれを JavaScriptCore + SwiftUI で再現しています。
 | スクリプトが要る場合は明示オプトイン | `--allow-build-scripts` を付けたときだけ。**何が走るのかを実行前に列挙して見せ**、確認を取る |
 | 可能なら隔離して走らせる | macOS は `sandbox-exec`、Linux は `bwrap` / コンテナ。無い環境では上の 2 つに倒し、隔離できていないことを明示する |
 | ネットワークはレジストリのみ | 依存取得以外の外向き通信を許さない |
+| **隔離の範囲はビルド全体** | 危ないのはライフサイクルスクリプトだけではありません。`jco componentize` も、その loader も、bundler の設定ファイルも、取得した依存そのものも、**ホスト上で実行されるコード**です。隔離できる環境では**取得からインストール直前までを丸ごと**サンドボックス内で行い、隔離できない環境ではその事実を提示したうえで続行の確認を取ります |
 | 取り込み元を記録する | 由来 (repo / commit) と、スクリプトを許可したかどうかを `plugin.toml` に残す |
 
 同じ注意は [`plugin-templates.md`](./plugin-templates.md) の `nohrs plugin build` にも本来必要です
@@ -270,6 +280,10 @@ interface commands {
   ただし呼ぶのは **in-flight の `handle-event` が返る (か下記のタイムアウトで打ち切られる) のを待ってから**で、
   実行中の呼び出しの足元で状態を解放させない。
 - host 側のタイムアウト: `handle-event` が **200ms** を超えたら UI に loading を出し、**5 秒**で打ち切る。
+  打ち切りの順序を決めておきます: host はまずセッションを closed にして**以降の結果を捨てる**状態にし、
+  `close-session` を呼ぶのは **in-flight の呼び出しが返るか、インスタンスが停止し終えてから**です。
+  P4 の plugin 呼び出しはキャンセルできない ([`plugin-api.md`](./plugin-api.md) §5) ので、
+  「まだ走っている呼び出しの足元で状態を解放する」ことがないように、この順番が要ります。
 
 この拡張は P4 (plugin host) で入れる必要があります。P5 まで遅らせると、Raycast 互換のために WIT を
 破壊的変更することになります (ROADMAP のバージョニング方針では破壊的変更はフェーズ完了時に集約するため)。

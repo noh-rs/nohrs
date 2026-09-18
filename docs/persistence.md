@@ -440,4 +440,6 @@ redb には同等の組み込みフックが無いため、`RedbKvStore` の各�
   cp ~/.local/share/nohrs/db.sqlite   ./backup-$(date +%Y%m%d).sqlite
   cp ~/.local/share/nohrs/state.redb  ./backup-$(date +%Y%m%d).redb
   ```
-- ユーザー向けの export/import 機能は P5 以降で検討
+- ユーザー向けの export/import (`noh export --all` / `noh import`) は **P3.5**。移行ウィザードが
+  適用前スナップショットに使うので、そこまでに要る ([`migration.md`](./migration.md) §3.2)。
+  対象と除外は同書 §3.1 が定義する (再生成可能なキャッシュ ― 検索インデックス・サムネイル ― は含めない)

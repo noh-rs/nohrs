@@ -70,7 +70,8 @@ requirements §7.1 の結論で置き場所が変わります (`nohrs-launcher` 
 ### 4.1 `Command` trait
 
 ```rust
-// crates/nohrs-launcher/src/command.rs
+// 共有コマンドレイヤ (置き場所は launcher-requirements.md §7.1 / D1 で決定。
+// nohrs-launcher ではない — explorer と notch も同じレジストリに登録するため)
 
 pub trait Command: Send + Sync + 'static {
     fn id(&self) -> &'static str;
@@ -88,7 +89,9 @@ pub trait Command: Send + Sync + 'static {
 inventory::collect!(&'static dyn Command);
 ```
 
-`inventory` クレートで linker-time にコマンドを集める。各 crate (`nohrs-pages`, `nohrs-services`, `nohrs-launcher` 自体) が自身のコマンドを `inventory::submit!` で宣言。
+`inventory` クレートで linker-time にコマンドを集める。各 crate (`nohrs-pages`, `nohrs-services`, `nohrs-launcher`、`nohrs-notch`) が自身のコマンドを `inventory::submit!` で宣言。
+
+**`inventory` だけでは足りません。** これはリンク時に決まる静的な集合なので、起動後にロードされる WASM plugin のコマンドは入りません。レジストリは静的 + 動的の 2 層になります ([`launcher-requirements.md`](./launcher-requirements.md) §7.1)。
 
 ### 4.2 メタデータ
 
@@ -106,7 +109,7 @@ inventory::collect!(&'static dyn Command);
 
 ### 4.3 plugin command (P4)
 
-`plugin.toml` の `[[commands]]` セクションで宣言、WIT 経由 `run_command(id, args, ctx)` で呼び出し。host 側で `Command` trait の adapter 実装で `inventory` レジストリに登録するので、コア plugin と同じレジストリで検索可能。
+`plugin.toml` の `[[commands]]` セクションで宣言、WIT 経由 `run_command(id, args, ctx)` で呼び出し。host 側で `Command` trait の adapter 実装を作り、**動的レジストリ**に登録するので、コアのコマンドと同じ検索に乗ります。`inventory` はリンク時に閉じるので、ここには使えません ([`launcher-requirements.md`](./launcher-requirements.md) §7.1)。
 
 詳細は [`docs/plugin-api.md`](./plugin-api.md) §commands interface。
 
