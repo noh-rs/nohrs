@@ -47,7 +47,14 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   than core. Machines with no notch are to get the same panel as a floating bar,
   where the platform allows one — a Wayland compositor without `wlr-layer-shell`
   gets no notch surface at all, and reaches the shelf from the launcher and the
-  explorer instead. The drop targets that fan out during a drag are specified
+  explorer instead. Clipboard history is proposed for that surface rather than
+  the launcher: a fixed 760x440 panel opened by key, with a search field, tabs,
+  five rows that roll rather than a panel that grows, and a preview beside
+  them — a quarter of the screen where the launcher's two-pane size would be
+  three fifths of it. That panel needs a text field, so the notch stops being a
+  surface that never takes focus, and the window itself is created once at its
+  largest and never resized, because animating an OS window's frame cannot be
+  smooth on macOS whatever the toolkit does. The drop targets that fan out during a drag are specified
   against what each platform will tell a program before the drop lands: all
   three can name the payload's type, but Wayland only once the pointer is over
   the surface, so the targets' positions are settled before the type is known
