@@ -761,6 +761,10 @@ max_items = 100
 
 ## 9. 未解決 / 要調査
 
+**`R<n>` の番号は 3 文書 ([`launcher-requirements.md`](./launcher-requirements.md)・本書・
+[`migration.md`](./migration.md)) を通した 1 本の列です。** 新しく足すときは 3 文書の最大値の次を取ります。
+
+
 | # | 内容 |
 |---|------|
 | R1 | gpui 0.2 でウィンドウレベル / 非アクティブ化パネル / クリック透過をどこまで表現できるか (§5.1) |
