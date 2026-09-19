@@ -1,0 +1,54 @@
+[package]
+name = "nohrs-indexd"
+description = "The process that owns nohrs's search index writer and the watcher beside it."
+keywords = ["search", "index", "daemon", "filesystem"]
+categories = ["filesystem"]
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+authors.workspace      = true
+
+[lib]
+name = "nohrs_indexd"
+path = "src/nohrs_indexd.rs"
+
+[[bin]]
+name = "nohrs-indexd"
+path = "src/main.rs"
+
+# A test helper that must be its own process: it holds a connection and is
+# killed outright, which is the only way to check that the daemon's count of
+# its clients is the kernel's rather than something Rust maintains.
+[[bin]]
+name = "holds_a_connection"
+path = "tests/bin/holds_a_connection.rs"
+test = false
+
+[dependencies]
+nohrs-core = { path = "../nohrs-core" }
+# The `gui` feature is deliberately off: the daemon holds the index writer and
+# the file watcher, and needs no UI toolkit.
+nohrs-services = { path = "../nohrs-services" }
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+async-channel = "2"
+postage = "0.5"
+
+# The daemon marks itself as the one writer with an advisory lock on a file
+# beside its socket. `flock` has no safe wrapper in `std`, and the workspace
+# denies `unsafe_code`, so it comes from rustix as the no-replace rename in
+# `nohrs-services` does.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs", "process"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

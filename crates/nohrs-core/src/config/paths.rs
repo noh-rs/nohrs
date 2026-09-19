@@ -79,6 +79,24 @@ pub fn log_dir() -> PathBuf {
     state_dir().join("logs")
 }
 
+/// The nohrs runtime directory (`.../nohrs`), for things that must not outlive
+/// the login session: sockets and the lock files beside them.
+///
+/// `$XDG_RUNTIME_DIR` is the right home for these and is already per-user and
+/// `0700`, but only Linux sessions reliably set it. Everywhere else this falls
+/// back to the cache directory, which is user-owned and survives long enough to
+/// name a socket. A stale socket left in either place is handled by the code
+/// that binds it, not by hoping the directory was cleaned.
+pub fn runtime_dir() -> PathBuf {
+    if let Some(value) = std::env::var_os("XDG_RUNTIME_DIR") {
+        let path = PathBuf::from(value);
+        if path.is_absolute() {
+            return path.join(APP_DIR);
+        }
+    }
+    cache_dir()
+}
+
 /// Full path to `config.toml`.
 pub fn config_file() -> PathBuf {
     config_dir().join("config.toml")

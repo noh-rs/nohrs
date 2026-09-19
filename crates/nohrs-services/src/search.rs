@@ -3,6 +3,8 @@
 
 /// Trait abstracting a search backend.
 pub mod backend;
+/// Asking for the index to be updated, wherever its writer lives.
+pub mod control;
 /// The search engine wiring together the index, watcher, and root backend.
 pub mod engine;
 /// In-memory index of file and directory names, for keystroke-latency matching.
@@ -11,6 +13,8 @@ pub mod file_index;
 pub mod indexer;
 /// Ripgrep/`grep`-crate based regex search backend (non-macOS root scans).
 pub mod ripgrep;
+/// On-demand search of a caller-chosen directory, by content or by name.
+pub mod scoped;
 /// macOS Spotlight (`mdfind`) based search backend.
 pub mod spotlight;
 /// Filesystem change watcher feeding incremental index updates.
@@ -32,10 +36,22 @@ pub enum SearchScope {
 pub struct SearchResult {
     /// Path of the file containing the match.
     pub path: PathBuf,
-    /// 1-based line number of the match within the file.
+    /// 1-based line number of the match within the file, or `0` when the path
+    /// itself is what matched (see [`SearchResult::is_name_match`]).
     pub line_number: usize,
-    /// The full text of the matching line.
+    /// The full text of the matching line, empty for a name match.
     pub line_content: String,
+}
+
+impl SearchResult {
+    /// Whether the entry's *name* matched rather than a line inside it.
+    ///
+    /// Every backend spells that the same way — line 0 with no text — because
+    /// there is no line to point at: the indexer says it of a directory or a
+    /// file found by filename, and so does a name search of a directory tree.
+    pub fn is_name_match(&self) -> bool {
+        self.line_number == 0
+    }
 }
 
 pub use backend::SearchBackend;
@@ -50,10 +66,23 @@ pub struct SearchService {
 }
 
 impl SearchService {
-    /// Builds the service, initializing the index, file watcher, and root backend.
+    /// Builds the service with the index writer in this process.
     pub fn new() -> Result<Self> {
         let engine = Arc::new(engine::SearchEngine::new()?);
         Ok(Self { engine })
+    }
+
+    /// Builds the service around a writer someone else owns — `nohrs-indexd`,
+    /// where one can be reached.
+    pub fn with_control(control: Arc<dyn control::IndexControl>) -> Result<Self> {
+        let engine = Arc::new(engine::SearchEngine::with_control(control)?);
+        Ok(Self { engine })
+    }
+
+    /// Picks up whatever has been committed to the index since the last search.
+    /// Called when the writer says it has committed.
+    pub fn reload(&self) {
+        self.engine.reload();
     }
 
     /// Search is synchronous; run it on GPUI's background executor

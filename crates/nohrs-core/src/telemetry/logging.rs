@@ -53,7 +53,11 @@ pub const OP_TARGET: &str = "nohrs::op";
 /// so a rename would silently stop recording every operation — the exact defect
 /// this filter exists to prevent.
 fn default_file_filter() -> String {
-    format!("info,{OP_TARGET}=debug")
+    // `tantivy=warn` for the same reason the stderr filter carries it: tantivy
+    // narrates every commit, merge and deleted segment file at `info`, and one
+    // indexing pass buries every record the file is kept for. What nohrs itself
+    // does about indexing is logged by nohrs.
+    format!("info,tantivy=warn,{OP_TARGET}=debug")
 }
 
 /// How the file sink is configured. Defaults are what a normal run wants:
@@ -199,10 +203,19 @@ pub fn is_log_file_name(name: &str) -> bool {
         .is_some_and(|date| time::Date::parse(date, FILE_DATE_FORMAT).is_ok())
 }
 
-/// The stderr filter: `RUST_LOG` if set, `info` otherwise.
+/// The stderr filter: `RUST_LOG` if set, [`DEFAULT_STDERR_FILTER`] otherwise.
 fn stderr_filter() -> EnvFilter {
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_STDERR_FILTER))
 }
+
+/// What stderr shows when `RUST_LOG` says nothing.
+///
+/// `info` for everything, except that tantivy narrates every commit and merge
+/// at that level — half a screen of "save metas" for one `noh index build`,
+/// which is a dependency's idea of interesting rather than the user's. It is
+/// quietened rather than the whole default lowered, so nohrs's own `info`
+/// records still show. `RUST_LOG=info` brings it all back.
+const DEFAULT_STDERR_FILTER: &str = "info,tantivy=warn";
 
 /// Build the file layer, or describe why it could not be built.
 ///

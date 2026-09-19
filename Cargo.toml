@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/nohrs",
   "crates/nohrs-cli",
+  "crates/nohrs-indexd",
   "crates/nohrs-core",
   "crates/nohrs-models",
   "crates/nohrs-services",
@@ -24,6 +25,8 @@ exclude = ["web"]
 # `default = []` / `gui` feature.
 default-members = [
   "crates/nohrs-cli",
+  "crates/nohrs-indexd",
+  "crates/nohrs-indexd",
   "crates/nohrs-core",
   "crates/nohrs-models",
   "crates/nohrs-services",

@@ -25,16 +25,29 @@
                      │                        │
                      ▼                        ▼
               ┌──────────────────────────────────┐
-              │     notify-debouncer-mini        │
-              │  (file watcher with debounce)    │
+              │          nohrs-indexd            │
+              │  ┌────────────────────────────┐  │
+              │  │ notify-debouncer-mini (2s) │  │
+              │  └────────────────────────────┘  │
+              │   Tantivy の writer もここだけ    │
               └──────────────────────────────────┘
 ```
+
+writer と watcher が `nohrs-indexd` の中だけに居るのがこの図の要点です。**読み手 (GUI も
+`noh search` も) はデーモンを経由せず、index を直接読みます** — 読むのにロックが要らないからです
+([ADR 0009](./adr/0009-indexd-owns-the-index-writer.md))。
+
+ただしデーモンに辿り着けるときの話です。unix socket の無い環境 (Windows) や、デーモンに辿り着けなかった
+ときは、アプリも `noh index build` もその場で索引を更新し、writer を取りに行くのはそのプロセス自身に
+なります (`docs/cli.md` §5)。取れるとは限りません。起動には成功したが応答を待てなかったデーモンは、
+こちらから辿り着けないまま writer を持っているので、その場合は writer を取れずに失敗します。いずれに
+せよ writer が一つであることは変わらず、読み手が index を直接読むことも変わりません。
 
 | 担当 | 役割 |
 |------|------|
 | **SQLite** | ファイルメタデータ (path, mtime, size, inode, hash)、削除追跡、状態管理、差分検出。FTS5 で trigram 全文検索 (V2) |
 | **Tantivy (V3)** | 全文検索インデックスの本命、BM25 ランキング、コード対応 ngrams、identifier 分解 (camelCase / snake_case) |
-| **notify-debouncer-mini** | ファイルシステム変更検出 (debounce 500ms) |
+| **notify-debouncer-mini** | ファイルシステム変更検出 (debounce 2s、`nohrs-indexd` 内) |
 
 ---
 
@@ -122,9 +135,11 @@ globs = ["*.iso", "*.mov"]
 
 | 観点 | 仕様 |
 |------|------|
-| 初回フル indexing | 起動時にバックグラウンドで実行、ステータスバーに progress 表示 |
-| ファイル変更検出 | `notify-debouncer-mini` で 500ms debounce、change event を SQLite `files.mtime_ns` と比較し変化があれば re-index |
-| 削除検出 | watcher の delete event + 定期的な orphan scan (起動時 1 回 + 24h ごと) |
+| 起動時 indexing | `nohrs-indexd` の起動直後にバックグラウンドで**増分**パス (walk + ファイルごとの `stat`)。watcher は起動中の変更しか見えないため、デーモンが居なかった間に変わったファイルはここで拾う |
+| ファイル変更検出 | `nohrs-indexd` の `notify-debouncer-mini` (debounce 2s)。起動時パスは索引の `last_modified` (ns) とファイルの mtime を突き合わせ、一致するものは読まない |
+| 更新の通知 | commit ごとにデーモンが接続中のクライアントへ通知し、読み手が `IndexReader::reload` を呼ぶ。各プロセスが tantivy の commit 監視スレッドを持たずに済む |
+| 並列度 | walk は `min(CPU/2, 4)` スレッド。`IndexWriter::add_document` が `&self` を取るので書き込みはそのまま投げられる |
+| 削除検出 | watcher の delete event + 起動時パスの orphan 掃除 (走査が到達しなかったドキュメントを削除)。定期 orphan scan (24h ごと) は未実装 |
 | concurrent indexing | rayon で並列、CPU の半分 (最大 4 thread) まで |
 | index 整合性 | 起動時に lazy check (`files.content_hash` と Tantivy doc id の対応) |
 
@@ -183,6 +198,14 @@ PC のリソースを過度に消費しないよう、適応的に throttle し�
 |------|---------|
 | **ランチャー (`Cmd+Shift+Space`)** | グローバル全文検索 (全 indexed scope) |
 | **Explorer 内検索バー (`Cmd+F`)** | active pane の current dir 配下のみ scope |
+| **`noh search`** ([`cli.md`](./cli.md) §4) | オペランドで指定したツリー (既定はカレントディレクトリ) |
+
+`noh search` も Explorer も、index が当該スコープを覆っていて **かつクエリとオプションを index で表現できる**
+ときに限り、index に候補を選ばせます (BM25 順)。スコープを覆っていない場合に加えて、正規表現クエリ、
+`--max-depth`、隠しファイルを含める指定、ignore ファイルを無視する指定のいずれかがあるときも walk に落ちます
+(index はそれらを表現できないため)。**読み手は全員ロックを取らない `IndexReader` 経由で直接 index を読み**、書き込みだけが
+`nohrs-indexd` に集約されます。デーモンは検索クエリを一切受け取らないので、落ちていても・古くても・居なくても
+検索は動きます (鮮度が止まるだけ) ([ADR 0009](./adr/0009-indexd-owns-the-index-writer.md))。
 
 ### 検索結果から遷移
 

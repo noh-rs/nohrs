@@ -14,6 +14,42 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 ### Added
 
+- `nohrs-indexd` owns the search index's writer and the file watcher beside it.
+  tantivy allows one writer across all processes, and the watcher's output is a
+  stream of write requests, so putting both in one place makes "the index is
+  keeping up with the filesystem" a single thing to check rather than something
+  inferred from two — the daemon outlives a watcher it failed to install, and
+  says so, which is what `noh index status`'s `daemon` line reports. It is
+  not installed or started at login: the first process that wants it starts it,
+  and it stops once its last client has been gone for 90 seconds — so the only
+  thing to quit is nohrs. Searches never go through it; readers open the index
+  directly, which is what makes a daemon that is down, busy or a version behind
+  cost freshness and never an answer. See
+  [ADR 0009](docs/adr/0009-indexd-owns-the-index-writer.md).
+- `noh search <QUERY> [PATH]...` looks for a query in a directory tree, matching
+  both the names walked and the text inside the files (`--name` / `--content`
+  narrow it to one). Name matches print as the bare path and content matches as
+  `path:line:text`, with `-i`, `-F`, `-l`, `--limit`, `--max-depth`, `--hidden`,
+  `--no-ignore` and `--json` to shape the search and its output. Matching
+  nothing exits `0` and says so on stderr, leaving stdout the empty stream a
+  pipe expects. Where the index covers the scope it chooses the candidate files
+  in BM25 order and the lines are matched in those files; `--engine` forces
+  index or walk, and a fallback says on stderr why the index stood aside. See
+  [`docs/cli.md`](docs/cli.md) §4.
+- `noh index status` / `noh index build` report where the index is, what it
+  covers and how much it holds, and build it on a machine that never opens the
+  GUI. `build` is incremental: it re-reads only the files whose modification
+  time differs from the index's, and `--full` forces the rest. Both ask the
+  daemon, starting one where none is running, so a build no longer fails
+  because the app is open; only where a daemon cannot be had at all — no unix
+  sockets, or a start that fails — does `build` index in-process, where it can
+  still find the writer held elsewhere, which it reports rather than hides.
+  `status` needs no writer either way — it reads the index's own documents —
+  which is why it runs beside the app; starting a daemon to ask it installs the
+  watcher and begins a pass in the background. It also
+  reports whether anything is watching — the difference between "up to date"
+  and "up to date as of whenever this last ran". `noh index stop` stops the
+  daemon without touching the index. See [`docs/cli.md`](docs/cli.md) §5.
 - nohrs now records what it does to a rolling JSON Lines file under
   `$XDG_STATE_HOME/nohrs/logs/`, so a GUI session's log survives the window
   closing, and `noh log show` / `path` / `clear` read it back. Every operation
@@ -27,6 +63,45 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
 
 ### Changed
 
+- Indexing costs the walk rather than the index. Reading what the index already
+  holds took 678ms of a 700ms pass over 20,000 files, against 39ms for the walk
+  and every `stat` in it: the modification times came out of the document store,
+  which is compressed in blocks, and each path was resolved by seeking around a
+  sorted dictionary. Both now come from the index's own columns, with the
+  dictionary streamed once in its own order — 6.9ms. The walk itself is
+  parallel (`IndexWriter::add_document` takes `&self`), on half the machine's
+  threads and no more than four, and indexing a file no longer copies it a
+  second time to prepend its path. A warm pass over those 20,000 files went
+  from 0.7s to under 0.1s, which is what the app pays on every launch.
+- `IndexReader` holds its reader and query parser open rather than rebuilding
+  them per query, and takes tantivy's manual reload policy, so reading the
+  index no longer installs a directory watcher in every process that reads.
+- Indexing re-reads only what changed. Documents now carry the file's
+  modification time, so a pass compares it against the file on disk and skips
+  what matches, and documents whose file has disappeared are removed instead of
+  answering searches forever — though not the ones under a directory the pass
+  could not read, since an unreadable directory is reported once and not
+  descended into, and "the walk could not look there" is not "the files are
+  gone". The app therefore runs the pass on every launch
+  rather than only when the index is empty: the file watcher only sees changes
+  made while the app is running, so files that changed between quitting and
+  launching again reached the index nowhere else. An index left by the previous
+  schema is rebuilt once, since it carries no times to compare.
+- A change the watcher reports is checked against the index before the file is
+  opened, and skipped when its modification time still matches. Indexing a file
+  opens it, and `notify` reports an open as an event like any other, so a pass
+  that re-indexed whatever was reported was feeding the watcher its own reads:
+  the daemon committed a fresh pass every debounce interval, indefinitely, over
+  a tree nobody was touching.
+- The search index takes tantivy's writer lock only when something is actually
+  written, instead of from the moment a process opens the index. The app used to
+  hold it from launch to quit whether or not it indexed anything, which made the
+  index private to whichever process got there first — `noh index build` beside a
+  running app was refused, and so was a second window. Readers never take the
+  lock at all. See [ADR 0009](docs/adr/0009-indexd-owns-the-index-writer.md).
+- The default stderr log filter quietens tantivy to `warn`: it narrates every
+  commit and merge at `info`, which is half a screen of "save metas" for one
+  `noh index build`. `RUST_LOG=info` brings it back.
 - The minimum supported Rust version is 1.95, up from the 1.85 that edition 2024
   alone required. Nothing verified that floor, so it had drifted: `rusqlite`
   pulls in a `libsqlite3-sys` whose build script uses `cfg_select!`, stable only
