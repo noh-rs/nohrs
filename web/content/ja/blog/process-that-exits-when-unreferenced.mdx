@@ -51,38 +51,48 @@ fd テーブル (プロセスごと)    オープンファイル記述 (カー�
   4 ───────────────────────▶  位置 0 / 読み取り ─────────────────▶ inode 12345
 ```
 
-同じファイルを二度 `open` すると、この図のように fd も記述も別々になる。位置は記述ごとに独立しているので、片方から読んでももう片方の位置は動かない。
+同じファイルを二度 `open` すると、この図のように fd も記述も別々になる。位置は記述ごとに一つあるので、片方から読んでももう片方の位置は動かない。
 
 ```rust
+// 同じファイルを二度開く。`open` が二回呼ばれるので、記述も二つできる。
+// 行末の `?` は、失敗したらその場で呼び出し元に返す、という意味である。
 let mut first = File::open("index.json")?;
 let mut second = File::open("index.json")?;
-let mut head = [0u8; 10];
 
-first.read_exact(&mut head)?;
-// 進んだのは `first` の記述の位置だけである。`second` は 0 のままなので、
-// これは同じ先頭 10 バイトを読む。
-second.read_exact(&mut head)?;
+// 10 バイト分の入れ物を用意し、`first` から先頭 10 バイトを読む。
+// `first` の記述の位置が 0 から 10 に進む。
+let mut buffer = [0u8; 10];
+first.read_exact(&mut buffer)?;
+
+// `second` の記述の位置は 0 のままである。したがってこれも、
+// 同じ先頭 10 バイトを読む。
+second.read_exact(&mut buffer)?;
 ```
 
-`dup` で複製した fd と、`fork` した子が引き継いだ fd は、これと違って<strong>同じオープンファイル記述を指す</strong>。Rust でこれにあたるのは `try_clone` である。
+`dup` で複製した fd と、`fork` した子が引き継いだ fd は、これと違って<strong>同じオープンファイル記述を指す</strong>。Rust の標準ライブラリで `dup` を呼ぶのは `try_clone` である。
 
 ```rust
 let mut first = File::open("index.json")?;
-let mut second = first.try_clone()?;   // 内部で `dup` を呼ぶ
-let mut head = [0u8; 10];
 
-first.read_exact(&mut head)?;
-// 位置を共有しているので、これは 11 バイト目から読む。
-second.read_exact(&mut head)?;
+// `try_clone` は `dup` を呼ぶ。fd は二本になるが、記述は一つのままである。
+let mut second = first.try_clone()?;
+
+let mut buffer = [0u8; 10];
+first.read_exact(&mut buffer)?;
+
+// 位置は一つしかなく、それがもう 10 に進んでいる。
+// したがってこれは 11 バイト目から読む。
+second.read_exact(&mut buffer)?;
 ```
 
 nohrs の daemon もこれを使っている。一つの接続に対して読む側のスレッドと書く側のスレッドを立てるため、socket の fd を複製する。
 
 ```rust
-let writing_end = stream.try_clone().context("cannot split the socket")?;
+// `stream` は接続一つ。`writing_end` は、同じ接続を指す二本目の fd である。
+let writing_end = stream.try_clone()?;
 ```
 
-`try_clone` が作るのは、同じ記述を指す二本目の fd である。接続はこれによって増えない。二本の fd は同じ一つの接続の同じ相手に向いている。
+`try_clone` が作るのは、同じ記述を指す二本目の fd である。接続はこれによって増えない。二本の fd は同じ一つの接続の、同じ相手に向いている。
 
 そしてカーネルは、一つのオープンファイル記述を指す fd が何本あるかを数えている。最後の一本が閉じられた時点で、その記述は破棄される。上の daemon で `stream` だけを閉じても接続は生きたままであり、`writing_end` も閉じられて初めて切れる。
 
@@ -90,32 +100,62 @@ let writing_end = stream.try_clone().context("cannot split the socket")?;
 
 ## unix socket が運ぶもの
 
-daemon とクライアントを繋いでいるのは unix socket である。同じマシンの上のプロセス同士をつなぐ双方向のバイトストリームであり、ネットワークスタックを通らない。宛先はファイルシステム上のパスで表す。nohrs が使うのは次のパスである。
+daemon とクライアントは別々のプロセスである。変数を直接見せ合うことはできないので、両者がやり取りするには、カーネルが用意している経路を通すことになる。nohrs が使っているのは unix socket である。
+
+unix socket は、同じマシンの上のプロセス二つをつなぐ双方向のバイトの通り道である。TCP の socket とほぼ同じ呼び出しで扱えるが、ネットワークを一切通らない。IP アドレスとポート番号の代わりに、待ち合わせ場所をファイルシステム上のパスで指定する。nohrs が使うのは次のパスである。
 
 ```
 /run/user/1000/nohrs/indexd.sock
 ```
 
-`ls -l` で見ると、種別を表す一文字目が `s` になっている。
+このパスを `ls -l` で見ると、行の先頭が `s` になっている。通常のファイルなら `-`、ディレクトリなら `d` が出る位置であり、`s` が socket を表す。
 
 ```
 srwxr-xr-x 1 shuya shuya 0 Sep 17 11:04 /run/user/1000/nohrs/indexd.sock
 ```
 
-サイズは常に 0 である。このファイルに中身が書き込まれることはなく、やり取りされるバイトがファイルシステムを経由することもない。パスが表しているのは待ち合わせ場所だけである。
+サイズは常に 0 である。このファイルに中身が書き込まれることはなく、やり取りされるバイトがディスクに触れることもない。このパスが果たしているのは、どこで待ち合わせるかを両者に伝える役割だけである。
 
-daemon 側は三つの呼び出しを順に使う。パスに名前を付ける `bind`、待ち受けを始める `listen`、接続の到着を待つ `accept` である。
+### 待ち受ける側と、繋ぎに行く側
+
+daemon 側が使う呼び出しは三つある。
+
+1. <strong>`bind`</strong> — 上のパスを自分の socket に結び付ける。これでファイルシステムにそのパスが現れ、クライアントから見つけられる状態になる。
+2. <strong>`listen`</strong> — 接続を受け付ける、とカーネルに伝える。到着した接続は、カーネルが待ち行列に積んでおいてくれる。
+3. <strong>`accept`</strong> — 待ち行列から接続を一つ取り出す。何も積まれていなければ、到着するまでここで止まる。
+
+クライアント側は `connect` を一度呼ぶだけで、その引数が `bind` された同じパスである。
+
+Rust の標準ライブラリでは、`bind` と `listen` がまとめて `UnixListener::bind` になっている。
 
 ```rust
-let listener = UnixListener::bind(&endpoint.socket)?;
-for connection in listener.incoming() { /* ... */ }
+// パスに結び付け、待ち受けを始める。
+let listener = UnixListener::bind("/run/user/1000/nohrs/indexd.sock")?;
+
+// `incoming()` は `accept` を繰り返し呼ぶ。接続が来るまでループは
+// ここで止まり、一つ来るたびに一周する。
+for connection in listener.incoming() {
+    // `connection` が、クライアント一人分の接続である。
+    // (`accept` は失敗しうるので、実際には `Result` に包まれて返る。)
+}
 ```
 
-`bind` と `listen` が使う fd は待ち受けの入り口であり、ここから読み書きはできない。読み書きできる fd を作るのは `accept` である。クライアントが同じパスへ `connect` するたびに `accept` が返り、返ってくるのは<strong>そのクライアント一人分の新しい fd</strong> である。三つのクライアントが繋がっていれば、daemon には待ち受け用の fd が一本と、接続用の fd が三本ある。
+ここで重要なのは、<strong>`accept` が返すのは新しい fd である</strong>という点である。`listener` が持っている fd は待ち受け専用で、これを相手にして読み書きはできない。読み書きできる fd は、接続が一つ成立するたびに一本ずつ増える。
 
-一人ずつ数えられるのは、この構造による。名前付きパイプ (FIFO) を同じパスに置いた場合、開いた者は全員が同じ一つのストリームに合流するので、いま何人がそこにいるかは分からない。socket は接続ごとに fd を分ける。
+クライアントが三つ繋がっている daemon は、次の四本の fd を持っていることになる。
 
-接続の上を流れるのは、改行で区切った JSON である。クライアントは接続すると最初に版を名乗り、daemon がそれに答える。
+```
+待ち受け用の fd 3 ──▶ /run/user/1000/nohrs/indexd.sock
+接続用の fd     4 ──▶ クライアント A
+接続用の fd     5 ──▶ クライアント B
+接続用の fd     6 ──▶ クライアント C
+```
+
+クライアントを一人ずつ数えられるのは、この形のおかげである。比較のために、同じパスに名前付きパイプ (FIFO) を置いた場合を考える。FIFO はバイトの通り道を一本だけ作るもので、これを開いたプロセスが何人いようと、書き込まれたバイトは全部が同じ一本に流れ込む。読む側からは、どのプロセスから来たバイトなのかも、いま何人が開いているのかも分からない。socket は接続ごとに fd を分けるので、その本数がそのままクライアントの数になる。
+
+### 接続の上を流れるもの
+
+nohrs がこの通り道に流しているのは、改行で区切った JSON である。クライアントは接続すると最初にプロトコルの版を名乗り、daemon がそれに答える。
 
 ```
 → {"request":"hello","version":1}
@@ -123,11 +163,19 @@ for connection in listener.incoming() { /* ... */ }
 → {"request":"refresh","full":false}
 ```
 
-一行が一つのメッセージで、長さの前置きを持たない。`nc` を繋いで眺めればそのまま読める。
+一行が一つのメッセージであり、長さを示す前置きを持たない。区切りが改行だけなので、`nc -U /run/user/1000/nohrs/indexd.sock` で繋げば、流れているものをそのまま目で読める。
 
-socket ファイルには、もう一つ押さえておく性質がある。<strong>それを作ったプロセスが死んでも、パスは消えずに残る</strong>。`kill -9` された daemon の socket ファイルは、誰も待ち受けていない状態のまま残り続ける。後で「socket ファイルの有無では daemon の生死を判定できない」という話が出てくるのは、これが理由である。
+### socket ファイルは生死を表さない
 
-そして、接続の片側の fd がすべて閉じられると、反対側の `read` は 0 バイトを返して成功する。これが end-of-stream である。0 バイトという返り値自体が、もうこの接続からデータが来ないという通知になっている。クライアントが `close` を呼んだ場合も、正常終了した場合も、`SIGKILL` で殺された場合も、fd を閉じるのはカーネルなので、daemon から見た結果は同じ 0 バイトである。
+socket ファイルには、後の設計に関わる性質が一つある。<strong>それを作ったプロセスが終了しても、パスは消えずに残る</strong>。`kill -9` された daemon の socket ファイルは、誰も待ち受けていない状態のままファイルシステムに残り続ける。このファイルがあることは、そこに daemon がいることを意味しない。
+
+### 相手が消えたことをどう知るか
+
+ある接続について、片側のプロセスが持っていた fd がすべて閉じられたとする。このとき、反対側でその接続から `read` を呼ぶと、<strong>0 バイトを読んで成功する</strong>。
+
+これが end-of-stream である。失敗ではないので、エラーを調べても何も出てこない。0 バイトという返り値そのものが、この接続にはもうデータが来ない、という通知になっている。
+
+daemon がクライアントの消滅を知るのは、これによってである。そして、クライアントが `close` を呼んで終了した場合も、`main` から戻った場合も、`SIGKILL` で殺された場合も、fd を閉じるのはカーネルなのだから、daemon 側が受け取るものは同じ 0 バイトである。クライアントがどう終わったかを daemon は区別できず、区別する必要もない。
 
 ## カーネルは接続をすでに数えている
 
@@ -135,38 +183,45 @@ socket ファイルには、もう一つ押さえておく性質がある。<str
 
 ```rust
 for connection in listener.incoming() {
-    // ...
-    match connection {
-        Ok(stream) => {
-            let lease = daemon.leases.take();   // live += 1
-            let daemon = Arc::clone(&daemon);
-            // 接続ごとに一スレッド。読み待ちで止まっているスレッドの
-            // コストはスタック一本である。
-            std::thread::spawn(move || {
-                if let Err(error) = daemon.serve_client(stream, lease) {
-                    tracing::debug!("client gone: {error:#}");
-                }
-            });
+    let stream = connection?;
+
+    // lease を一つ取る。daemon が数えているクライアントが一人増える。
+    let lease = daemon.leases.take();
+
+    // `daemon` への参照を一つ増やす。下のスレッドへ渡す分である。
+    let daemon = Arc::clone(&daemon);
+
+    // 接続ごとにスレッドを一つ立てる。読み待ちで止まっているだけの
+    // スレッドが専有するのは、スタック一本分である。
+    std::thread::spawn(move || {
+        if let Err(error) = daemon.serve_client(stream, lease) {
+            tracing::debug!("client gone: {error:#}");
         }
-        Err(error) => tracing::warn!("cannot accept a client: {error}"),
-    }
+    });
 }
 ```
 
-`serve_client` は `lease` を<strong>値で</strong>受け取り、どこにも渡さない。
+`std::thread::spawn` に渡している `move || { ... }` は、引数を取らない無名の関数である。頭に付いた `move` が、この無名関数が `stream` と `lease` を<strong>所有権ごと受け取る</strong>という指定にあたる。この二つはループ側の持ち物ではなくなり、新しいスレッドのものになる。
+
+受け取った先が `serve_client` である。ここが設計の要点なので、周辺を削って形だけを見る。
 
 ```rust
-fn read_requests(self: &Arc<Self>, stream: UnixStream, id: u64) -> Result<bool> {
+// `lease: Lease` を値で受け取っている。lease はこの関数のものになり、
+// 呼び出し元の手元には残らない。
+fn serve_client(&self, stream: UnixStream, lease: Lease) -> Result<()> {
     let mut reader = BufReader::new(stream);
-    // `read_frame` が `Ok(None)` を返すのが end-of-stream。
-    while let Some(request) = protocol::read_frame::<Request>(&mut reader)? {
-        // ... 要求に答える ...
-        if matches!(request, Request::Stop) {
-            // 呼び出し元が `release` を呼ぶ。後述の `released` がこれである。
-            return Ok(true);
-        }
+
+    // `read_frame` は一行読んで、メッセージを一つ返す。
+    // 相手側の fd がすべて閉じられて読むものがなくなると `None` を返す。
+    // `while let Some(...)` は、`Some` が返る間だけ回るループなので、
+    // そこでこのループが終わる。
+    while let Some(request) = read_frame(&mut reader)? {
+        // ... 要求に答え、返事を書き戻す ...
     }
-    Ok(false)
+
+    Ok(())
+    // 関数から返ると `lease` は有効な範囲から外れ、`Drop` が走って
+    // カウントが一つ減る。
 }
 ```
 
@@ -174,9 +229,9 @@ fn read_requests(self: &Arc<Self>, stream: UnixStream, id: u64) -> Result<bool> 
 
 1. カーネルがそのプロセスの fd を閉じる。クライアント側のコードは一行も実行されていない。
 2. その接続を参照する fd が他に残っていなければ、これでクライアント側の最後の fd が閉じられる。子が引き継いだ fd が残っていれば、そちらが閉じるまで接続は開いたままである。daemon が数えているのは保持されている接続なので、これは意図した挙動である。
-3. クライアント側の最後の fd が閉じられた時点で、daemon 側のスレッドが `read_frame` で読んでいた先が end-of-stream になる。読みかけのものが何もなければ `Ok(None)` が返る。フレームの途中で切れていれば、読めた分は壊れた JSON なので `Err` が返る。
-4. どちらであってもループを抜け、`read_requests` が返り、`serve_client` が返る。`serve_client` は `read_requests` の結果を `?` で持ち上げずに受け取り、後始末を済ませてから返すので、エラーで終わった接続も経路は同じである。
-5. 引数として持っていた `lease` がスコープを抜けて drop され、カウントが一つ減る。
+3. クライアント側の最後の fd が閉じられた時点で、daemon 側のスレッドが `read_frame` で読んでいた先が end-of-stream になる。読みかけのものが何もなければ `None` が返る。一行の途中で切れていれば、読めた分は壊れた JSON なので、`read_frame` はエラーを返す。
+4. どちらであっても `while` のループは終わり、`serve_client` が返る。実際の `serve_client` は、読み取りの結果がエラーであっても、それをそのまま投げ返す前に後始末を済ませる。したがってエラーで終わった接続も、通る経路は同じである。
+5. 引数として持っていた `lease` が有効な範囲から外れ、`Drop` が走ってカウントが一つ減る。
 
 カウントを維持するために、クライアント側で実行されなければならない処理は存在しない。これが、終了の仕方を問わないという性質の出どころである。
 
@@ -194,36 +249,51 @@ fn read_requests(self: &Arc<Self>, stream: UnixStream, id: u64) -> Result<bool> 
 
 ```rust
 struct State {
+    /// いま lease を持っているクライアントの数。
     live: usize,
-    /// 最後にカウントがゼロになった時刻。誰かが lease を持っている間は `None`。
+    /// 最後に `live` がゼロになった時刻。誰かが持っている間は `None`。
+    /// `Option` なので、「まだゼロになっていない」と「いつゼロになったか」を
+    /// 一つの値で表せる。
     idle_since: Option<Instant>,
-    /// `release` が立てるフラグ。カウントがいくつであっても待機を打ち切る。
+    /// `release` が立てるフラグ。`live` がいくつであっても待機を打ち切る。
     released: bool,
 }
 ```
 
-待機側はこの状態を読んで三つに分岐する。ポーリングではなく条件変数を使うため、何もしていない daemon を保持するコストはない。
+待機側はこの状態を読んで分岐する。使っているのは条件変数である。これは、状態が変わるまでこのスレッドを寝かせておいてくれ、とカーネルに頼む仕組みで、一定時間ごとに状態を見に行くポーリングと違い、寝ている間は CPU を使わない。他のスレッドが状態を書き換えて起こすまで、待っているスレッドは一切走らない。何もしていない daemon を置いておくコストがないのは、これによる。
 
 ```rust
 pub fn wait_until_idle(&self) {
+    // `state` は、`Mutex` の中身を触っている間だけ有効な借用である。
     let mut state = self.lock();
+
     loop {
+        // `Request::Stop` が来ていた。カウントに関わらず、ここで終わる。
         if state.released {
             return;
         }
+
         match state.idle_since {
-            // 誰かが接続している。状態が変わるまで待つ。
+            // 誰か繋がっている。状態が変わって起こされるまで待つ。
             None => state = self.wait(state),
+
+            // 誰も繋がっていない。ゼロになった時刻からの経過時間を
+            // 猶予時間から引く。
             Some(since) => match self.grace.checked_sub(since.elapsed()) {
-                // 猶予時間が尽きた。
+                // 引くと負になった。つまり猶予時間は尽きている。終了する。
                 None => return,
-                // 残り時間だけ待つ。その間に状態が変われば起こされる。
+
+                // 残りがある。その分だけ待つ。途中で誰か来れば起こされ、
+                // そのときには `idle_since` が `None` に戻っているので、
+                // ループの先頭からやり直しになる。
                 Some(remaining) => state = self.wait_for(state, remaining),
             },
         }
     }
 }
 ```
+
+`state = self.wait(state)` が代入の形になっているのは、待つ間は `Mutex` を手放さなければならないからである。中身を握ったまま眠れば、状態を書き換えて起こす側が握れず、誰も動けなくなる。`wait` は受け取った借用をいったん手放して眠り、起こされたところで握り直して返す。だから渡して受け取り直す形になる。
 
 カウントを上げ下げする側は、状態を書き換えてから条件変数を叩く。`take` は `live` を増やして `idle_since` を `None` に戻し、`Lease` の `Drop` は `live` を減らし、ゼロになったときだけ `idle_since` に現在時刻を入れる。
 
@@ -239,21 +309,35 @@ writer を必要とするプロセスが同時に二つあれば、両方が dae
 
 この判定を socket ファイルの有無で行うことはできない。socket ファイルは、それを作成したプロセスが死んでも残る。ファイルが存在することは、そこで誰かが待ち受けていることを意味しない。pid ファイルはさらに悪く、pid の再利用を持ち込む。
 
-判定にはアドバイザリロック (`flock`) を使う。非ブロッキングの排他ロックを試み、取れたプロセスが daemon になる。
+判定には `flock` を使う。これは、ファイルを一つ決めておき、それに対するロックを取れた者を勝ちとする仕組みである。付いている性質が二つある。
+
+- <strong>アドバイザリ (advisory)</strong> である。ロックを取りに来たプロセス同士だけを拘束し、ファイルへの読み書きそのものはカーネルが止めない。ロックを見ずに書きに来たプロセスは素通りする。ここではロックを取りに来るのが daemon になろうとするプロセスだけなので、これで足りる。
+- <strong>非ブロッキング</strong>で試せる。すでに誰かが持っていた場合に、空くまで待たずその場で返れ、という指定ができる。
 
 ```rust
 pub fn take(path: &Path) -> Result<Option<Self>> {
+    // ロックを掛ける相手として存在するだけのファイル。中身は読み書きしない。
     let file = File::options()
         .create(true).read(true).write(true).truncate(false)
         .open(path)?;
+
     match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+        // 取れた。このプロセスが daemon になる。
         Ok(()) => Ok(Some(Self { _file: file })),
-        // 生きている daemon が持っている。エラーではなく、そちらに話しかける。
-        Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
+
+        // 生きている daemon がすでに持っている。呼び出し元はそちらに
+        // 話しかけに行くので、これは失敗として扱わない。
+        Err(Errno::WOULDBLOCK) => Ok(None),
+
+        // それ以外は本当の失敗である。
         Err(error) => Err(error.into()),
     }
 }
 ```
+
+返り値が `Result<Option<Self>>` という二重の入れ子になっているのは、結果が三通りあるからである。ロックが取れた、生きている daemon が持っていた、呼び出し自体が失敗した、の三つで、上の `match` の三つの腕がそれぞれに対応する。二つ目を失敗として返さないのは、それが想定どおりの結果だからである。
+
+返している `Self { _file: file }` が、開いたファイルをそのまま抱えていることにも意味がある。ロックはこのファイルに結び付いているので、ファイルを閉じればロックも外れる。ロックを持ち続けるには、ファイルを開いたままにしておくよりほかにない。名前が `_file` なのは、この値を後で読むことがなく、ただ持っていること自体が仕事だからである。
 
 このロックの解放を決めるのはカーネルである。`flock` のロックはプロセスに属していない。属しているのは、先に見たオープンファイル記述の方である。したがって解放されるのは、その記述を参照する最後の fd が閉じられた時点になる。プロセスが終了すれば fd は閉じられるので、終了の仕方によらずロックは解放される。socket の接続と同じ規則であり、どちらも一つの対象を参照する fd の本数を数えている。
 
@@ -287,20 +371,33 @@ socket が運ぶのは、書き込み要求、状態の問い合わせ、commit 
 要となるテストはプロセス内では記述できない。確かめたいのは、クライアントが終了時に一行もコードを実行しなかった場合の挙動だからである。そこで、接続したまま待機するだけのヘルパーバイナリを用意し、テストはこれを `kill` する。
 
 ```rust
+// `env!("CARGO_BIN_EXE_...")` は、cargo がテスト用に用意したヘルパー
+// バイナリのパスに、コンパイル時に置き換わる。`.unwrap()` は、失敗して
+// いたらそこでテストを落とす、という意味である。
 let mut held = Command::new(env!("CARGO_BIN_EXE_holds_a_connection"))
     .arg(&fixture.endpoint.socket)
     .spawn()
     .unwrap();
+
+// `until` は、渡した条件が真になるまで短い間隔で確かめ続ける補助関数。
+// `|| { ... }` はその条件を書いた無名関数で、`until` がこれを繰り返し呼ぶ。
+// ここで待っているのは、daemon の数えるクライアントが 2 になることである。
+// 2 は、状態を問い合わせている probe 自身の接続と、ヘルパーの接続である。
 until("the killable client to be counted", || {
     probe.status().unwrap().clients == Some(2)
 });
 
-// ここから先、daemon を支えているのは kill される側のみである。
+// probe を落とす。ここから先、daemon を支えているのはヘルパーだけになる。
 drop(probe);
+
+// 猶予時間の二倍待っても、daemon は生きていなければならない。
 std::thread::sleep(GRACE * 2);
 assert!(!gone(&fixture.endpoint.socket), "クライアントが居るのに daemon が止まった");
 
+// ヘルパーを `SIGKILL` で殺す。ヘルパー側の後始末のコードは一行も走らない。
 held.kill().unwrap();
+
+// それでも daemon は、自分から終了しなければならない。
 until("the writer to stop", || gone(&fixture.endpoint.socket));
 ```
 
