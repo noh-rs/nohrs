@@ -58,9 +58,9 @@ SemVer の `0.x.y` を使い、刻みは次の基準で決める。
 
 ---
 
-## 参照ドキュメント (20)
+## 参照ドキュメント (21)
 
-ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキュメントを参照します。P1 で列挙した 17 本は骨子を P1 で作成し、対応フェーズで詳細化します。P1 より後に必要性が判明したもの (`launcher-requirements` / `notch` / `migration`) は、起票したフェーズで作成します。
+ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキュメントを参照します。P1 で列挙した 17 本は骨子を P1 で作成し、対応フェーズで詳細化します。P1 より後に必要性が判明したもの (`launcher-requirements` / `notch` / `migration` / `device-sharing`) は、起票したフェーズで作成します。
 
 | ドキュメント | 対応 Phase | 内容 |
 |------------|-----------|------|
@@ -76,6 +76,7 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
 | [`docs/launcher.md`](./launcher.md) | P3 | フローティング window・グローバルホットキー・アクションフレームワーク |
 | [`docs/notch.md`](./notch.md) | P4→P5 | 3 つ目のサーフェス。ファイルシェルフ・ライブアクティビティ・非 notch 環境のフォールバック |
 | [`docs/migration.md`](./migration.md) | P3.5→P5 | 乗り換え (Raycast/Tinycast/Supaste/Alfred) の中間形式・移行ウィザード・Raycast 拡張のソース互換 |
+| [`docs/device-sharing.md`](./device-sharing.md) | P5 | 同じ LAN の自分の端末どうしでシェルフとクリップボードを共有する。ペアリングと鍵・何が端末をまたぐか・アカウントと課金の線 |
 | [`docs/search.md`](./search.md) | P3→P4 | V1 ripgrep → V2 SQLite FTS5 → V3 Tantivy 統合・リソース制限 |
 | [`docs/plugin-overview.md`](./plugin-overview.md) | P4 | wit-bindgen + Component Model・ライフサイクル・コア/コミュニティ分離 |
 | [`docs/plugin-api.md`](./plugin-api.md) | P4 | WIT world・host imports/exports・UI レンダリングモデル |

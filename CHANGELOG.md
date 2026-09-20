@@ -66,6 +66,19 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   interchange format so an import is a dry run with a difference report rather
   than a silent overwrite, and settles on rebuilding Raycast extensions from
   source against a compatibility shim instead of embedding a JavaScript runtime.
+  [`docs/device-sharing.md`](docs/device-sharing.md) takes the shelf and the
+  clipboard across the machines one person owns, without putting either on a
+  server: devices on the same network find each other, pin each other's keys and
+  talk directly, and an account — which now exists, and which nothing requires —
+  only saves you reading a fingerprint aloud. What crosses is deliberately less
+  than what could: the clipboard sends one item, the newest, unless history
+  sharing is turned on, so a password copied by mistake reaches one machine
+  rather than a log on all of them; a shelf sends its listing and keeps the
+  bytes, which are fetched when the other end opens the shelf rather than
+  pushed when an item is dropped in, so leaving a 4GB file there does not
+  quietly fill three disks. Settings and plugin permissions do not cross at all.
+  Because pinned keys outlive the account, a lapsed subscription stops the
+  automatic discovery and nothing else.
 
 - nohrs now records what it does to a rolling JSON Lines file under
   `$XDG_STATE_HOME/nohrs/logs/`, so a GUI session's log survives the window
