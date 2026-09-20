@@ -151,7 +151,7 @@ reorder_imports = true
 
 - **`[licenses]`** — 実際の依存ツリーが要求するため許可リストを拡張（`0BSD` / `Unicode-3.0` / `MPL-2.0` / `CC0-1.0` / `NCSA`）。`Unicode-DFS-2016` は今の依存が `Unicode-3.0` を使うため不要。`confidence-threshold = 0.93` は同じ。
 - **`[advisories]`** — 現行 cargo-deny は per-severity の `vulnerability` / `notice` キーを廃止し、これらは常に error 扱い。よって `vulnerability = "deny"` は書かない（書くと unknown field で弾かれる）。`unmaintained = "workspace"`（直接依存のみ警告）、`yanked = "deny"`。CI では `advisories` のみ informational（`continue-on-error`）。
-- **`[bans]`** — `multiple-versions = "warn"` / `openssl-sys` を deny。`tokio` の ban は**まだ設置できない**: ① `nohrs-services` が直接依存（ADR 0004 / P2 で撤去予定）、② gpui が `zed-reqwest → hyper → h2 → tokio-util → tokio` を transitively 引き、`wrappers` で表現できない。両方が解消するまで hard ban は CI を即落とすため保留（deny.toml にコメントで明記）。
+- **`[bans]`** — `multiple-versions = "warn"` / `openssl-sys` を deny。`tokio` は `wrappers` 付きで deny 済み (ADR 0004 / #64)。gpui が `zed-reqwest → hyper → h2 → tokio` を transitively 引くため hard ban は置けないが、`wrappers` にその経路の crate だけを列挙することで、**それ以外から tokio へ辿る経路** — とりわけ `nohrs-*` crate が直接依存に戻すこと — を CI が落とす。`wrappers` への追加は tokio への新しい経路を認めることなので、各エントリに理由を添える。P4 で WASI 層が入る際は `nohrs-plugin-host` を追加する。
 - **`[sources]`** — `unknown-registry` / `unknown-git` を deny、`allow-git = []`。
 
 ---
@@ -167,14 +167,23 @@ reorder_imports = true
 
 ## 5. ベンチマーク (P2 以降)
 
-| crate | ベンチ対象 |
-|-------|-----------|
-| `nohrs-store` | SQLite/redb の get/put レイテンシ、batch 操作 |
-| `nohrs-services` | fs listing 並列度、search クエリ実行 |
-| `nohrs-launcher` (P3) | nucleo ranking、起動時間 |
-| `nohrs-plugin-host` (P4) | WIT host call レイテンシ、permission check overhead |
+| crate | ベンチ対象 | 状態 |
+|-------|-----------|------|
+| `nohrs-store` | SQLite メタデータの読み書き、history、redb host KV の get/put/batch | [`benches/store.rs`](../crates/nohrs-store/benches/store.rs) |
+| `nohrs-services` | fs listing (ディレクトリ規模別・ページ別) | [`benches/listing.rs`](../crates/nohrs-services/benches/listing.rs) |
+| `nohrs-services` | search クエリ実行 | P3 (#70 と同時) |
+| `nohrs-launcher` (P3) | nucleo ranking、起動時間 | 未着手 |
+| `nohrs-plugin-host` (P4) | WIT host call レイテンシ、permission check overhead | 未着手 |
 
-`criterion` crate を採用。CI では fail させず、main へのマージで履歴保存 (将来 regression 検知に使用)。
+`criterion` crate を採用。ベンチは `benches/` に置き、`[[bench]] harness = false` で criterion に `main` を渡す。lib 側は `bench = false` とする (既定では lib が bench target になり、libtest が criterion のフラグを拒否するため)。
+
+```bash
+cargo bench -p nohrs-store -p nohrs-services
+```
+
+CI の `bench (smoke)` job は、criterion が受け付ける最短の計測時間で全ベンチを走らせる。**目的は regression 検知ではなく、ベンチが腐らないことの保証である**: ベンチは他のどの job もビルドしないため、API 変更で壊れても気付かれない。共有ランナーの計測値は閾値を引けるほど安定せず、比較対象となる baseline も CI 側には無い。実数は手元で取る。
+
+ベンチコードは fixture であり、テストと同じ扱いとする。`clippy.toml` の `allow-expect-in-tests` は bench に及ばないため、各ベンチファイル先頭で `#![allow(clippy::expect_used)]` と `#![allow(missing_docs)]` (後者は `criterion_group!` が生成する関数に対して出る) を理由つきで宣言する。
 
 ---
 

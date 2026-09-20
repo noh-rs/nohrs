@@ -46,17 +46,28 @@ wildcards = "allow"
 deny = [
   # rustls unification — no OpenSSL in the tree.
   { name = "openssl-sys" },
-  # NOTE: testing.md §3 also bans tokio outside the WASI plugin-execution layer
-  # (nohrs-plugin-host, P4+). The app-core tokio removal (ADR 0004 / #64, P2) is
-  # done: no first-party (nohrs-*) crate depends on tokio directly any more.
-  # tokio is still present transitively, however, because gpui pulls a full async
-  # reqwest stack as a non-optional dependency
-  # (gpui → gpui_http_client → zed-reqwest → hyper → h2 → tokio) — `cargo tree -i
-  # tokio` roots only in that chain, never in a first-party crate. A hard
-  # `{ name = "tokio" }` deny therefore still cannot be enforced: tokio's direct
-  # parents in that chain (h2, hyper, hyper-util, tokio-rustls, tokio-socks, …)
-  # cannot be cleanly expressed via the `wrappers` allowlist. Add the hard deny
-  # once gpui's HTTP stack can be feature-gated off (or a tokio-free gpui ships).
+  # testing.md §3 bans tokio outside the WASI plugin-execution layer
+  # (nohrs-plugin-host, P4+), enforcing ADR 0004 / #64. tokio is still in the
+  # tree transitively: gpui pulls a full async reqwest stack as a non-optional
+  # dependency (gpui → gpui_http_client → zed-reqwest → hyper → h2 → tokio).
+  # `wrappers` names every crate allowed to depend on tokio directly, which is
+  # exactly that chain — so anything outside it, in particular a first-party
+  # `nohrs-*` crate taking tokio back as a direct dependency, fails the check.
+  #
+  # Adding a crate here means admitting a new route to tokio, so each entry
+  # needs a reason. Drop entries as gpui's HTTP stack sheds them; add
+  # `nohrs-plugin-host` when the WASI layer lands in P4.
+  { name = "tokio", wrappers = [
+    "h2",            # gpui's HTTP/2 transport
+    "hyper",         # gpui's HTTP client core
+    "hyper-rustls",  # TLS for the above
+    "hyper-util",    # connection pooling for the above
+    "tokio-rustls",  # TLS stream adapter
+    "tokio-socks",   # SOCKS proxy support in zed-reqwest
+    "tokio-util",    # codec helpers for h2 / zed-reqwest
+    "tower",         # zed-reqwest's middleware layer
+    "zed-reqwest",   # gpui_http_client's HTTP client
+  ] },
 ]
 
 [sources]

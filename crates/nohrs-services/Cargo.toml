@@ -12,6 +12,10 @@ authors.workspace      = true
 [lib]
 name = "nohrs_services"
 path = "src/nohrs_services.rs"
+# The lib is a bench target by default, so `cargo bench` would run the unit
+# tests through libtest, which rejects criterion's flags. The benchmarks live in
+# `benches/`.
+bench = false
 
 [features]
 # `syntax` produces gpui colors, so it (and its heavy syntect dependency) is
@@ -47,6 +51,12 @@ rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 tempfile = "3"
+criterion.workspace = true
+
+# `harness = false` hands `main` to criterion instead of libtest.
+[[bench]]
+name = "listing"
+harness = false
 
 [lints]
 workspace = true

@@ -236,6 +236,32 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.version }}
 
+  # Smoke-runs the criterion benchmarks (testing.md §5) so a bench cannot rot
+  # unnoticed: they compile against the real APIs and would break silently
+  # otherwise, since nothing else builds them. This is deliberately NOT a
+  # regression gate — a shared runner's timings are too noisy to threshold on,
+  # and criterion has no stored baseline to compare against here. It measures
+  # for the shortest interval criterion accepts; read real numbers locally with
+  # `cargo bench -p nohrs-store -p nohrs-services`.
+  bench:
+    name: bench (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Run benchmarks
+        run: |
+          cargo bench -p nohrs-store -p nohrs-services --locked -- \
+            --warm-up-time 1 --measurement-time 1 --sample-size 10
+
   # `bans` / `licenses` / `sources` are the required gate. `advisories` runs as a
   # separate informational step (continue-on-error) so transitive advisories from
   # the gpui async stack are surfaced without blocking merge (see deny.toml).
