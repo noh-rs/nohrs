@@ -68,16 +68,16 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   source against a compatibility shim instead of embedding a JavaScript runtime.
   [`docs/device-sharing.md`](docs/device-sharing.md) takes the shelf and the
   clipboard across the machines one person owns, without putting either on a
-  server: devices on the same network find each other, pin each other's keys and
-  talk directly, and an account — which now exists, and which nothing requires —
-  buys the setup rather than the feature: devices find each other without a
-  fingerprint read aloud, and there is a list of them to revoke from. What
-  crosses is deliberately less than what could: the clipboard sends one item,
-  the newest, into each connected machine's clipboard rather than its history,
-  unless history sharing is turned on, so a password copied by mistake is one
-  item to overwrite rather than a log on every machine; a shelf sends its listing and keeps the
-  bytes, which are fetched when the other end opens the shelf rather than
-  pushed when an item is dropped in, so leaving a 4GB file there does not
+  server: devices on the same network find each other, pin each other's keys
+  and talk directly. An account — which now exists, and which nothing
+  requires — buys the setup rather than the feature: pairing without reading a
+  fingerprint aloud, and a list of devices to revoke from. What crosses is
+  deliberately less than what could: the clipboard sends one item, the newest,
+  into each connected machine's clipboard rather than its history, unless
+  history sharing is turned on, so a password copied by mistake is one item to
+  overwrite rather than a log on every machine; a shelf sends its listing and
+  keeps the bytes, which are fetched when the other end opens the shelf rather
+  than pushed when an item is dropped in, so leaving a 4GB file there does not
   quietly fill three disks. Settings and plugin permissions do not cross at all.
   Because pinned keys outlive the account, a lapsed subscription stops the
   automatic discovery and nothing else.
