@@ -440,4 +440,11 @@ redb には同等の組み込みフックが無いため、`RedbKvStore` の各�
   cp ~/.local/share/nohrs/db.sqlite   ./backup-$(date +%Y%m%d).sqlite
   cp ~/.local/share/nohrs/state.redb  ./backup-$(date +%Y%m%d).redb
   ```
-- ユーザー向けの export/import 機能は P5 以降で検討
+- ユーザー向けの export/import (`noh export --all` / `noh import`) は **P3.5**。移行ウィザードが
+  適用前スナップショットに使うので、そこまでに要る ([`migration.md`](./migration.md) §3.2)。
+  対象と除外は同書 §3.1 が定義する (再生成可能なキャッシュ ― 検索インデックス・サムネイル ― は含めない)
+- **ただし plugin host は P4 なので、P3.5 の時点では `plugins` と `plugin_kv` が存在しません。**
+  `--all` は「その時点で存在するストアを全部」の意味で、P3.5 の export にこの 2 つは入りません。
+  入っていないことをアーカイブに書き (`stores` に実際に含めたものを列挙する)、import は
+  知らないストアを見つけたら**落とさずに `unsupported` として報告**します。P4 で 2 つが増えたときに、
+  P3.5 で作ったアーカイブを読んでも「plugin が消えた」ではなく「元から無かった」と分かるようにするためです

@@ -1,9 +1,17 @@
 # Launcher
 
 > Status: Draft (P3 で実装)
-> Related: [`ROADMAP.md`](./ROADMAP.md), [`docs/search.md`](./search.md), [`docs/plugin-api.md`](./plugin-api.md)
+> Related: [`launcher-requirements.md`](./launcher-requirements.md), [`notch.md`](./notch.md),
+> [`migration.md`](./migration.md), [`ROADMAP.md`](./ROADMAP.md), [`docs/search.md`](./search.md),
+> [`docs/plugin-api.md`](./plugin-api.md)
 
 本書は Raycast 風グローバルランチャーの設計を定めます。Launcher × Explorer の "Launcher" 側です。
+
+**本書はウィンドウ・入力・描画の実装仕様**です。「何を作り、何を作らないか / どの順で作るか」は
+[`launcher-requirements.md`](./launcher-requirements.md) が決めます。既存プロダクト (Raycast / Tinycast /
+Supaste / notch 系) の機能包含マトリクス、クリップボード履歴・スニペット・ウィンドウ管理などの要件、
+crate 構成への影響、フェーズ計画はそちらを参照してください。本書の §4 (`Command` trait) は
+requirements §7.1 の結論で置き場所が変わります (`nohrs-launcher` ではなく共有レイヤ)。
 
 ---
 
@@ -18,7 +26,7 @@
 | **移動** | 検索バー上部の数十 px (drag handle) をマウスでドラッグして移動可能 |
 | **位置リセット** | `Cmd+0` でデフォルト位置に戻す |
 | **マルチディスプレイ** | ドラッグで別ディスプレイへ移動可、移動先で位置記憶 |
-| **サイズ** | **750 × 500** 固定 (リサイズ不可、検索 UI なので幅固定で十分) |
+| **サイズ** | **750 × 500** 固定 (リサイズ不可、検索 UI なので幅固定で十分)。**P3.5 以降は読む用途のビューがもう 1 段 (1100 × 700 の二枚組) を宣言します** — [`launcher-requirements.md`](./launcher-requirements.md) §5.9。ユーザーによるリサイズが無いのは変わりません |
 | **デコレーション** | borderless + 丸角 + blur background (mica / vibrancy) |
 | **フォーカス喪失時** | 自動 close (`ESC` でも close)、設定で disable 可 |
 | **再 hotkey** | 既に開いている場合は toggle (close)。位置は記憶のまま |
@@ -62,7 +70,8 @@
 ### 4.1 `Command` trait
 
 ```rust
-// crates/nohrs-launcher/src/command.rs
+// 共有コマンドレイヤ (置き場所は launcher-requirements.md §7.1 / D1 で決定。
+// nohrs-launcher ではない — explorer と notch も同じレジストリに登録するため)
 
 pub trait Command: Send + Sync + 'static {
     fn id(&self) -> &'static str;
@@ -75,12 +84,25 @@ pub trait Command: Send + Sync + 'static {
     fn arguments(&self) -> &[ArgSpec];
     fn default_hotkey(&self) -> Option<KeyChord>;
     fn execute(&self, ctx: &CommandContext, args: &Args) -> CommandResult;
+
+    // required_permissions に既定は置きません。`&[]` を返す default があると、
+    // 「権限不要と明示した」と「宣言し忘れた」が同じ値になり、後者を警告できません。
+    // 権限が要るコマンドが「不要」として登録される経路を作らないため、ここは必須にします。
+    fn required_permissions(&self) -> &[Permission];
+
+    // 残りは既定を持ちます。Rust の trait は全メソッドの実装を要求するので、
+    // ここに body が無いと「省略時は launcher のみ」のような規定が書けません (§4.2)。
+    fn surfaces(&self) -> Surfaces { Surfaces::LAUNCHER }
+    fn layout(&self) -> Layout { Layout::List }
+    fn restores_focus(&self) -> bool { false }
 }
 
 inventory::collect!(&'static dyn Command);
 ```
 
-`inventory` クレートで linker-time にコマンドを集める。各 crate (`nohrs-pages`, `nohrs-services`, `nohrs-launcher` 自体) が自身のコマンドを `inventory::submit!` で宣言。
+`inventory` クレートで linker-time にコマンドを集める。各 crate (`nohrs-pages`, `nohrs-services`, `nohrs-launcher`、`nohrs-notch`) が自身のコマンドを `inventory::submit!` で宣言。
+
+**`inventory` だけでは足りません。** これはリンク時に決まる静的な集合なので、起動後にロードされる WASM plugin のコマンドは入りません。レジストリは静的 + 動的の 2 層になります ([`launcher-requirements.md`](./launcher-requirements.md) §7.1)。
 
 ### 4.2 メタデータ
 
@@ -92,13 +114,18 @@ inventory::collect!(&'static dyn Command);
 | `icon` | 16-24px、SF Symbols 互換 or 自前 SVG |
 | `keywords` | 検索マッチ強化用 (例: "calc", "math") |
 | `category` | "Productivity", "Developer Tools", "Media", "Cloud", "Theme" |
-| `mode` | `Instant` (即実行)、`View` (結果を launcher 内に表示)、`External` (別 window 開く) |
+| `mode` | `Instant` (即実行)、`View` (結果を launcher 内に表示)、`External` (別 window 開く)、`Background` (結果を HUD / notch に出して launcher を閉じる) |
+| | **`Background` は `surfaces` に `notch` を含めなければなりません。** 未記入の既定は「launcher のみ」なので、そのままだと**結果の行き先が無いまま launcher を閉じる**ことになります。宣言していないコマンドはロード時に弾きます。notch が使えない環境 ([`notch.md`](./notch.md) §2.2 の Wayland 等) では、`Background` は `Instant` に落として**結果を launcher 内に 1 行出してから閉じます** — 出す先が無いときに黙って捨てない、が要件です。さらに **plugin のコマンドの `Background` 結果は、notch へのアクティビティ寄与そのもの**なので、[`notch.md`](./notch.md) §3.9 の plugin 寄与と**同じ認可**を通します: `notch` の権限を持たない plugin は `Background` のコマンドを**登録できません** (実行時に弾くのではなく discover の時点で弾く)。core のコマンドは権限モデルの外なので、この検査は plugin 由来のものにだけ掛かります |
+| `required_permissions` | このコマンドが要る権限。**必須** (既定なし) — 空配列は「不要」の明示で、未記入とは別物です。正規化された集合は [`plugin-permissions.md`](./plugin-permissions.md) の `[permissions]` と同じ語彙 ([`launcher-requirements.md`](./launcher-requirements.md) §5.3) |
+| `surfaces` | どのサーフェスに出すか (launcher / explorer / notch)。未記入は launcher のみ |
+| `layout` | `List` (750×500) か `Split` (左一覧 + 右プレビュー)。未記入は `List` ([`launcher-requirements.md`](./launcher-requirements.md) §5.9) |
+| `restores_focus` | 終了時に元のアプリへフォーカスを返すか。未記入は `false` ([`launcher-requirements.md`](./launcher-requirements.md) §5.11) |
 | `arguments` | `Vec<ArgSpec>` (string / path / number / enum)、検索バーに inline 入力 `> command arg1 arg2` |
-| `default_hotkey` | 任意のコマンド固有グローバルホットキー |
+| `default_hotkey` | コマンド固有の既定キー。**OS への登録を増やしません** — 実体は「リーダーの後の 1 打鍵」か、launcher が開いている間だけのローカルキーです。OS に登録するのは summon / リーダー / シェルフのトグルの 3 つだけ ([`launcher-requirements.md`](./launcher-requirements.md) §5.10)。コマンドごとにグローバル登録を足せる形にすると、コマンドが増えるほど登録が増えます — 他のアプリとの衝突が増え、Wayland の portal にバインド数の上限があれば ([`launcher-requirements.md`](./launcher-requirements.md) §11 R2、未検証) そこに当たって「設定したのに効かないキー」が出ます。ユーザーが明示的にグローバルを割り当てることは可能で、そのときだけ 4 つ目以降になります |
 
 ### 4.3 plugin command (P4)
 
-`plugin.toml` の `[[commands]]` セクションで宣言、WIT 経由 `run_command(id, args, ctx)` で呼び出し。host 側で `Command` trait の adapter 実装で `inventory` レジストリに登録するので、コア plugin と同じレジストリで検索可能。
+`plugin.toml` の `[[commands]]` セクションで宣言、WIT 経由 `run_command(id, args, ctx)` で呼び出し。host 側で `Command` trait の adapter 実装を作り、**動的レジストリ**に登録するので、コアのコマンドと同じ検索に乗ります。`inventory` はリンク時に閉じるので、ここには使えません ([`launcher-requirements.md`](./launcher-requirements.md) §7.1)。
 
 詳細は [`docs/plugin-api.md`](./plugin-api.md) §commands interface。
 
@@ -163,6 +190,11 @@ inventory::collect!(&'static dyn Command);
 | command 選択時 | コマンド説明 + 引数フォーム |
 
 詳細ペインの中身は plugin から push 可能 (`launcher.push-view`)。詳細は [`docs/plugin-api.md`](./plugin-api.md) §`view-node`。
+
+ここで言う詳細ペインは **`List` レイアウトの中の開閉するペイン**です。クリップボード履歴のように
+一覧と中身を**常に並べて見比べる**ビューは、これとは別の `Split` レイアウトを宣言します
+([`launcher-requirements.md`](./launcher-requirements.md) §5.9)。プレビューの描き分け (テキスト / リンクの
+OGP / 画像 / 色 / ファイル / コード) は両方で共通です。
 
 ---
 

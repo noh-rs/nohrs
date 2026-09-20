@@ -1,6 +1,6 @@
 # Nohrs Roadmap
 
-> Last updated: 2026-05-28
+> Last updated: 2026-09-20
 
 Nohrs は、macOS の Finder を起点に「Launcher × Explorer」を高速・拡張可能・プラグイン可能な形で再構築する OSS プロジェクトです。本書は `0.0.x` から `1.0.0` までの開発計画を示し、各フェーズの目標と参照すべき設計ドキュメントを整理します。
 
@@ -58,9 +58,9 @@ SemVer の `0.x.y` を使い、刻みは次の基準で決める。
 
 ---
 
-## 参照ドキュメント (17)
+## 参照ドキュメント (21)
 
-ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキュメントを参照します。各ドキュメントは骨子を P1 で作成し、対応フェーズで詳細化します。
+ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキュメントを参照します。P1 で列挙した 17 本は骨子を P1 で作成し、対応フェーズで詳細化します。P1 より後に必要性が判明したもの (`launcher-requirements` / `notch` / `migration` / `device-sharing`) は、起票したフェーズで作成します。
 
 | ドキュメント | 対応 Phase | 内容 |
 |------------|-----------|------|
@@ -72,7 +72,11 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
 | [`docs/persistence.md`](./persistence.md) | P2 | rusqlite + WAL (メタデータ/履歴)・redb (ホスト KV, plugin KV は P4)・使い分け基準・`MetadataStore`/`KvStore` trait・マイグレーション・診断ログ |
 | [`docs/async-runtime.md`](./async-runtime.md) | P2 | GPUI executor 統一・`postage`/`async-channel`/`ureq` への置換 |
 | [`docs/explorer-essentials.md`](./explorer-essentials.md) | P1骨子→P2 | DnD・ファイル操作・スプリットビュー・タブ |
+| [`docs/launcher-requirements.md`](./launcher-requirements.md) | P3→P5 | ランチャーの要件定義・競合 (Raycast/Tinycast/Supaste/notch) の機能包含マトリクス・フェーズ計画・ADR 候補 |
 | [`docs/launcher.md`](./launcher.md) | P3 | フローティング window・グローバルホットキー・アクションフレームワーク |
+| [`docs/notch.md`](./notch.md) | P4→P5 | 3 つ目のサーフェス。ファイルシェルフ・ライブアクティビティ・非 notch 環境のフォールバック |
+| [`docs/migration.md`](./migration.md) | P3.5→P5 | 乗り換え (Raycast/Tinycast/Supaste/Alfred) の中間形式・移行ウィザード・Raycast 拡張のソース互換 |
+| [`docs/device-sharing.md`](./device-sharing.md) | P5 | 同じ LAN の自分の端末どうしでシェルフとクリップボードを共有する。ペアリングと鍵・何が端末をまたぐか・アカウントと課金の線 |
 | [`docs/search.md`](./search.md) | P3→P4 | V1 ripgrep → V2 SQLite FTS5 → V3 Tantivy 統合・リソース制限 |
 | [`docs/plugin-overview.md`](./plugin-overview.md) | P4 | wit-bindgen + Component Model・ライフサイクル・コア/コミュニティ分離 |
 | [`docs/plugin-api.md`](./plugin-api.md) | P4 | WIT world・host imports/exports・UI レンダリングモデル |
@@ -126,7 +130,7 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
 - `cargo fmt --check && cargo clippy -- -D warnings -W clippy::unwrap_used -W clippy::expect_used && cargo test --all-features` が CI で green
 - `cargo publish --dry-run` がメタ情報エラーを出さない
 - `nohrs.app` が GA、`noh.rs` リダイレクト稼働
-- 全 spec doc 16 本の骨子が `docs/` 配下に存在
+- P1 で列挙した spec doc 17 本の骨子が `docs/` 配下に存在 (後続フェーズで追加されたものは対象外)
 
 ---
 
@@ -168,6 +172,12 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
 ## Phase 3 — Launcher & Search (0.2.0)
 
 **ゴール**: 「Launcher × Explorer」の launcher 側を立ち上げ、検索基盤を SQLite FTS5 (V2) まで進める。
+
+> **範囲の見直し (提案)**: ランチャーを第一級として競合 (Raycast / Tinycast / Supaste / notch 系) を包含する
+> となると、本フェーズの粒度では収まりません。[`docs/launcher-requirements.md`](./launcher-requirements.md) §8 は
+> **P3 を P3 / P3.5 に分割**し、クリップボード履歴・スニペット・Quicklink・移行ウィザードを `0.2.x` の P3.5 に、
+> notch と常駐モードを P4 に置く改訂案を出しています。本節は現行の確定範囲を残し、改訂は P3 着手時に
+> 本ロードマップへ反映します。
 
 ### Core
 
@@ -318,7 +328,7 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
 - **Git 統合の本格化** (sidebar、blame、conflict UI)
 - **plugin 間の依存解決** (現時点は self-contained のみ)
 - **Plugin Store の動的データ** (DL 数、評価) → CF Workers + KV / D1 backend
-- **menubar 常駐モード** (macOS / Linux tray)
+- **menubar 常駐モード** (macOS / Linux tray) — クリップボード履歴・per-app hotkey・notch がいずれも常駐前提なので、[`docs/launcher-requirements.md`](./launcher-requirements.md) §7.4 は **P4 への前倒し**を提案している
 - **plugin の async 通信モデル** (long-running task のキャンセル対応)
 - **Office / PDF / OCR の content extraction**
 - **noh.rs の独立ランディング化** (CLI install one-liner 等、リダイレクト以上の役割を持たせる場合)
