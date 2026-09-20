@@ -152,7 +152,7 @@ const en = {
       {
         id: 'P3',
         version: '0.2.0',
-        theme: 'Launcher & search — global-hotkey launcher, SQLite FTS5 search',
+        theme: 'Launcher & search — global-hotkey launcher, Tantivy ngram substring search',
         state: 'planned' as const,
       },
       {
@@ -495,7 +495,7 @@ const ja: Dict = {
       {
         id: 'P3',
         version: '0.2.0',
-        theme: 'ランチャーと検索 — グローバルホットキーのランチャー、SQLite FTS5 検索',
+        theme: 'ランチャーと検索 — グローバルホットキーのランチャー、Tantivy ngram 部分一致検索',
         state: 'planned' as const,
       },
       {

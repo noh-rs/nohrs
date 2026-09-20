@@ -82,7 +82,7 @@ Nohrs ships in six serial phases. P1 iterates on `0.0.x`; the first usable MVP i
 |-------|-----------|-------|
 | **P1** | `0.0.x` | Foundation — quality, workspace split, dev/CI infra, web MVP |
 | **P2** | `0.1.0` | Explorer Essentials — DnD, file ops, split view, tabs, persistence |
-| **P3** | `0.2.0` | Launcher & Search — global-hotkey launcher, SQLite FTS5 search |
+| **P3** | `0.2.0` | Launcher & Search — global-hotkey launcher, Tantivy ngram substring search |
 | **P4** | `0.3.0` | Plugin Host — WASM Component Model, 3-language templates |
 | **P5** | `0.4.0` | Ecosystem — Plugin Store, community plugins |
 | **P6** | `0.5.0` | Stabilization — multi-OS strategy, performance gates, docs |

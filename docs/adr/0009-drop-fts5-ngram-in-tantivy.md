@@ -24,7 +24,7 @@
 - `FileWatcher` の変更通知が専用スレッド経由で `process_changes` に渡り、増分更新が動作している
 - 初回インデックスは `InitialIndexingJob` として GPUI の background executor へ委譲され、進捗を `postage::watch` で報告する
 
-すなわち V3 の中核である「永続全文インデックス + 増分更新」は home スコープについて既に出荷済みであり、V2 が踏み台として担うはずだった役割は残っていない。ripgrep は root スコープのフォールバックとして残っているのみで、FTS5 はどこにも存在しない。
+すなわち V3 の中核である「永続全文インデックス + 増分更新」は home スコープについて既に出荷済みであり、V2 が踏み台として担うはずだった役割は残っていない。ripgrep は非 macOS の root スコープで使われているのみで、FTS5 はどこにも存在しない。
 
 残る論点は、FTS5 に踏み台以外の独立した存在理由があるかであった。当初「部分一致 (`*abc*`) は tantivy のトークナイザでは扱えず、FTS5 の trigram が必要」と判断したが、これは誤りであった。
 
@@ -39,7 +39,7 @@ ngram field, substring 'er_fil' -> 1 hit(s)
 plain TEXT field, substring 'er_fil' -> 0 hit(s)
 ```
 
-`explorer_file_ops.rs` を両フィールドに投入し、トークン境界をまたぐ部分文字列 `er_fil` を照会した結果である。`NgramTokenizer::all_ngrams(3, 3)` を `index.tokenizers().register("tri", ...)` で登録したフィールドは一致し、既定の `TEXT` は一致しない。FTS5 の trigram と同一の手法がライブラリ側に用意されており、部分一致はトークナイザの選択の問題であって原理的制約ではない。
+文字列 `"explorer_file_ops.rs"` (ファイル名を模した 1 語のトークン) を両フィールドに投入し、トークン境界をまたぐ部分文字列 `er_fil` を照会した結果である。`NgramTokenizer::all_ngrams(3, 3)` を `index.tokenizers().register("tri", ...)` で登録したフィールドは一致し、既定の `TEXT` は一致しない。FTS5 の trigram と同一の手法がライブラリ側に用意されており、部分一致はトークナイザの選択の問題であって原理的制約ではない。
 
 実装上の要点として、ngram フィールドは `IndexRecordOption::WithFreqsAndPositions` を要する。クエリ文字列も同じトークナイザで 3-gram 列に分解され、`QueryParser` がそれをフレーズクエリとして扱うため、位置情報がないと `The field ... does not have positions indexed` で失敗する。gram の順序で部分文字列を再構成する点は FTS5 trigram と同じである。
 
@@ -57,7 +57,7 @@ SQLite の役割は検索から外し、**状態管理に専念させる**。
 
 | 版 | Phase | 内容 |
 |----|-------|------|
-| V1 (ripgrep) | 現状 | root スコープのフォールバックとして存続 |
+| V1 (ripgrep) | 現状 | 非 macOS の root スコープで存続 (macOS の root は Spotlight) |
 | **V2 (ngram フィールド追加)** | **P3** | `filename` / `path` に ngram トークナイザのフィールドを追加し部分一致を提供。SQLite はメタデータ・差分検出に限定 |
 | V3 (code-aware) | P4 | identifier 分解 (camelCase / snake_case)、plugin への WIT 公開 |
 

@@ -22,15 +22,17 @@
 
 | 担当 | 役割 |
 |------|------|
-| SQLite | ファイルメタデータ (path / mtime / size / inode / hash)、削除追跡、状態管理、差分検出、trigram 全文検索 (FTS5、V2 段階) |
+| SQLite | ファイルメタデータ (path / mtime / size / inode / hash)、削除追跡、状態管理、差分検出、~~trigram 全文検索 (FTS5、V2 段階)~~ |
 | Tantivy | 全文検索インデックス、BM25 ランキング、コード対応 ngrams、identifier 分解 (V3 段階) |
 | notify-debouncer-mini | ファイルシステム変更検出 (debounce 500ms) |
 
 段階移行:
 
 - **V1 (現状)**: ripgrep オンデマンド検索
-- **V2 (P3)**: SQLite FTS5
+- ~~**V2 (P3)**: SQLite FTS5~~
 - **V3 (P4)**: SQLite + Tantivy 統合
+
+> 取り消し線の 2 箇所は [ADR 0009](./0009-drop-fts5-ngram-in-tantivy.md) が廃した。SQLite に FTS5 全文検索は持たせず、V2 は Tantivy に ngram フィールドを足す段に置き換わっている。ハイブリッド採用と Spotlight 一本化の棄却という本 ADR の判断自体は有効である。
 
 詳細は [`docs/search.md`](../search.md) 参照。
 
