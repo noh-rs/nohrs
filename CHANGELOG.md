@@ -39,7 +39,7 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   configured; and a way back to the window you were just in,
   which `Cmd+Tab` cannot do when both windows belong to the same app, with the
   focus history kept in memory and never written down. None of this is
-  implemented here. Two documents come with it, both describing work that is
+  implemented here. Three documents come with it, all describing work that is
   planned rather than built. [`docs/notch.md`](docs/notch.md) treats the notch as a third surface and
   gives it an admission test — a thing earns that spot only if it arrives on its
   own, can be acted on there, is passing through, and is something nohrs knows
@@ -70,10 +70,12 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   clipboard across the machines one person owns, without putting either on a
   server: devices on the same network find each other, pin each other's keys and
   talk directly, and an account — which now exists, and which nothing requires —
-  only saves you reading a fingerprint aloud. What crosses is deliberately less
-  than what could: the clipboard sends one item, the newest, unless history
-  sharing is turned on, so a password copied by mistake reaches one machine
-  rather than a log on all of them; a shelf sends its listing and keeps the
+  buys the setup rather than the feature: devices find each other without a
+  fingerprint read aloud, and there is a list of them to revoke from. What
+  crosses is deliberately less than what could: the clipboard sends one item,
+  the newest, into each connected machine's clipboard rather than its history,
+  unless history sharing is turned on, so a password copied by mistake is one
+  item to overwrite rather than a log on every machine; a shelf sends its listing and keeps the
   bytes, which are fetched when the other end opens the shelf rather than
   pushed when an item is dropped in, so leaving a 4GB file there does not
   quietly fill three disks. Settings and plugin permissions do not cross at all.

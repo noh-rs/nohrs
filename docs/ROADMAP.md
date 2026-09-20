@@ -1,6 +1,6 @@
 # Nohrs Roadmap
 
-> Last updated: 2026-05-28
+> Last updated: 2026-09-20
 
 Nohrs は、macOS の Finder を起点に「Launcher × Explorer」を高速・拡張可能・プラグイン可能な形で再構築する OSS プロジェクトです。本書は `0.0.x` から `1.0.0` までの開発計画を示し、各フェーズの目標と参照すべき設計ドキュメントを整理します。
 
