@@ -240,9 +240,10 @@ jobs:
   # unnoticed: they compile against the real APIs and would break silently
   # otherwise, since nothing else builds them. This is deliberately NOT a
   # regression gate — a shared runner's timings are too noisy to threshold on,
-  # and criterion has no stored baseline to compare against here. It measures
-  # for the shortest interval criterion accepts; read real numbers locally with
-  # `cargo bench -p nohrs-store -p nohrs-services`.
+  # and criterion has no stored baseline to compare against here. Warm-up and
+  # measurement are each cut to 1s with 10 samples, which is enough to exercise
+  # every benchmark and not enough to trust the numbers; read real ones locally
+  # with `cargo bench --locked -p nohrs-store -p nohrs-services`.
   bench:
     name: bench (smoke)
     runs-on: ubuntu-latest

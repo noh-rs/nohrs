@@ -118,13 +118,16 @@ fn metadata_writes(criterion: &mut Criterion) {
                     &StoreLogConfig::default(),
                 )
                 .expect("open store");
-                (directory, store)
+                // The store comes first so it drops before the directory it
+                // lives in. Deleting a directory whose database is still open
+                // fails on Windows, and the sample would leak its fixture.
+                (store, directory)
             },
-            |(directory, store)| {
+            |(store, directory)| {
                 store.upsert_file(&entry(0)).expect("insert");
                 // Returned so the drop (and the file deletion it triggers) is
                 // charged to teardown rather than to the measured routine.
-                (directory, store)
+                (store, directory)
             },
             BatchSize::SmallInput,
         );
@@ -201,8 +204,15 @@ fn host_kv(criterion: &mut Criterion) {
             value: value.clone(),
         })
         .collect();
+    // `KvStore::batch` takes the ops by value, so each sample needs its own
+    // copy. Cloning 16 × 4 KiB inside the measured closure would put that
+    // allocation into the number, so it goes in setup.
     group.bench_function("batch/16", |bencher| {
-        bencher.iter(|| store.batch(black_box(batch.clone())).expect("batch"));
+        bencher.iter_batched(
+            || batch.clone(),
+            |batch| store.batch(batch).expect("batch"),
+            BatchSize::SmallInput,
+        );
     });
 
     group.bench_function("list_namespace", |bencher| {

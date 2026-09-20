@@ -57,6 +57,11 @@ deny = [
   # Adding a crate here means admitting a new route to tokio, so each entry
   # needs a reason. Drop entries as gpui's HTTP stack sheds them; add
   # `nohrs-plugin-host` when the WASI layer lands in P4.
+  #
+  # `quinn` (zed-reqwest's QUIC transport) is a direct tokio parent in
+  # Cargo.lock but resolves into no target's tree, so it is left out rather
+  # than pre-approved. If a feature ever pulls it in, this check fails naming
+  # quinn: add it here with its reason and re-run `cargo deny check bans`.
   { name = "tokio", wrappers = [
     "h2",            # gpui's HTTP/2 transport
     "hyper",         # gpui's HTTP client core

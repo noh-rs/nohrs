@@ -178,12 +178,22 @@ reorder_imports = true
 `criterion` crate を採用。ベンチは `benches/` に置き、`[[bench]] harness = false` で criterion に `main` を渡す。lib 側は `bench = false` とする (既定では lib が bench target になり、libtest が criterion のフラグを拒否するため)。
 
 ```bash
-cargo bench -p nohrs-store -p nohrs-services
+cargo bench --locked -p nohrs-store -p nohrs-services
 ```
 
-CI の `bench (smoke)` job は、criterion が受け付ける最短の計測時間で全ベンチを走らせる。**目的は regression 検知ではなく、ベンチが腐らないことの保証である**: ベンチは他のどの job もビルドしないため、API 変更で壊れても気付かれない。共有ランナーの計測値は閾値を引けるほど安定せず、比較対象となる baseline も CI 側には無い。実数は手元で取る。
+`--locked` は CI と同じ依存グラフで測るためにつける。これが無いと `Cargo.toml` の条件とコミット済み `Cargo.lock` がずれている場合に lockfile が更新され、CI と別の依存で計測することになる。
 
-ベンチコードは fixture であり、テストと同じ扱いとする。`clippy.toml` の `allow-expect-in-tests` は bench に及ばないため、各ベンチファイル先頭で `#![allow(clippy::expect_used)]` と `#![allow(missing_docs)]` (後者は `criterion_group!` が生成する関数に対して出る) を理由つきで宣言する。
+CI の `bench (smoke)` job は、warm-up・計測とも 1 秒・10 サンプルまで削って全ベンチを走らせる。**目的は regression 検知ではなく、ベンチが腐らないことの保証である**: ベンチは他のどの job もビルドしないため、API 変更で壊れても気付かれない。共有ランナーの計測値は閾値を引けるほど安定せず、比較対象となる baseline も CI 側には無い。実数は手元で取る。
+
+ベンチコードは fixture であり、テストと同じ扱いとする。`clippy.toml` の `allow-expect-in-tests` は bench に及ばないため、各ベンチファイル先頭で以下を理由つきで宣言する。
+
+| allow | 理由 |
+|-------|------|
+| `#![allow(clippy::expect_used)]` | 失敗したら続行できない setup は panic させる。criterion が生成する `main` は `Result` を返さない |
+| `#![allow(missing_docs)]` | `criterion_group!` が生成する関数に対して出る |
+| `#![allow(clippy::disallowed_methods)]` | fixture 構築で `std::fs::write` を使うベンチのみ。この禁則は GPUI のフォアグラウンドスレッドを守るためのもので、bench harness に UI スレッドは無い |
+
+新しいベンチを足す際は、ディスクに触るかどうかで 3 つ目の要否が決まる。
 
 ---
 

@@ -22,9 +22,13 @@ use std::fs;
 use std::hint::black_box;
 use tempfile::TempDir;
 
-/// Directory sizes to measure at. 1,000 is the current `DIR_LISTING_LIMIT`, so
-/// 10,000 shows what a directory past the limit costs to page through.
-const SIZES: [usize; 4] = [10, 100, 1_000, 10_000];
+/// The largest directory measured, and the one the paging benchmarks use.
+/// 1,000 is the current `DIR_LISTING_LIMIT`, so 10,000 shows what a directory
+/// past the limit costs to page through.
+const LARGE: usize = 10_000;
+
+/// Smaller directory sizes, measured alongside `LARGE`.
+const SMALL_SIZES: [usize; 3] = [10, 100, 1_000];
 
 /// The page size the explorer asks for.
 const PAGE: usize = 1_000;
@@ -42,6 +46,15 @@ fn directory_of(count: usize) -> TempDir {
     directory
 }
 
+/// Builds a directory of `count` empty subdirectories.
+fn directory_of_dirs(count: usize) -> TempDir {
+    let directory = TempDir::new().expect("create temp dir");
+    for index in 0..count {
+        fs::create_dir(directory.path().join(format!("dir{index}"))).expect("create bench dir");
+    }
+    directory
+}
+
 fn path_of(directory: &TempDir) -> &str {
     directory
         .path()
@@ -49,102 +62,76 @@ fn path_of(directory: &TempDir) -> &str {
         .expect("temp dir path is valid UTF-8")
 }
 
-fn first_page(criterion: &mut Criterion) {
-    let mut group = criterion.benchmark_group("fs/list_dir/first_page");
+fn list(path: &str, limit: usize, cursor: Option<&str>) {
+    black_box(
+        list_dir_sync(ListParams {
+            path: black_box(path),
+            limit,
+            cursor,
+        })
+        .expect("list_dir_sync"),
+    );
+}
 
-    for size in SIZES {
+/// All the listing benchmarks. They share one function because each fixture
+/// costs `count` filesystem writes, and the `LARGE` one is wanted by three of
+/// the groups — building it once keeps the CI smoke run from paying for it
+/// three times.
+fn listing(criterion: &mut Criterion) {
+    let large = directory_of(LARGE);
+    let large_path = path_of(&large);
+
+    let mut first_page = criterion.benchmark_group("fs/list_dir/first_page");
+    for size in SMALL_SIZES {
         let directory = directory_of(size);
         let path = path_of(&directory);
-        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |bencher, _| {
-            bencher.iter(|| {
-                black_box(
-                    list_dir_sync(ListParams {
-                        path: black_box(path),
-                        limit: PAGE,
-                        cursor: None,
-                    })
-                    .expect("list_dir_sync"),
-                )
-            });
+        first_page.bench_with_input(BenchmarkId::from_parameter(size), &size, |bencher, _| {
+            bencher.iter(|| list(path, PAGE, None));
         });
     }
-
-    group.finish();
-}
-
-fn later_page(criterion: &mut Criterion) {
-    // A later page costs the same as the first, because the whole directory is
-    // read and sorted before the page is sliced. This benchmark is here to make
-    // that visible: if paging is ever made incremental, the two curves separate.
-    let directory = directory_of(10_000);
-    let path = path_of(&directory);
-
-    let mut group = criterion.benchmark_group("fs/list_dir/later_page");
-    group.bench_function("offset_9000", |bencher| {
-        bencher.iter(|| {
-            black_box(
-                list_dir_sync(ListParams {
-                    path: black_box(path),
-                    limit: PAGE,
-                    cursor: Some("9000"),
-                })
-                .expect("list_dir_sync"),
-            )
-        });
+    first_page.bench_with_input(BenchmarkId::from_parameter(LARGE), &LARGE, |bencher, _| {
+        bencher.iter(|| list(large_path, PAGE, None));
     });
-    group.finish();
-}
+    first_page.finish();
 
-fn page_size(criterion: &mut Criterion) {
-    let directory = directory_of(10_000);
-    let path = path_of(&directory);
+    // Two questions about the same fixture. A later page costs the same as the
+    // first, and a small page costs the same as a large one, because the whole
+    // directory is read and sorted before the page is sliced. Both are here to
+    // make that visible: if paging is ever made incremental, the curves split.
+    let mut paging = criterion.benchmark_group("fs/list_dir/paging");
 
-    let mut group = criterion.benchmark_group("fs/list_dir/page_size");
+    // Derived from LARGE rather than written out, because `list_dir_impl`
+    // clamps an offset past the end (`cursor…min(total)`) and silently returns
+    // an empty page — a stale literal would stop measuring a later page at all,
+    // without failing.
+    let last_page_offset = LARGE.saturating_sub(PAGE);
+    let cursor = last_page_offset.to_string();
+    paging.bench_function(format!("offset/{last_page_offset}"), |bencher| {
+        bencher.iter(|| list(large_path, PAGE, Some(&cursor)));
+    });
+
     for limit in [10_usize, 100, 1_000] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(limit),
+        paging.bench_with_input(
+            BenchmarkId::new("page_size", limit),
             &limit,
             |bencher, &limit| {
-                bencher.iter(|| {
-                    black_box(
-                        list_dir_sync(ListParams {
-                            path: black_box(path),
-                            limit,
-                            cursor: None,
-                        })
-                        .expect("list_dir_sync"),
-                    )
-                });
+                bencher.iter(|| list(large_path, limit, None));
             },
         );
     }
-    group.finish();
-}
+    paging.finish();
 
-fn nested(criterion: &mut Criterion) {
-    // Directories cost an extra `symlink_metadata` each in the per-entry loop,
-    // so a directory of directories is the more expensive shape.
-    let directory = TempDir::new().expect("create temp dir");
-    for index in 0..1_000 {
-        fs::create_dir(directory.path().join(format!("dir{index}"))).expect("create bench dir");
-    }
-    let path = path_of(&directory);
-
-    let mut group = criterion.benchmark_group("fs/list_dir/subdirectories");
-    group.bench_function("1000", |bencher| {
-        bencher.iter(|| {
-            black_box(
-                list_dir_sync(ListParams {
-                    path: black_box(path),
-                    limit: PAGE,
-                    cursor: None,
-                })
-                .expect("list_dir_sync"),
-            )
-        });
+    // Every entry costs a `symlink_metadata` in the per-entry loop regardless
+    // of its kind, so this is not a more expensive shape than a flat listing —
+    // it pins the all-directory case so a future kind-dependent branch shows up.
+    let directories = directory_of_dirs(1_000);
+    let directories_path = path_of(&directories);
+    let mut subdirectories = criterion.benchmark_group("fs/list_dir/subdirectories");
+    subdirectories.bench_function("1000", |bencher| {
+        bencher.iter(|| list(directories_path, PAGE, None));
     });
-    group.finish();
+    subdirectories.finish();
 }
 
-criterion_group!(benches, first_page, later_page, page_size, nested);
+criterion_group!(benches, listing);
 criterion_main!(benches);
