@@ -188,7 +188,7 @@ Raycast 流のスタック型ナビ:
 | Navigation | `Go to Path`, `Bookmark Path`, `Recent Folders` |
 | Quick calc | `Calculator` (入力が数式なら自動)、`Unit Convert` |
 | System | `Quit`, `Settings`, `Reload`, `About` |
-| Search | `Search Files` (current scope), `Search Content` (FTS5 全文検索 P3 V2) |
+| Search | `Search Files` (current scope), `Search Content` (Tantivy 全文検索) |
 
 ---
 

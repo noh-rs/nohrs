@@ -259,8 +259,6 @@ pub enum SearchBackend {
     /// Pick the best available backend at runtime (the default).
     #[default]
     Auto,
-    /// SQLite full-text search (FTS5).
-    SqliteFts,
     /// The Tantivy index.
     Tantivy,
     /// External `ripgrep`.
@@ -268,11 +266,9 @@ pub enum SearchBackend {
 }
 
 impl SearchBackend {
-    /// Parse the `config.toml` spelling
-    /// (`sqlite-fts`/`tantivy`/`ripgrep`/`auto`).
+    /// Parse the `config.toml` spelling (`tantivy`/`ripgrep`/`auto`).
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "sqlite-fts" => Some(Self::SqliteFts),
             "tantivy" => Some(Self::Tantivy),
             "ripgrep" => Some(Self::Ripgrep),
             "auto" => Some(Self::Auto),
@@ -653,7 +649,7 @@ impl Config {
              globs = []\n\
              \n\
              [search]\n\
-             backend = \"auto\"   # \"sqlite-fts\" | \"tantivy\" | \"ripgrep\" | \"auto\"\n\
+             backend = \"auto\"   # \"tantivy\" | \"ripgrep\" | \"auto\"\n\
              \n\
              [launcher]\n\
              hotkey = \"Cmd+Shift+Space\"\n\

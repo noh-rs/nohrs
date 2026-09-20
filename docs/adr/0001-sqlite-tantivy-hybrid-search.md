@@ -2,6 +2,7 @@
 
 > Status: Accepted
 > Date: 2026-05-28
+> Amended by: [ADR 0009](./0009-drop-fts5-ngram-in-tantivy.md) — 段階移行表のうち SQLite FTS5 の段を廃し、部分一致も tantivy に集約 (本 ADR の Decision 本体は有効)
 
 ## Context
 

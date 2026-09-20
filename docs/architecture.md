@@ -175,7 +175,7 @@ Launcher::on_query_change (launcher)
   ↓ debounced 50ms
 SearchService::search(query) (services::search)
   ↓
-SQLite FTS5 query (store) → Vec<SearchHit>
+Tantivy index query (services::search) → Vec<SearchHit>
   ↓
 nucleo で fuzzy 再ランキング + boost
   ↓
