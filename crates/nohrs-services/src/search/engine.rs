@@ -49,7 +49,7 @@ impl InitialIndexingJob {
 /// and answers from tantivy directly, so a search never waits on anything else;
 /// the writing goes to an [`IndexControl`], which is `nohrs-indexd` where one
 /// can be reached and this process where it cannot
-/// ([ADR 0009](../../../../docs/adr/0009-indexd-owns-the-index-writer.md)).
+/// ([ADR 0010](../../../../docs/adr/0010-indexd-owns-the-index-writer.md)).
 pub struct SearchEngine {
     control: Arc<dyn IndexControl>,
     /// Held open for the life of the engine and reloaded when the writer says

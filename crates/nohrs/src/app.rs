@@ -36,7 +36,7 @@ mod search {
     /// with the app closed, and what keeps it up to date while the app is
     /// open — the watcher lives there, because the launcher can be summoned at
     /// any moment and the freshness of what it answers with cannot depend on a
-    /// window having been left open (ADR 0009).
+    /// window having been left open (ADR 0010).
     ///
     /// Failing to reach one is not fatal. The writer comes back here, which
     /// costs the live updates and nothing else: searches read the index

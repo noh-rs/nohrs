@@ -25,7 +25,7 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   thing to quit is nohrs. Searches never go through it; readers open the index
   directly, which is what makes a daemon that is down, busy or a version behind
   cost freshness and never an answer. See
-  [ADR 0009](docs/adr/0009-indexd-owns-the-index-writer.md).
+  [ADR 0010](docs/adr/0010-indexd-owns-the-index-writer.md).
 - `noh search <QUERY> [PATH]...` looks for a query in a directory tree, matching
   both the names walked and the text inside the files (`--name` / `--content`
   narrow it to one). Name matches print as the bare path and content matches as
@@ -98,7 +98,7 @@ are additive changes within a phase. See [`docs/ROADMAP.md`](docs/ROADMAP.md) fo
   hold it from launch to quit whether or not it indexed anything, which made the
   index private to whichever process got there first — `noh index build` beside a
   running app was refused, and so was a second window. Readers never take the
-  lock at all. See [ADR 0009](docs/adr/0009-indexd-owns-the-index-writer.md).
+  lock at all. See [ADR 0010](docs/adr/0010-indexd-owns-the-index-writer.md).
 - The default stderr log filter quietens tantivy to `warn`: it narrates every
   commit and merge at `info`, which is half a screen of "save metas" for one
   `noh index build`. `RUST_LOG=info` brings it back.

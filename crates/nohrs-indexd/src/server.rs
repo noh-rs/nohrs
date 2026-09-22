@@ -3,7 +3,7 @@
 //! Searches do not come through here. Readers open the index themselves, so a
 //! daemon that is down, busy, or a version behind costs freshness and never an
 //! answer ([ADR
-//! 0009](../../../../docs/adr/0009-indexd-owns-the-index-writer.md)).
+//! 0010](../../../../docs/adr/0010-indexd-owns-the-index-writer.md)).
 
 #![cfg(unix)]
 

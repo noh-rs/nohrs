@@ -4,7 +4,7 @@
 //! reads tantivy directly, from any number of processes at once. This is only
 //! the *writing* side, and it is a trait because the writer moves: today it is
 //! whichever process took tantivy's one writer lock, and per
-//! [ADR 0009](../../../../docs/adr/0009-indexd-owns-the-index-writer.md) it
+//! [ADR 0010](../../../../docs/adr/0010-indexd-owns-the-index-writer.md) it
 //! becomes `nohrs-indexd`, which owns the watcher beside it.
 //!
 //! Keeping the two apart is what makes that move safe to do in stages: a caller

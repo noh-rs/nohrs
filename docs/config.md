@@ -66,7 +66,7 @@ paths = []
 globs = []
 
 [search]
-backend = "auto"  # "sqlite-fts" | "tantivy" | "ripgrep" | "auto"
+backend = "auto"  # "tantivy" | "ripgrep" | "auto"
 
 [launcher]
 hotkey = "Cmd+Shift+Space"

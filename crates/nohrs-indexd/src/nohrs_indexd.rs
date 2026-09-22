@@ -11,7 +11,7 @@
 //! a query. A daemon that is down, busy, or a version behind costs freshness
 //! and never an answer — which is what makes it safe for it to be a daemon at
 //! all ([ADR
-//! 0009](../../../../docs/adr/0009-indexd-owns-the-index-writer.md)).
+//! 0010](../../../../docs/adr/0010-indexd-owns-the-index-writer.md)).
 //!
 //! It is not installed, registered or started at login either. The first
 //! process that wants it starts it, and it stops itself once its last client

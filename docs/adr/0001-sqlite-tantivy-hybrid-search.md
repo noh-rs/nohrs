@@ -2,6 +2,7 @@
 
 > Status: Accepted
 > Date: 2026-05-28
+> Amended by: [ADR 0009](./0009-drop-fts5-ngram-in-tantivy.md) — 段階移行表のうち SQLite FTS5 の段を廃し、部分一致も tantivy に集約 (本 ADR の Decision 本体は有効)
 
 ## Context
 
@@ -21,20 +22,22 @@
 
 | 担当 | 役割 |
 |------|------|
-| SQLite | ファイルメタデータ (path / mtime / size / inode / hash)、削除追跡、状態管理、差分検出、trigram 全文検索 (FTS5、V2 段階) |
+| SQLite | ファイルメタデータ (path / mtime / size / inode / hash)、削除追跡、状態管理、差分検出、~~trigram 全文検索 (FTS5、V2 段階)~~ |
 | Tantivy | 全文検索インデックス、BM25 ランキング、コード対応 ngrams、identifier 分解 (V3 段階) |
 | notify-debouncer-mini | ファイルシステム変更検出 (debounce 500ms[^debounce]) |
 
 [^debounce]: この 500ms は当時の値である。現在は 2s であり、これは app が watcher を持っていた時点で
-    すでにそうなっていた値である。watcher はその後 [ADR 0009](./0009-indexd-owns-the-index-writer.md)
+    すでにそうなっていた値である。watcher はその後 [ADR 0010](./0010-indexd-owns-the-index-writer.md)
     で `nohrs-indexd` に移ったが、値を変えたのはその移行ではない。この ADR の決定 (SQLite + Tantivy
     を採る) 自体は変わっていないため、status は Accepted のままとする。
 
 段階移行:
 
 - **V1 (現状)**: ripgrep オンデマンド検索
-- **V2 (P3)**: SQLite FTS5
-- **V3 (P4)**: SQLite + Tantivy 統合
+- ~~**V2 (P3)**: SQLite FTS5~~
+- ~~**V3 (P4)**: SQLite + Tantivy 統合~~
+
+> 取り消し線の 3 箇所は [ADR 0009](./0009-drop-fts5-ngram-in-tantivy.md) が置き換えた。SQLite に FTS5 全文検索は持たせず、V2 は Tantivy に ngram フィールドを足す段、V3 は code-aware (identifier 分解・plugin への WIT 公開) の段となる。Tantivy 統合自体が V3 待ちだったのは、当時まだ実装が無かったためで、現在は home スコープについて出荷済みである。ハイブリッド採用と Spotlight 一本化の棄却という本 ADR の判断自体は有効である。
 
 詳細は [`docs/search.md`](../search.md) 参照。
 

@@ -1,4 +1,4 @@
-# 0009 — インデックスの watcher と writer を `nohrs-indexd` に集約し、寿命を nohrs に一致させる
+# 0010 — インデックスの watcher と writer を `nohrs-indexd` に集約し、寿命を nohrs に一致させる
 
 > Status: Accepted
 > Date: 2026-09-17

@@ -3,7 +3,7 @@
 //! Deliberately small. The socket carries requests to *write*, questions about
 //! state, and notices that something changed — never a search. Readers open the
 //! index themselves ([ADR
-//! 0009](../../../../docs/adr/0009-indexd-owns-the-index-writer.md)), so a
+//! 0010](../../../../docs/adr/0010-indexd-owns-the-index-writer.md)), so a
 //! daemon that is down, busy or a version behind costs freshness and nothing
 //! else.
 //!

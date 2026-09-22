@@ -50,7 +50,7 @@ SemVer の `0.x.y` を使い、刻みは次の基準で決める。
 |-------|-----------|--------|-----------|
 | **P1** | `0.0.x` | Foundation | 既存品質改善・workspace 化・開発環境・検証基盤・web MVP・config 最小実装 |
 | **P2** | `0.1.0` | Explorer Essentials | DnD・ファイル操作・スプリットビュー・タブ・SQLite/MetadataStore・アプリコアの tokio 撤去 |
-| **P3** | `0.2.0` | Launcher & Search | Raycast 風ランチャー・SQLite FTS5 (V2) 全文検索 |
+| **P3** | `0.2.0` | Launcher & Search | Raycast 風ランチャー・Tantivy ngram (V2) 部分一致検索 |
 | **P4** | `0.3.0` | Plugin Host | WIT API・WASM Component Model ホスト・3 言語テンプレ・AI agent 開発支援 |
 | **P5** | `0.4.0` | Ecosystem | Plugin Store ページ・コミュニティプラグイン |
 | **P6** | `0.5.0` | Stabilization | 多 OS 戦略決定・パフォーマンス・ドキュメント完成 |
@@ -73,7 +73,7 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
 | [`docs/async-runtime.md`](./async-runtime.md) | P2 | GPUI executor 統一・`postage`/`async-channel`/`ureq` への置換 |
 | [`docs/explorer-essentials.md`](./explorer-essentials.md) | P1骨子→P2 | DnD・ファイル操作・スプリットビュー・タブ |
 | [`docs/launcher.md`](./launcher.md) | P3 | フローティング window・グローバルホットキー・アクションフレームワーク |
-| [`docs/search.md`](./search.md) | P3→P4 | V1 ripgrep → V2 SQLite FTS5 → V3 Tantivy 統合・リソース制限 |
+| [`docs/search.md`](./search.md) | P3→P4 | V1 ripgrep フォールバック → V2 Tantivy ngram 部分一致 → V3 code-aware・リソース制限 |
 | [`docs/plugin-overview.md`](./plugin-overview.md) | P4 | wit-bindgen + Component Model・ライフサイクル・コア/コミュニティ分離 |
 | [`docs/plugin-api.md`](./plugin-api.md) | P4 | WIT world・host imports/exports・UI レンダリングモデル |
 | [`docs/plugin-permissions.md`](./plugin-permissions.md) | P4 | 権限マニフェスト・同意フロー・2 層サンドボックス |
@@ -167,7 +167,7 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
 
 ## Phase 3 — Launcher & Search (0.2.0)
 
-**ゴール**: 「Launcher × Explorer」の launcher 側を立ち上げ、検索基盤を SQLite FTS5 (V2) まで進める。
+**ゴール**: 「Launcher × Explorer」の launcher 側を立ち上げ、検索基盤を V2 (Tantivy ngram 部分一致) まで進める。
 
 ### Core
 
@@ -181,7 +181,7 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
   - 初期コアコマンド 15-20 個 (Open Path / Reveal in Finder / Quick Open / Recent / Calculator / Settings 等)
   - 詳細は [`docs/launcher.md`](./launcher.md)
 - **アクションフレームワーク** (`Command` trait + `inventory` レジストリ): コア crate がそれぞれ自身のコマンドを宣言。P4 で WIT plugin command の adapter 経由で同 trait に統合
-- **検索 V2 (SQLite FTS5)**: `nohrs-services` 内の `search` モジュールを再構築。trigram tokenization、増分更新、リソース throttling (バッテリー / `LowPowerMode` / idle 検出 / 前面状態)、`notify-debouncer-mini` で watcher 復活。詳細は [`docs/search.md`](./search.md)
+- **検索 V2 (Tantivy ngram)**: `nohrs-services` の `search` モジュールに `NgramTokenizer` のフィールドを追加し、`filename` / `path` の部分一致を提供。増分更新、リソース throttling (バッテリー / `LowPowerMode` / idle 検出 / 前面状態)、`notify-debouncer-mini` で watcher 復活。SQLite FTS5 は採用しない ([ADR 0009](./adr/0009-drop-fts5-ngram-in-tantivy.md))。詳細は [`docs/search.md`](./search.md)
 - **検索 UI**: ランチャー (グローバルスコープ) + エクスプローラ内検索バー (`Cmd+F`、現在ディレクトリ scope)
 
 ### Web
@@ -215,7 +215,7 @@ ROADMAP 本体には判断の要点のみを記し、詳細は次の設計ドキ
 - **ライフサイクル**: lazy activation がデフォルト、activation events (`onCommand:` / `onFileType:` 等)、60 秒 idle で auto suspend
 - **コアプラグイン**: `crates/plugins/nohrs-plugin-*` に初期 1-2 個 (例: git status badge、calculator) を Rust ネイティブで実装。WIT を経由しないが、launcher の `Command` trait や explorer の `Decorator` trait を実装する形で API を統一
 - **`nohrs plugin` サブコマンド**: `new` / `build` / `install` / `check`。詳細は [`docs/plugin-templates.md`](./plugin-templates.md)
-- **検索 V3 (Tantivy 統合)**: SQLite FTS5 を Tantivy + identifier 分解 + ngrams で BM25 ランキング。code-aware tokenization。詳細は [`docs/search.md`](./search.md)
+- **検索 V3 (code-aware)**: identifier 分解 (camelCase / snake_case) と code-aware ngrams を Tantivy のトークナイザに追加。詳細は [`docs/search.md`](./search.md)
 
 ### Plugin Templates (別リポジトリ)
 

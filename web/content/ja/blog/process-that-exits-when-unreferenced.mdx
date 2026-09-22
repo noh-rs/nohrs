@@ -411,4 +411,4 @@ until("the writer to stop", || gone(&fixture.endpoint.socket));
 
 プロセス自身の寿命は、ユーザーコードで維持できる参照カウントではない。問題となるのは、ユーザーコードが実行されない瞬間と、デストラクタが越えられない境界である。どちらが writer になるか、writer がいつ終了するかは、カーネルがすでに数えているものに委ねられる。Rust が受け持つのは、その上に RAII の形を与えることである。
 
-コードは [noh-rs/nohrs](https://github.com/noh-rs/nohrs) にある。検討の経緯は、採用しなかった案も含めて [ADR 0009](https://github.com/noh-rs/nohrs/blob/develop/docs/adr/0009-indexd-owns-the-index-writer.md) に記録してある。
+コードは [noh-rs/nohrs](https://github.com/noh-rs/nohrs) にある。検討の経緯は、採用しなかった案も含めて [ADR 0010](https://github.com/noh-rs/nohrs/blob/develop/docs/adr/0010-indexd-owns-the-index-writer.md) に記録してある。
