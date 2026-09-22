@@ -1,11 +1,13 @@
 # Search — SQLite + Tantivy ハイブリッド
 
 > Status: Draft (P3 で V2、P4 で V3)
-> Related: [`ROADMAP.md`](./ROADMAP.md), [`docs/persistence.md`](./persistence.md), [`docs/launcher.md`](./launcher.md), [ADR 0001 (sqlite-tantivy-hybrid-search)](./adr/0001-sqlite-tantivy-hybrid-search.md)
+> Related: [`ROADMAP.md`](./ROADMAP.md), [`docs/persistence.md`](./persistence.md), [`docs/launcher.md`](./launcher.md), [ADR 0001 (sqlite-tantivy-hybrid-search)](./adr/0001-sqlite-tantivy-hybrid-search.md), [ADR 0009 (drop-fts5-ngram-in-tantivy)](./adr/0009-drop-fts5-ngram-in-tantivy.md)
 
 本書は nohrs の検索アーキテクチャを定めます。ベースは設計 Gist (`https://gist.github.com/syuya2036/b47fb2fca58f9877e12255d34560f1a8`) の方針 (SQLite + Tantivy ハイブリッド) に従い、段階的に V1 → V2 → V3 と進めます。
 
 旧 `SEARCH_IMPLEMENTATION.md` の Spotlight 一本化方針は **棄却** されました ([ADR 0001](./adr/0001-sqlite-tantivy-hybrid-search.md) 参照)。
+
+全文検索と部分一致はいずれも Tantivy が担い、SQLite FTS5 は採用しません ([ADR 0009](./adr/0009-drop-fts5-ngram-in-tantivy.md) 参照)。SQLite はメタデータ・削除追跡・差分検出に限定します。
 
 ---
 
@@ -17,10 +19,10 @@
                   └───┬───────────────────────┬───┘
                       │                       │
                       ▼                       ▼
-              ┌──────────────┐         ┌──────────────┐
-              │ SQLite (FTS5) │        │   Tantivy    │   (P4 V3 以降)
+              ┌───────────────┐        ┌──────────────┐
+              │    SQLite     │        │   Tantivy    │
               │  metadata     │        │  full-text   │
-              │  trigram      │        │  ngrams      │
+              │  deletions    │        │  ngrams      │
               └──────┬────────┘        └──────┬───────┘
                      │                        │
                      ▼                        ▼
@@ -32,8 +34,8 @@
 
 | 担当 | 役割 |
 |------|------|
-| **SQLite** | ファイルメタデータ (path, mtime, size, inode, hash)、削除追跡、状態管理、差分検出。FTS5 で trigram 全文検索 (V2) |
-| **Tantivy (V3)** | 全文検索インデックスの本命、BM25 ランキング、コード対応 ngrams、identifier 分解 (camelCase / snake_case) |
+| **SQLite** | ファイルメタデータ (path, mtime, size, inode, hash)、削除追跡、状態管理、差分検出 |
+| **Tantivy** | 全文検索 (BM25 ランキング)、ファイル名・パスの部分一致 (ngram)、コード対応 ngrams・identifier 分解 (camelCase / snake_case, V3) |
 | **notify-debouncer-mini** | ファイルシステム変更検出 (debounce 500ms) |
 
 ---
@@ -42,11 +44,20 @@
 
 | 版 | Phase | 内容 |
 |----|-------|------|
-| **V1 (ripgrep)** | (現状: macOS 以外 / 暫定) | オンデマンド検索、永続インデックスなし。`ignore` + `grep` で walk + 一致 |
-| **V2 (SQLite FTS5)** | **P3** | trigram tokenization、増分更新、SQLite で完結 |
-| **V3 (SQLite + Tantivy)** | **P4** | BM25 + code-aware ngrams、identifier 分解、plugin から WIT 経由で使えるように |
+| **V1 (ripgrep)** | (現状: 非 macOS の root スコープ) | オンデマンド検索、永続インデックスなし。`ignore` + `grep` で walk + 一致 |
+| **V2 (ngram フィールド追加)** | **P3** | `filename` / `path` に `NgramTokenizer` のフィールドを追加し部分一致を提供。増分更新とリソース throttling を整備。SQLite はメタデータ・差分検出に限定 |
+| **V3 (code-aware)** | **P4** | identifier 分解 (camelCase / snake_case)、code-aware ngrams、plugin から WIT 経由で使えるように |
 
-V1 は完全に消えず、**非 macOS かつ index 未構築時のフォールバック** として残す。
+home スコープの永続全文インデックス (BM25 + 増分更新) は既に Tantivy で出荷済みであり、V2 はその上に部分一致を足す段である。
+
+現状のバックエンド振り分けは `crates/nohrs-services/src/search/engine.rs` にある。
+
+| スコープ | 現状のバックエンド |
+|---------|------------------|
+| `SearchScope::Home` | Tantivy (`IndexManager`)。**フォールバックは無く**、初回インデックスが走るまで空の結果を返す |
+| `SearchScope::Root` | macOS は Spotlight (`mdfind`)、それ以外は ripgrep (`#[cfg(not(target_os = "macos"))]`) |
+
+ripgrep は非 macOS の root スコープで使われており、この先も残す。home スコープの index 未構築時にも ripgrep へ倒すかは未決で、決めるなら V2 の範囲とする。
 
 ---
 
@@ -112,9 +123,15 @@ globs = ["*.iso", "*.mov"]
 | 通常テキスト | `hello world` | V1〜 |
 | フレーズ | `"hello world"` | V2 から |
 | Boolean | `cat AND dog`, `cat OR dog`, `cat -fish` | V2 から |
-| フィールド指定 | `ext:rs todo`, `path:src/`, `name:lib*` | V2 から (FTS5 trigger + WHERE) |
-| 正規表現 | `regex:fn\\s+\\w+` | V3 から (Tantivy regex query) |
+| フィールド指定 (実装済み) | `filename:lib`, `content:todo` | 現状 |
+| フィールド指定 (未実装) | `ext:rs todo`, `path:src/`, `name:lib*` | **未実装** (実装予定バージョン未定) |
+| 部分一致 | `*abc*` | V2 から (Tantivy `NgramTokenizer`) |
+| 正規表現 | `regex:fn\\s+\\w+` | **未実装** |
 | ファジー | `foo~` | V3 から (Tantivy fuzzy query) |
+
+「フィールド指定 (実装済み)」の 2 つは `QueryParser::for_index(&index, vec![filename_field, content_field])` がそのまま解釈する。`ext` / `name` はスキーマに存在せず、`path` は `STRING` で ngram も持たないため、いずれも現状の `IndexManager::search` からは引けない。
+
+`regex:` は**構文として存在しない**。Tantivy の regex は `QueryParser::allow_regexes()` を呼んだ上で `field:/pattern/` と書く必要があるが、`IndexManager::search` はどちらも行っていない。root バックエンド (Spotlight / ripgrep) にもこの演算子は無い。`RegexQuery` をライブラリが持つことと、それがクエリ構文として露出していることは別である。
 
 ---
 

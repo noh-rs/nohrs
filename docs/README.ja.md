@@ -79,7 +79,7 @@ Nohrs は 6 つのシリアルなフェーズで開発します。P1 は `0.0.x`
 |-------|-----------|--------|
 | **P1** | `0.0.x` | Foundation — 品質改善・workspace 化・開発/CI 基盤・web MVP |
 | **P2** | `0.1.0` | Explorer Essentials — DnD・ファイル操作・スプリットビュー・タブ・永続化 |
-| **P3** | `0.2.0` | Launcher & Search — グローバルホットキーランチャー・SQLite FTS5 検索 |
+| **P3** | `0.2.0` | Launcher & Search — グローバルホットキーランチャー・Tantivy ngram 部分一致検索 |
 | **P4** | `0.3.0` | Plugin Host — WASM Component Model・3 言語テンプレ |
 | **P5** | `0.4.0` | Ecosystem — Plugin Store・コミュニティプラグイン |
 | **P6** | `0.5.0` | Stabilization — 多 OS 戦略・パフォーマンスゲート・ドキュメント |
