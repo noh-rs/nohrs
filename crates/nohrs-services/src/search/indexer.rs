@@ -301,51 +301,53 @@ impl IndexManager {
         writer: &mut IndexWriter,
         fields: Fields,
     ) -> Result<()> {
+        let path_str = path.to_string_lossy();
+        let filename = path.file_name().unwrap_or_default().to_string_lossy();
+
+        // Only the body is conditional. A photo, a 2 GB disk image and a file
+        // the user cannot read are all still things they search for by name, so
+        // the document is written either way and skipping costs only `content`.
         let metadata = fs::metadata(path)?;
-        if metadata.len() > 10 * 1024 * 1024 {
-            // Skip files larger than 10MB
-            tracing::debug!("Skipping large file: {:?}", path);
-            return Ok(());
-        }
-
-        // Try reading as string. If it fails (binary), we skip.
-        // Indexing runs on the search backend's own threads, never the GPUI
-        // foreground loop, so the blocking read is fine here.
-        #[allow(clippy::disallowed_methods)]
-        match fs::read_to_string(path) {
-            Ok(content) => {
-                // Check if it looks like binary (contains null byte) - crude check
-                if content.contains('\0') {
-                    tracing::debug!("Skipping binary file (detected null byte): {:?}", path);
-                    return Ok(());
+        let body = if metadata.len() > 10 * 1024 * 1024 {
+            tracing::debug!("Indexing name only, file is large: {:?}", path);
+            None
+        } else {
+            // Indexing runs on the search backend's own threads, never the GPUI
+            // foreground loop, so the blocking read is fine here.
+            #[allow(clippy::disallowed_methods)]
+            match fs::read_to_string(path) {
+                // A null byte means binary that happened to decode as UTF-8.
+                Ok(content) if content.contains('\0') => {
+                    tracing::debug!("Indexing name only, file looks binary: {:?}", path);
+                    None
                 }
-
-                let path_str = path.to_string_lossy();
-                let filename = path.file_name().unwrap_or_default().to_string_lossy();
-
-                // Add path to content so it's searchable via full text query
-                let searchable_content = format!("{}\n{}", path_str, content);
-
-                let mut doc = TantivyDocument::default();
-                doc.add_text(fields.path, &path_str);
-                doc.add_text(fields.filename, &filename);
-                doc.add_text(fields.content, &searchable_content);
-                doc.add_u64(fields.is_directory, 0);
-                // Only the name and the path get n-grams. Applying them to
-                // `content` would multiply the postings for every file body in
-                // the home directory, which ADR 0009 rules out.
-                doc.add_text(fields.filename_ngram, ngram_source(&filename));
-                doc.add_text(fields.path_ngram, ngram_source(&path_str));
-
-                // Delete existing doc with same path to avoid duplicates (upsert)
-                // Note: This matches exact path string.
-                writer.delete_term(Term::from_field_text(fields.path, &path_str));
-                writer.add_document(doc)?;
+                Ok(content) => Some(content),
+                Err(error) => {
+                    tracing::debug!("Indexing name only, file is unreadable: {path:?}: {error}");
+                    None
+                }
             }
-            Err(_) => {
-                tracing::debug!("Skipping binary/unreadable file: {:?}", path);
-            }
+        };
+
+        let mut doc = TantivyDocument::default();
+        doc.add_text(fields.path, &path_str);
+        doc.add_text(fields.filename, &filename);
+        doc.add_u64(fields.is_directory, 0);
+        // Only the name and the path get n-grams. Applying them to `content`
+        // would multiply the postings for every file body in the home
+        // directory, which ADR 0009 rules out.
+        doc.add_text(fields.filename_ngram, ngram_source(&filename));
+        doc.add_text(fields.path_ngram, ngram_source(&path_str));
+        if let Some(content) = body {
+            // The path goes into `content` as well, so a full-text query can
+            // reach the file by where it lives and not only by what is in it.
+            doc.add_text(fields.content, format!("{path_str}\n{content}"));
         }
+
+        // Delete existing doc with same path to avoid duplicates (upsert)
+        // Note: This matches exact path string.
+        writer.delete_term(Term::from_field_text(fields.path, &path_str));
+        writer.add_document(doc)?;
         Ok(())
     }
 
@@ -743,6 +745,21 @@ mod tests {
         assert!(
             !hit_names(&manager.search("*hpl*").unwrap()).contains(&"alpha.txt".to_string()),
             "a reversed substring must not match"
+        );
+    }
+
+    #[test]
+    fn a_file_whose_body_is_not_indexed_is_still_findable_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        // A null byte is what the body check rejects as binary. Before, that
+        // rejection dropped the whole document, so a photo or a disk image was
+        // unreachable by name as well as by content.
+        let manager = indexed(dir.path(), &[("holiday_snapshot.png", "\u{0}PNG")]);
+
+        assert!(
+            hit_names(&manager.search("*day_snap*").unwrap())
+                .contains(&"holiday_snapshot.png".to_string()),
+            "a file with an unindexable body must still answer a name search"
         );
     }
 
