@@ -184,16 +184,17 @@ impl IndexManager {
         // `filename` alone cannot answer `*er_fil*` against
         // "explorer_file_ops.rs" (ADR 0009).
         //
-        // Positions are required, not optional: the query string is cut into
-        // the same trigram sequence and `QueryParser` turns that into a phrase
-        // query, which needs positions to check the grams are adjacent. Without
-        // them the query fails at runtime with "does not have positions
-        // indexed" — and with only frequencies, `abc` and `cba` would match the
-        // same documents.
+        // Frequencies without positions, because the grams are a candidate
+        // filter rather than the answer. `NgramTokenizer::all_ngrams` emits
+        // every gram of a term at the same position, so a phrase query over
+        // them cannot tell `abcd` from `abc---bcd` — both contain the grams
+        // `abc` and `bcd`. Adjacency is therefore checked against the stored
+        // text in [`IndexManager::search`], and storing positions here would
+        // cost index size for a guarantee they do not provide.
         let ngram_options = TextOptions::default().set_indexing_options(
             TextFieldIndexing::default()
                 .set_tokenizer(NGRAM_TOKENIZER)
-                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+                .set_index_option(IndexRecordOption::WithFreqs),
         );
         schema_builder.add_text_field("filename_ngram", ngram_options.clone());
         // `path` itself stays `STRING`: it is the deletion key, matched as an
@@ -408,21 +409,22 @@ impl IndexManager {
         self.process_changes(&[path.to_path_buf()])
     }
 
-    /// Builds the query behind `*needle*`: match `needle` anywhere in a name or
-    /// a path, including across the token boundaries the default tokenizer
-    /// splits on.
+    /// Narrows `*needle*` to the documents that could contain it: every one of
+    /// the needle's trigrams must appear in the name or the path.
     ///
-    /// The parser cuts `needle` into the same trigram sequence the fields were
-    /// indexed with and joins them as a phrase, so a document matches only when
-    /// its grams sit adjacent in that order — which reconstructs the substring.
+    /// This is a filter, not the answer. Grams carry no position (see
+    /// [`IndexManager::create_schema`]), so `abc---bcd` survives a query for
+    /// `abcd`; [`IndexManager::search`] confirms each survivor against the
+    /// stored text. SQLite's FTS5 trigram index works the same way, for the
+    /// same reason.
     fn substring_query(
         &self,
         needle: &str,
         fields: Fields,
     ) -> Result<Box<dyn tantivy::query::Query>> {
-        // Fewer characters than one gram produces an empty token stream, and an
-        // empty query matches nothing. Saying so beats returning zero hits and
-        // letting the user conclude the substring is absent.
+        // Fewer characters than one gram produces an empty token stream, and a
+        // query with no clauses matches nothing. Saying so beats returning zero
+        // hits and letting the user conclude the substring is absent.
         if needle.chars().count() < NGRAM_SIZE {
             anyhow::bail!(
                 "substring search needs at least {NGRAM_SIZE} characters; `{needle}` has {}",
@@ -430,16 +432,52 @@ impl IndexManager {
             );
         }
 
-        let parser = tantivy::query::QueryParser::for_index(
-            &self.index,
-            vec![fields.filename_ngram, fields.path_ngram],
-        );
-        // Quoted so that a needle containing the parser's own syntax — a colon,
-        // a bracket, `AND` — is taken as text rather than as an operator. The
-        // escape covers a needle that itself contains a quote.
-        let escaped = needle.replace('\\', r"\\").replace('"', r#"\""#);
-        Ok(parser.parse_query(&format!("\"{escaped}\""))?)
+        // Cut by the same analyzer the fields were indexed with, rather than by
+        // a second implementation of the same rule here — that way the grams
+        // agree with the index by construction, lowercasing included.
+        let mut analyzer = self
+            .index
+            .tokenizers()
+            .get(NGRAM_TOKENIZER)
+            .context("n-gram tokenizer not registered")?;
+        let mut grams = Vec::new();
+        let mut stream = analyzer.token_stream(needle);
+        while let Some(token) = stream.next() {
+            grams.push(token.text.clone());
+        }
+
+        let mut clauses: Vec<(tantivy::query::Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
+        for gram in grams {
+            // A gram may sit in either field, so each is its own OR pair, and
+            // the pairs are required together: every gram present, in one or
+            // the other.
+            let either: Vec<(tantivy::query::Occur, Box<dyn tantivy::query::Query>)> =
+                [fields.filename_ngram, fields.path_ngram]
+                    .into_iter()
+                    .map(|field| {
+                        let term = Term::from_field_text(field, &gram);
+                        let query: Box<dyn tantivy::query::Query> = Box::new(
+                            tantivy::query::TermQuery::new(term, IndexRecordOption::WithFreqs),
+                        );
+                        (tantivy::query::Occur::Should, query)
+                    })
+                    .collect();
+            clauses.push((
+                tantivy::query::Occur::Must,
+                Box::new(tantivy::query::BooleanQuery::new(either)),
+            ));
+        }
+
+        Ok(Box::new(tantivy::query::BooleanQuery::new(clauses)))
     }
+}
+
+/// Whether `haystack` actually contains `needle`, ignoring case.
+///
+/// The n-gram index cannot answer this on its own, so it is what turns a
+/// candidate into a hit.
+fn contains_ignoring_case(haystack: &str, needle: &str) -> bool {
+    haystack.to_lowercase().contains(&needle.to_lowercase())
 }
 
 /// Recognises the `*abc*` substring form and returns `abc`.
@@ -503,6 +541,16 @@ impl super::backend::SearchBackend for IndexManager {
             if let Some(path_val) = retrieved_doc.get_first(path_field)
                 && let Some(path_str) = path_val.as_str()
             {
+                // The gram filter admits documents holding every gram of the
+                // needle in any arrangement, so `*abcd*` reaches `abc---bcd`.
+                // The stored path settles it. Nothing is read from disk: `path`
+                // is `STORED`, and the name is its last component.
+                if let Some(needle) = needle
+                    && !contains_ignoring_case(path_str, needle)
+                {
+                    continue;
+                }
+
                 let path_buf = PathBuf::from(path_str);
 
                 match retrieved_doc.get_first(is_directory_field) {
@@ -578,7 +626,6 @@ mod tests {
     use super::*;
     use crate::search::backend::SearchBackend;
 
-    /// An index over `root`, with `files` (name, contents) written into it.
     fn indexed(root: &Path, files: &[(&str, &str)]) -> IndexManager {
         for (name, contents) in files {
             let path = root.join(name);
@@ -642,16 +689,31 @@ mod tests {
     }
 
     #[test]
-    fn gram_order_matters_so_a_reversed_substring_does_not_match() {
+    fn a_substring_query_answers_only_with_files_that_contain_it() {
         let dir = tempfile::tempdir().unwrap();
-        let manager = indexed(dir.path(), &[("alpha.txt", "x")]);
+        // `abc---bcd.txt` holds every trigram of `abcd` — `abc` and `bcd` —
+        // without holding `abcd`. The gram index alone cannot separate the two,
+        // so this is what the stored-text check in `search` exists for.
+        let manager = indexed(
+            dir.path(),
+            &[
+                ("abc---bcd.txt", "x"),
+                ("zzabcdzz.txt", "x"),
+                ("alpha.txt", "x"),
+            ],
+        );
 
+        assert_eq!(
+            hit_names(&manager.search("*abcd*").unwrap()),
+            vec!["zzabcdzz.txt".to_string()],
+            "a file holding the grams but not the substring must not be a hit"
+        );
+
+        // Order is part of the same guarantee: `alpha` holds `lph`, never `hpl`.
         assert!(
             hit_names(&manager.search("*lph*").unwrap()).contains(&"alpha.txt".to_string()),
             "the substring itself should match"
         );
-        // Indexing the grams without positions would make these two queries
-        // indistinguishable, which is why the fields carry positions.
         assert!(
             !hit_names(&manager.search("*hpl*").unwrap()).contains(&"alpha.txt".to_string()),
             "a reversed substring must not match"
@@ -675,8 +737,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manager = indexed(dir.path(), &[("a:b[c].txt", "x")]);
 
-        // Unquoted, `a:b[c]` would parse as a field query against a field named
-        // `a` with a range in it, and fail.
+        // A needle never reaches a query parser, so parser syntax in it is
+        // just more characters to cut into grams.
         let results = manager.search("*a:b[c]*").unwrap();
         assert!(
             hit_names(&results).contains(&"a:b[c].txt".to_string()),

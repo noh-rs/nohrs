@@ -131,6 +131,8 @@ globs = ["*.iso", "*.mov"]
 
 「フィールド指定 (実装済み)」の 2 つは `QueryParser::for_index(&index, vec![filename_field, content_field])` がそのまま解釈する。`ext` / `name` はスキーマに存在せず、いずれも現状の `IndexManager::search` からは引けない。
 
+`regex:` は**構文として存在しない**。Tantivy の regex は `QueryParser::allow_regexes()` を呼んだ上で `field:/pattern/` と書く必要があるが、`IndexManager::search` はどちらも行っていない。root バックエンド (Spotlight / ripgrep) にもこの演算子は無い。`RegexQuery` をライブラリが持つことと、それがクエリ構文として露出していることは別である。
+
 ### 5.1 部分一致 (`*abc*`) の仕様
 
 `filename_ngram` / `path_ngram` の 2 フィールドが担う。いずれも `NgramTokenizer::all_ngrams(3, 3)` に `LowerCaser` を重ねた tokenizer で索引する。
@@ -140,8 +142,9 @@ globs = ["*.iso", "*.mov"]
 | 対象 | ファイル名とパス。**本文 (`content`) は対象外** (索引肥大を避けるため、[ADR 0009](./adr/0009-drop-fts5-ngram-in-tantivy.md)) |
 | 最小長 | **3 文字**。それ未満は gram が 1 つも生成されず一致し得ないため、空の結果ではなくエラーを返す |
 | 大文字小文字 | 区別しない。`LowerCaser` は必須で、これが無いと `*rerfile*` が `ExplorerFileOps.rs` を取り逃がす |
-| 順序 | 保持される。`*lph*` は `alpha.txt` に一致し、`*hpl*` は一致しない。そのためフィールドは `WithFreqsAndPositions` で索引する |
-| 記号 | needle はクエリパーサへ引用符で囲んで渡すため、`:` `[` `AND` 等を含んでいてもテキストとして扱う |
+| 一致の確定 | **ngram は候補の絞り込みにすぎない。** `NgramTokenizer::all_ngrams` は 1 語の gram をすべて同じ位置に置くため、索引だけでは `abcd` と `abc---bcd` を区別できない。実際に部分文字列を含むかは、`STORED` の `path` に対して `IndexManager::search` が確認する (ディスクは読まない)。SQLite FTS5 の trigram も同じ構造である |
+| 順序 | 上の確認によって保持される。`*lph*` は `alpha.txt` に一致し、`*hpl*` は一致しない |
+| 記号 | needle はクエリパーサを通らない。索引と同じ analyzer で gram に切り、`TermQuery` を直接組むため、`:` `[` `AND` 等はエスケープの対象ですらなく常にテキストである |
 | 認識される形 | `*abc*` のみ。`*abc` / `abc*` / `**` / `*a*b*` は通常クエリとして扱い、勝手に読み替えない |
 
 `*abc*` のヒットは名前かパスの一致なので、本文の行スキャンは `abc` (星を外した形) で行う。ユーザーが打った `*abc*` はどのファイルにも現れない。
@@ -153,12 +156,13 @@ nohrs の `crates/` (Rust ソース中心) を索引した実測値。
 | | サイズ |
 |---|---|
 | ngram フィールド無し | 376,692 bytes |
-| ngram フィールド有り | 407,799 bytes |
-| 差分 | **+31,107 bytes (+8.3%)** |
+| ngram フィールド有り | 396,045 bytes |
+| 差分 | **+19,353 bytes (+5.1%)** |
 
 本文の索引が全体を支配するため、名前とパスに限った ngram の上乗せはこの程度に収まる。`content` へ ngram を広げるとこの比率にはならない。
 
-`regex:` は**構文として存在しない**。Tantivy の regex は `QueryParser::allow_regexes()` を呼んだ上で `field:/pattern/` と書く必要があるが、`IndexManager::search` はどちらも行っていない。root バックエンド (Spotlight / ripgrep) にもこの演算子は無い。`RegexQuery` をライブラリが持つことと、それがクエリ構文として露出していることは別である。
+なお gram を `WithFreqsAndPositions` で索引すると +8.3% になる。位置情報は上記のとおり隣接を保証しないため、その差分は何の保証も買わない。`WithFreqs` で索引している理由がこれである。
+
 
 ---
 
