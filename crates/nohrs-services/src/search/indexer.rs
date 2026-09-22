@@ -644,9 +644,6 @@ impl super::backend::SearchBackend for IndexManager {
 }
 
 /// Find ALL lines in a file that match the query (case-insensitive)
-// Runs as part of the search backend, off the GPUI foreground loop, so the
-// blocking read does not stall rendering.
-#[allow(clippy::disallowed_methods)]
 fn find_all_match_lines(path: &Path, query: &str) -> Vec<(usize, String)> {
     let mut matches = Vec::new();
     let body = match fs::metadata(path) {
