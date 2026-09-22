@@ -12,6 +12,10 @@ authors.workspace      = true
 [lib]
 name = "nohrs_store"
 path = "src/nohrs_store.rs"
+# The lib is a bench target by default, so `cargo bench` would run the unit
+# tests through libtest, which rejects criterion's flags. The benchmarks live in
+# `benches/`.
+bench = false
 
 [dependencies]
 thiserror.workspace = true
@@ -24,6 +28,12 @@ redb     = "4"
 
 [dev-dependencies]
 tempfile = "3"
+criterion.workspace = true
+
+# `harness = false` hands `main` to criterion instead of libtest.
+[[bench]]
+name = "store"
+harness = false
 
 [lints]
 workspace = true
