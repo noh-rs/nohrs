@@ -16,13 +16,14 @@ use gpui::*;
 use gpui_component::resizable::ResizableState;
 use nohrs_core::config::{Explorer as ExplorerConfig, SplitDirection, Ui};
 use nohrs_core::telemetry::LogErr;
+use nohrs_services::fs::trash::Ledger as TrashLedger;
 use nohrs_services::search::SearchService;
 use nohrs_store::{KvKey, KvStore, kv_key};
 use nohrs_ui::theme::theme;
 use serde::{Deserialize, Serialize};
 
 use super::state::ExplorerPane;
-use super::types::PaneEvent;
+use super::types::{PaneEvent, StatusLevel};
 use crate::pane_group::{PaneGroup, PaneGroupCallbacks};
 
 // Key context the pane shortcuts are bound under, so they only fire while the
@@ -174,6 +175,7 @@ impl ExplorerPage {
         pane_resizable: Entity<ResizableState>,
         search_service: Option<Arc<SearchService>>,
         store: Option<Arc<dyn KvStore>>,
+        trash_ledger: TrashLedger,
         restore_tabs: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -183,7 +185,8 @@ impl ExplorerPage {
         let (group, first_tab) = PaneGroup::new(
             Box::new(move |window, cx| {
                 let search_service = build_search_service.clone();
-                cx.new(|cx| ExplorerPane::build(search_service, window, cx))
+                let trash_ledger = trash_ledger.clone();
+                cx.new(|cx| ExplorerPane::build(search_service, trash_ledger, window, cx))
             }),
             pane_resizable,
             window,
@@ -206,10 +209,8 @@ impl ExplorerPage {
         // Restore the previous session's tabs (§4), unless disabled by config.
         // A one-time synchronous read at startup is acceptable; ongoing writes go
         // through a background task (see `schedule_save`).
-        if restore_tabs {
-            if let Some(snapshot) = page.load_session() {
-                page.restore_session(snapshot, &first_tab, window, cx);
-            }
+        if restore_tabs && let Some(snapshot) = page.load_session() {
+            page.restore_session(snapshot, &first_tab, window, cx);
         }
         page
     }
@@ -250,19 +251,18 @@ impl ExplorerPage {
 
         // Pane 1, if the snapshot had a split. `add_explorer_pane` collapses its
         // sidebar (split-created), matching a freshly split second pane.
-        if let Some(second_pane) = snapshot.panes.get(1) {
-            if let Some(index) =
+        if let Some(second_pane) = snapshot.panes.get(1)
+            && let Some(index) =
                 self.add_explorer_pane(second_pane.tabs.first().cloned(), window, cx)
-            {
-                for cwd in second_pane.tabs.iter().skip(1) {
-                    if let Some(tab) = self.group.add_tab(index, window, cx) {
-                        self.subscribe_tab(&tab, cx);
-                        self.configure_tab(&tab, Some(cwd.clone()), false, cx);
-                    }
+        {
+            for cwd in second_pane.tabs.iter().skip(1) {
+                if let Some(tab) = self.group.add_tab(index, window, cx) {
+                    self.subscribe_tab(&tab, cx);
+                    self.configure_tab(&tab, Some(cwd.clone()), false, cx);
                 }
-                let active = clamp_index(second_pane.active_tab, self.group.tab_count(index));
-                self.group.set_active_tab(index, active, window, cx);
             }
+            let active = clamp_index(second_pane.active_tab, self.group.tab_count(index));
+            self.group.set_active_tab(index, active, window, cx);
         }
 
         let active_pane = clamp_index(snapshot.active_pane, self.group.pane_count());
@@ -500,7 +500,7 @@ impl ExplorerPage {
 
     /// Footer status for the active tab (a config error in `RootView` still
     /// takes precedence over this).
-    pub fn status_for_footer(&self, cx: &App) -> Option<(String, bool)> {
+    pub fn status_for_footer(&self, cx: &App) -> Option<(String, StatusLevel)> {
         self.group.active_pane().read(cx).status_for_footer()
     }
 

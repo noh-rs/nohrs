@@ -40,6 +40,11 @@ impl ExplorerPane {
                 tracing::error!("Failed to list directory '{}': {}", self.cwd, e);
                 self.entries = Vec::new();
                 self.filtered_entries = Vec::new();
+                // The rows are gone, so the selection addressing them has to go
+                // too. Without this it survives the empty listing and comes back
+                // the moment a later reload puts those paths on screen again,
+                // selected by nobody.
+                self.prune_selection();
                 self.update_item_sizes();
                 self.set_status(
                     StatusLevel::Error,
@@ -53,6 +58,7 @@ impl ExplorerPane {
         if path == self.cwd {
             return;
         }
+        self.cancel_rename(window, cx);
         self.close_search(window, cx);
         self.push_history(path.clone());
         self.cwd = path;
@@ -83,6 +89,9 @@ impl ExplorerPane {
         if path == self.cwd {
             return;
         }
+        // The rename field is positioned by row index, so it must not outlive the
+        // listing it points into — same reason `change_dir` cancels it.
+        self.discard_rename(cx);
         // Clear search state so mirrored navigation doesn't leave a stale filter
         // or full-text results from the previous directory visible. This mirrors
         // the `close_search` reset on `change_dir`, minus the window-bound editor
@@ -103,6 +112,7 @@ impl ExplorerPane {
             if let Some(p) = self.history.get(self.history_index).cloned() {
                 self.cwd = p;
                 self.entries.clear();
+                self.cancel_rename(window, cx);
                 self.close_search(window, cx);
                 self.reload();
                 cx.emit(PaneEvent::Navigated(self.cwd.clone()));
@@ -117,6 +127,7 @@ impl ExplorerPane {
             if let Some(p) = self.history.get(self.history_index).cloned() {
                 self.cwd = p;
                 self.entries.clear();
+                self.cancel_rename(window, cx);
                 self.close_search(window, cx);
                 self.reload();
                 cx.emit(PaneEvent::Navigated(self.cwd.clone()));

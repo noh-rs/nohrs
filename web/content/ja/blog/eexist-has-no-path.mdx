@@ -1,0 +1,477 @@
+---
+title: EEXIST はパスを持たない
+date: '2026-09-16'
+description: フォルダの上書きペーストは、OS が原理的に区別できない二種類の失敗を踏む。その区別を試み、同じ種類の誤りを二度繰り返した記録である。
+author: shuya goto
+tags: ['engineering', 'filesystem']
+canonical: ja
+---
+
+ファイラーにおいて、既存のフォルダの上に同じ名前のフォルダをペーストし、「置き換えますか」という確認に「はい」と応答する。Finder でもエクスプローラでも日常的に行われる操作である。
+
+この操作を正しく実装する場合、<strong>途中で失敗したときに何を削除してよく、何を削除してはならないか</strong>という問題が生じる。そして OS の構造上、その判断に必要な情報は<strong>失敗が呼び出し元に届いた時点で既に失われている</strong>。
+
+本稿は Nohrs でこの問題を扱った記録であるが、内容は OS とファイルシステムの一般論である。本プロダクトの知識は要しない。前提となる事項は順に説明する。
+
+## 名前と実体の分離
+
+前提となる構造から扱う。ディレクトリは、ファイルを格納する箱ではない。ディレクトリは<strong>名前から番号への対応表</strong>にすぎない。
+
+この番号を inode 番号と呼ぶ。サイズ、更新時刻、パーミッションといったメタデータと、データ本体が置かれたブロックへの参照は、すべて inode 側が保持する。ディレクトリ側にあるのは名前のみである。言い換えれば、<strong>inode は自身の名前を持たない</strong>。
+
+<Diagram caption="二つの名前が同一の番号を参照する（ハードリンク）。実体は一つである。逆に、同じ名前が別の番号に付け替わることもある。削除して作り直せば足りるためである。">
+  <svg viewBox="0 0 700 246" role="img" aria-label="ディレクトリは名前とinode番号の対応表であり、二つの名前が同じinode番号を指すことがある">
+    <defs>
+      <marker id="dentry-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+    </defs>
+    <text x="24" y="26" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.65">work/ のディレクトリエントリ</text>
+    <rect x="24" y="40" width="270" height="176" fill="none" stroke="currentColor" strokeOpacity="0.35" />
+    <text x="44" y="68" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55">名前</text>
+    <text x="274" y="68" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55" textAnchor="end">inode</text>
+    <line x1="40" y1="80" x2="278" y2="80" stroke="currentColor" strokeOpacity="0.3" />
+    <text x="44" y="112" fontFamily="monospace" fontSize="13" fill="currentColor">notes.txt</text>
+    <text x="274" y="112" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">4021</text>
+    <text x="44" y="152" fontFamily="monospace" fontSize="13" fill="currentColor">also-notes.txt</text>
+    <text x="274" y="152" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">4021</text>
+    <text x="44" y="192" fontFamily="monospace" fontSize="13" fill="currentColor">report/</text>
+    <text x="274" y="192" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="end">4099</text>
+    <line x1="300" y1="108" x2="430" y2="118" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#dentry-arrow)" />
+    <line x1="300" y1="148" x2="430" y2="132" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#dentry-arrow)" />
+    <line x1="300" y1="188" x2="430" y2="190" stroke="currentColor" strokeOpacity="0.75" markerEnd="url(#dentry-arrow)" />
+    <text x="352" y="98" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6" textAnchor="middle">参照</text>
+    <rect x="436" y="92" width="240" height="64" fill="none" stroke="currentColor" strokeOpacity="0.55" strokeWidth="1.6" />
+    <text x="456" y="118" fontFamily="monospace" fontSize="13" fill="currentColor">inode 4021</text>
+    <text x="456" y="140" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.65">データ本体・サイズ・更新時刻</text>
+    <rect x="436" y="170" width="240" height="44" fill="none" stroke="currentColor" strokeOpacity="0.55" strokeWidth="1.6" />
+    <text x="456" y="197" fontFamily="monospace" fontSize="13" fill="currentColor">inode 4099</text>
+  </svg>
+</Diagram>
+
+この構造から、ファイルを削除するシステムコールが `unlink`、すなわち「リンクを外す」という名称である理由が導かれる。削除されるのは名前である。実体が解放されるのは<strong>参照が一つも残らない時点</strong>である。ディレクトリエントリだけでなく、実行中のプロセスが保持する開いたディスクリプタやメモリマッピングも参照に含まれる。最後の名前が消えても、開いているプロセスがあれば内容は残る。
+
+ここから、本稿で繰り返し用いる二つの帰結が得られる。
+
+- <strong>異なるパスが同一のファイルを指しうる。</strong>「コピー元とコピー先はパスが異なるので安全である」という推論は成立しない。
+- <strong>同一のパスが異なるファイルを指しうる。</strong>直前に確認したパスと、これから書き込むパスが同一の実体を指すとは限らない。
+
+特に重要なのは二点目である。<strong>パスは名前であり、それが指す対象の身元ではない</strong>。後述する「削除する前に身元を照合する」という設計の必要性は、ここに由来する。
+
+## rename(2) の原子性と暗黙の上書き
+
+`rename(2)` はファイルを移動するシステムコールである。ただし前節を踏まえると、実際に行われるのは<strong>対応表の書き換え</strong>のみである。データは 1 バイトも移動しない。同一ファイルシステム内であれば、100GB のファイルであっても瞬時に完了するのはこのためである。
+
+重要なのは、この書き換えが<strong>原子的（atomic）</strong>である点である。書き換えの途中という状態を他のプロセスが観測することはない。名前は古い番号を指すか新しい番号を指すかのいずれかであり、その中間は存在しない。
+
+### 暗黙の上書きが仕様である理由
+
+`rename` は、移動先に既にファイルが存在していても、確認せずに上書きする。一見すると危険な挙動であるが、これは意図された仕様であり、かつこの性質に依存する重要な仕組みが存在する。
+
+テキストエディタが上書き保存を行う際の手順を検討する。最も単純な手順は、`notes.txt` を開き、内容を空にし、新しい内容を書き込むというものである。
+
+```text
+# 最も単純な上書き保存。途中で電源が落ちると……
+open("notes.txt", O_WRONLY|O_TRUNC)   ← この時点で内容が失われる
+write("新しい内容の前半")               ← ★ここで停止
+
+# 残るファイル: 「新しい内容の前半」のみ。
+# 古い内容も完全な新しい内容も、どこにも存在しない。
+```
+
+`O_TRUNC` はファイルを空にしてから開くフラグである。書き込みが 1 バイトも完了しない段階で、古い内容は既に失われる。
+
+正しい手順は、別名ですべて書き込んでから `rename` によって差し替えることである。
+
+```text
+# atomic save。どの時点で停止しても破損しない
+write("notes.txt.tmp", 新しい内容の全体)   ← 停止しても notes.txt は無傷
+fsync("notes.txt.tmp")
+rename("notes.txt.tmp", "notes.txt")      ← 原子的に差し替わる
+fsync("notes.txt" の親ディレクトリ)          ← 差し替え自体もクラッシュに耐える
+
+# notes.txt は古い内容のままか、新しい内容か。中間状態は存在しない。
+```
+
+最後の行は省略されがちであるが必要である。`rename` は戻った時点で他プロセスに対しては原子的である一方、書き換えたディレクトリエントリがディスクに到達しているとは限らない。この `fsync` がなければ、クラッシュ後に古い名前のまま復帰しうる。原子的であることと永続化されることは別の性質である。
+
+そしてこの手順全体が成立するのは、`rename` が<strong>上書きを拒否しない</strong>ためである。拒否する仕様であれば、削除してから rename するという二段階の手順を要し、その間隙で停止した場合にファイルが失われる。
+
+### 上書きを拒否する rename
+
+一方で、上書きが許容されない場面も存在する。ゴミ箱から復元する際に、元の場所に既に別のファイルが存在していれば、それを黙って破壊することは許されない。ペースト先の名前が空いているはずの場合も同様である。
+
+このために、上書きを拒否する rename が用意されている。Linux では `renameat2(RENAME_NOREPLACE)`、macOS では `renamex_np(RENAME_EXCL)` である。移動先が空いていれば移動し、埋まっていれば `EEXIST` で失敗するという動作を原子的に実行する。
+
+### ドライバ実装に起因する制約
+
+この点には注意を要する。このフラグはカーネルの共通層を経由して、最終的に<strong>個々のファイルシステムのドライバ</strong>に到達する。そして、ドライバが実装しているとは限らない。
+
+- `renameat2` 自体を持たないカーネル（Linux 3.15 より前）は `ENOSYS` を返す
+- フラグを受け付けないドライバは `EINVAL` を返す。システムコール自体は 3.15 から存在するが、`RENAME_NOREPLACE` が多くのファイルシステムに行き渡ったのは 4.9 である
+- APFS 以外の macOS ボリュームは `ENOTSUP` を返す
+
+この区別は errno を読む際に意味を持つ。`ENOSYS` はカーネルが当該の呼び出しを持たないことを示すのに対し、`EINVAL` はドライバがそのフラグを受け付けないことを示す。
+
+<Callout title="overlayfs で実際に測った">
+本稿の初稿では、ここに「overlayfs は `EINVAL` を返す」と記述していた。レビューで疑義が示されたため実測したところ、誤りであった。
+
+overlayfs は、複数のディレクトリを重ねて一つに見せるファイルシステムである。下位レイヤ (lower) は読み取り専用であり、書き込みは上位レイヤ (upper) に蓄積され、利用者にはその合成結果のみが見える。下位レイヤにあるファイルを変更する場合、まず上位レイヤへ複製され (copy-up)、以後はそちらが使用される。Docker のイメージとコンテナの関係がこれにあたり、コンテナの作業ディレクトリは多くの場合 overlayfs である。
+
+以下は、Linux 6.18 上に overlayfs をマウントし、`renameat2(RENAME_NOREPLACE)` を直接呼び出した結果である。
+
+| 操作 | 結果 |
+| --- | --- |
+| 宛先が空いている | 成功 |
+| 宛先が埋まっている | `EEXIST` |
+| 下位レイヤにあるディレクトリの移動 | `EXDEV` |
+
+上の二行は ext4 と同一である。フラグは受け付けられている。そして三行目の `EXDEV` は `EINVAL` とは別の分岐に入る。overlayfs は結果としてフォールバックを通るが、<strong>フラグ非対応としてではなく、クロスデバイスの分岐から</strong>通ることになる。
+
+<strong>ただし、その `EXDEV` は実際には何もまたいでいない。</strong>上の計測では、移動元も移動先も同一の overlayfs マウントの中にある。`EXDEV` は本来デバイスをまたぐリンクを意味する値であるが、ここでは overlayfs が当該の rename を自身で実行できずコピーによる代替を要求するために使用している。コードはこれで正しく動作する。フォールバックは求められている応答そのものである。ただし利用者が別のボリュームへ移動したと解釈すると誤る。
+
+errno から状況を推測すると誤る、というのが本稿の主題である。本稿は、確認せずに記述した一行でこれを一度誤り、その訂正文でもう一度誤った。`EXDEV` をファイルシステムをまたいだ証拠と記述した点がそれであり、これもレビューで指摘されている。errno は整数一つであり、その意味を決めるのはドライバである。
+</Callout>
+
+したがって、上書きを拒否する rename は、利用できれば有用であるものの、<strong>存在すると仮定してはならない</strong>。利用できない環境ではフォールバックを要する。最も単純なフォールバックは、コピーしてから元を削除するというものである。
+
+これは<strong>移動</strong>が辿りうる経路である。この点は正確な記述を要する。ext4 や APFS であれば以降の内容とは無関係である、と解釈されうるためである。確かに、それらのファイルシステム上で<strong>同一ボリューム内</strong>を移動する限りは、rename 一回で完了しフォールバックは実行されない。
+
+しかし<strong>コピー</strong>にはその経路が存在しない。ツリーを複製する rename は存在しないため、コピーは常にツリーを走査し、各エントリを確保する。ext4 でも APFS でも同様である。したがって以降で扱う問題は、通常のコピーペーストについてはあらゆる環境で発生し、移動については `EXDEV` が返った場合（別ボリュームの場合と、overlayfs の下位レイヤのようにドライバが rename を拒否した場合がある）、または no-replace な rename が存在しない場合に発生する。
+
+<Callout title="補足: 原子的でない処理">
+もう一つ、原子的ではない処理がある。ディレクトリツリーを一括して削除する `remove_dir_all` は、内部のファイルを一つずつ削除する。途中で失敗した場合、<strong>ツリーは一部のみが削除された状態で残る</strong>。この性質は後述の節で問題となる。
+</Callout>
+
+## 確認と書き込みの分離が生む競合
+
+素朴に記述した場合のコードを以下に示す。
+
+```rust
+if !dst.exists() {        // ← 確認
+    write(dst, data);     // ← 書き込み
+}
+```
+
+この二行の<strong>間</strong>に、別のプロセスが `dst` を作成しうる。そして `write` がそれを破壊する。
+
+これは TOCTOU（Time-of-check to time-of-use）と呼ばれる古典的な競合状態である。確認した時点で成立していた事実が、書き込む時点でも成立すると仮定している。
+
+この区間に他のプロセスが割り込む余地はないように見えるが、この区間が短いとは限らない。数万ファイルからなるツリーをコピーしている最中であれば、<strong>この窓は数秒から数分にわたって開いたままとなる</strong>。同期クライアント、バックアップツール、ビルドスクリプト、あるいは同一アプリケーションの別ウィンドウなど、競合しうる主体は多数存在する。
+
+対策は、確認を行わないことである。代わりに、<strong>取得できれば成功し、既に取得されていれば失敗する</strong>呼び出しを用いる。
+
+- `open(O_CREAT|O_EXCL)` はファイルを作成し、既に存在すれば `EEXIST` を返す
+- `mkdir` はディレクトリを作成し、既に存在すれば `EEXIST` を返す
+- `symlink` はシンボリックリンクを作成し、既に存在すれば `EEXIST` を返す
+
+いずれも、存在の確認と作成がカーネル内部で一体の操作として行われるため、その間に割り込む余地がない。以降、この操作を<strong>確保（claim）</strong>と呼ぶ。
+
+Nohrs における上書きを行わないコピーと移動は、すべてこの方針に基づく。さらに、<strong>ツリー内のすべてのエントリ</strong>を確保する。ルートのみの確保では不十分である。ツリーを書き込んでいる数秒の間に、その内部へ同名のエントリを作成されうるためである。
+
+## 問題の所在: 単一の EEXIST が表す二つの状況
+
+以上が前提である。上書きペーストは、次の手順で実行される。
+
+<Diagram caption="手順 3 の差し替えは、本来は上書きを拒否する rename 一回で完了する。それが利用できない環境では、コピーと削除に分解される。問題はその内部にある。">
+  <svg viewBox="0 0 760 236" role="img" aria-label="上書きペーストの四段階と、失敗時に退避を戻すロールバック経路">
+    <defs>
+      <marker id="paste-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+    </defs>
+    <rect x="16" y="40" width="156" height="86" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="30" y="30" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6">1 · 退避</text>
+    <text x="30" y="70" fontFamily="monospace" fontSize="11.5" fill="currentColor">work/report</text>
+    <text x="30" y="90" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">↓</text>
+    <text x="30" y="110" fontFamily="monospace" fontSize="11.5" fill="currentColor">.report.nohrs-old</text>
+    <line x1="176" y1="83" x2="204" y2="83" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#paste-arrow)" />
+    <rect x="208" y="40" width="156" height="86" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="222" y="30" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6">2 · 構築</text>
+    <text x="222" y="70" fontFamily="monospace" fontSize="11.5" fill="currentColor">.report.nohrs-new</text>
+    <text x="222" y="92" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">に置き換えを</text>
+    <text x="222" y="110" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">全体として作成</text>
+    <line x1="368" y1="83" x2="396" y2="83" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#paste-arrow)" />
+    <rect x="400" y="40" width="156" height="86" fill="none" stroke="var(--tan-ink)" strokeWidth="1.8" />
+    <text x="414" y="30" fontFamily="monospace" fontSize="11" fill="var(--tan-ink)">3 · 差し替え</text>
+    <text x="414" y="70" fontFamily="monospace" fontSize="11.5" fill="currentColor">.nohrs-new</text>
+    <text x="414" y="90" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">↓ 一回の操作で</text>
+    <text x="414" y="110" fontFamily="monospace" fontSize="11.5" fill="currentColor">work/report</text>
+    <line x1="560" y1="83" x2="588" y2="83" stroke="currentColor" strokeOpacity="0.7" markerEnd="url(#paste-arrow)" />
+    <rect x="592" y="40" width="152" height="86" fill="none" stroke="currentColor" strokeOpacity="0.45" />
+    <text x="606" y="30" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6">4 · 後始末</text>
+    <text x="606" y="80" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">退避したものを</text>
+    <text x="606" y="100" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">削除</text>
+    <path d="M 478 130 L 478 172 L 94 172 L 94 130" fill="none" stroke="currentColor" strokeOpacity="0.75" strokeDasharray="5 4" markerEnd="url(#paste-arrow)" />
+    <text x="286" y="192" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.7" textAnchor="middle">失敗時: 退避したものを元の名前に戻す（ロールバック）</text>
+    <text x="478" y="222" fontFamily="monospace" fontSize="11" fill="var(--tan-ink)" textAnchor="middle">フォールバックが実行される箇所</text>
+  </svg>
+</Diagram>
+
+フォールバックが実行される場合、手順 3 の内部は次のとおりである。まず宛先を `mkdir` で確保し、内容を一つずつ確保しながら書き込む。その最中に、別のプロセスが宛先の内部にファイルを作成した場合を考える。
+
+<Diagram caption="正反対の対応を要求する二つの状況が、呼び出し元には区別のつかない単一のエラーとして届く。これが本稿の中心にある問題である。">
+  <svg viewBox="0 0 720 312" role="img" aria-label="宛先がもともと他のプロセスのものだった場合と、自ら作成したツリーの中の名前が取られた場合が、同一のAlreadyExistsとして届くことを示す比較図">
+    <defs>
+      <marker id="collide-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+      </marker>
+    </defs>
+    <text x="20" y="22" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.75">(a) 宛先がもともと他者のもの</text>
+    <line x1="20" y1="32" x2="340" y2="32" stroke="currentColor" strokeOpacity="0.3" />
+    <text x="20" y="62" fontFamily="monospace" fontSize="12" fill="currentColor">create_dir(work/report)</text>
+    <text x="340" y="62" fontFamily="monospace" fontSize="12" fill="var(--tan-ink)" fontWeight="700" textAnchor="end">EEXIST</text>
+    <text x="20" y="96" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">他のプロセスが先に作成していた。</text>
+    <text x="20" y="116" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">自らは何も書き込んでいない。</text>
+    <text x="20" y="150" fontFamily="monospace" fontSize="12" fill="currentColor" fontWeight="700">→ 削除してはならない</text>
+    <text x="20" y="170" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.6">削除すれば他者のデータを内容ごと失う</text>
+    <line x1="360" y1="20" x2="360" y2="196" stroke="currentColor" strokeOpacity="0.2" />
+    <text x="380" y="22" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.75">(b) 自らのツリー内部での衝突</text>
+    <line x1="380" y1="32" x2="700" y2="32" stroke="currentColor" strokeOpacity="0.3" />
+    <text x="380" y="62" fontFamily="monospace" fontSize="12" fill="currentColor">create_dir(work/report)</text>
+    <text x="700" y="62" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.5" textAnchor="end">ok</text>
+    <text x="392" y="82" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.7">copy page1.txt</text>
+    <text x="700" y="82" fontFamily="monospace" fontSize="12" fill="currentColor" opacity="0.5" textAnchor="end">ok</text>
+    <text x="392" y="102" fontFamily="monospace" fontSize="12" fill="currentColor">create_new(…/notes.txt)</text>
+    <text x="700" y="102" fontFamily="monospace" fontSize="12" fill="var(--tan-ink)" fontWeight="700" textAnchor="end">EEXIST</text>
+    <text x="380" y="136" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">宛先は自ら作成。内容も自らの</text>
+    <text x="380" y="156" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.6">作成途中のもの。</text>
+    <text x="380" y="180" fontFamily="monospace" fontSize="12" fill="currentColor" fontWeight="700">→ 削除すべき</text>
+    <path d="M 180 200 L 180 226 L 300 226 L 300 246" fill="none" stroke="currentColor" strokeOpacity="0.6" markerEnd="url(#collide-arrow)" />
+    <path d="M 540 200 L 540 226 L 420 226 L 420 246" fill="none" stroke="currentColor" strokeOpacity="0.6" markerEnd="url(#collide-arrow)" />
+    <rect x="252" y="250" width="216" height="38" fill="none" stroke="var(--tan-ink)" strokeWidth="1.8" />
+    <text x="360" y="274" fontFamily="monospace" fontSize="13" fill="currentColor" textAnchor="middle">Err(AlreadyExists)</text>
+    <text x="360" y="306" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.75" textAnchor="middle">いずれも同一の値。どのパスで発生したかは含まれない。</text>
+  </svg>
+</Diagram>
+
+区別がつかない理由は、errno が<strong>単なる整数</strong>だからである。`EEXIST` は 17 である。17 番の失敗が発生したという以上の情報は、カーネルから返らない。どのパスで発生したかという情報は含まれない。
+
+Rust の `std::io::Error` も、`std::fs` を経由して生成されたものはパスを保持しない。エラーを `?` で上位へ伝播させる過程で、<strong>どこで失敗したかという情報が失われる</strong>。
+
+### 誤読の代償の非対称性
+
+この二つを取り違えた場合に生じる結果を整理する。
+
+- <strong>(b) を (a) として読む場合。</strong>これが実際の挙動であった。自身の作成途中のツリーを他者のものとして残す。するとロールバックが、そこに何かが存在するという理由で失敗する。利用者の手元には<strong>破損した宛先と、隠しパスに置かれた原本</strong>が残る。データは失われていないが、失われたようにしか見えない。
+- <strong>(a) を (b) として読む場合。</strong>他者が作成したディレクトリを<strong>内容ごと削除</strong>する。これは回復できない。
+
+したがって、失敗したら常に宛先を削除するという素朴な修正は、最初の不具合を解消すると同時に<strong>より深刻な不具合を生じさせる</strong>。
+
+> 回復可能な中途半端さと、回復不能な削除は、等価ではない。
+
+## 実装方針: 失敗位置の保持
+
+採りうる方針は一つである。<strong>エラーの内容を参照することをやめる</strong>ことである。代わりに<strong>どこで失敗したか</strong>によって判断する。これは操作自身が保持する情報であり、保持しながら捨てていたにすぎない。
+
+そこで、コピー処理を<strong>確保する段階（claim）</strong>と<strong>内容を書き込む段階（fill）</strong>に分割した。確保の呼び出し、すなわち `create_dir`、`create_new`、`symlink` より前で失敗した場合、宛先は自身のものになっていない。それより後で失敗した場合、そこにあるのは自身が書きかけたものである。エラーの種類に依存せず、位置のみによって決まる判定となる。
+
+そして、失敗はエラーとあわせて何を残したかを返すようにしました。
+
+```rust
+pub enum Leftover {
+    Nothing,             // 確保していない — 他者のエントリ
+    PartialDestination,  // 自らの作成途中のもの。コピー元は無傷
+    WholeDestination,    // コピーは完了し、コピー元の削除のみが失敗
+}
+```
+
+<Diagram caption="削除不可が二つあり、その理由は正反対である。Nothing は他者のものであるため、WholeDestination は唯一の完全なコピーである可能性があるため、いずれも削除できない。削除してよいのは PartialDestination のみである。">
+  <svg viewBox="0 0 720 244" role="img" aria-label="Leftoverの三状態と、それぞれで宛先とコピー元がどうなっているか、削除してよいかどうか">
+    <rect x="16" y="28" width="216" height="200" fill="none" stroke="currentColor" strokeOpacity="0.3" strokeDasharray="5 4" />
+    <text x="32" y="58" fontFamily="monospace" fontSize="13" fill="currentColor">Nothing</text>
+    <line x1="32" y1="70" x2="216" y2="70" stroke="currentColor" strokeOpacity="0.2" />
+    <text x="32" y="96" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.55">宛先</text>
+    <text x="32" y="116" fontFamily="monospace" fontSize="12" fill="currentColor">他者のエントリ</text>
+    <text x="32" y="146" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.55">コピー元</text>
+    <text x="32" y="166" fontFamily="monospace" fontSize="12" fill="currentColor">無傷</text>
+    <text x="32" y="206" fontFamily="monospace" fontSize="12.5" fill="currentColor" opacity="0.8" fontWeight="700">削除不可</text>
+
+    <rect x="252" y="28" width="216" height="200" fill="none" stroke="var(--tan-ink)" strokeWidth="1.8" />
+    <rect x="252" y="28" width="216" height="4" fill="var(--tan-ink)" />
+    <text x="268" y="58" fontFamily="monospace" fontSize="13" fill="currentColor">PartialDestination</text>
+    <line x1="268" y1="70" x2="452" y2="70" stroke="currentColor" strokeOpacity="0.2" />
+    <text x="268" y="96" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.55">宛先</text>
+    <text x="268" y="116" fontFamily="monospace" fontSize="12" fill="currentColor">自らの作成途中</text>
+    <text x="268" y="146" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.55">コピー元</text>
+    <text x="268" y="166" fontFamily="monospace" fontSize="12" fill="currentColor">無傷</text>
+    <text x="268" y="206" fontFamily="monospace" fontSize="12.5" fill="var(--tan-ink)" fontWeight="700">削除可（この場合のみ）</text>
+
+    <rect x="488" y="28" width="216" height="200" fill="none" stroke="currentColor" strokeOpacity="0.3" strokeDasharray="5 4" />
+    <text x="504" y="58" fontFamily="monospace" fontSize="13" fill="currentColor">WholeDestination</text>
+    <line x1="504" y1="70" x2="688" y2="70" stroke="currentColor" strokeOpacity="0.2" />
+    <text x="504" y="96" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.55">宛先</text>
+    <text x="504" y="116" fontFamily="monospace" fontSize="12" fill="currentColor">完全なコピー</text>
+    <text x="504" y="146" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.55">コピー元</text>
+    <text x="504" y="166" fontFamily="monospace" fontSize="12" fill="currentColor">一部欠損の可能性</text>
+    <text x="504" y="206" fontFamily="monospace" fontSize="12.5" fill="currentColor" opacity="0.8" fontWeight="700">削除不可</text>
+  </svg>
+</Diagram>
+
+### 三値を採用した理由
+
+最初の実装は bool であった。宛先を確保したか否かの二値である。これで十分であると判断していた。レビューにおいて、CodeRabbit と cubic の双方から同一の箇所を指摘された。
+
+先に述べた前提がここで関係する。フォールバックによる移動は、コピーしてから元を削除する処理である。その削除に用いる `remove_dir_all` は<strong>原子的ではない</strong>。途中で失敗した場合、コピー元は<strong>既に一部が欠けた状態</strong>となる。
+
+筆者はこの失敗を、宛先は自身のものであると報告していた。すると新たに追加した後片付け処理が、その宛先すなわち<strong>唯一の完全なコピー</strong>を削除しようとする。コピー元は一部が欠け、コピーは削除されるという結果になる。
+
+<Callout title="変更自体が生んだリグレッション">
+回復不能な削除を避けることを目的とした変更の中で、別の経路による回復不能な削除を作り込んでいた。しかも、直前のコミットで同一の理屈を明文化した直後であった。
+</Callout>
+
+ここから導かれるのは、<strong>削除不可には二つの異なる理由がある</strong>という点である。`Nothing` は他者のものであるため、`WholeDestination` は唯一の完全なコピーであるためである。理由が正反対であるため、bool にまとめると区別が失われる。そこで三値とした。
+
+同時に、述語の名称も変更した。`took_the_destination()`（宛先を確保したか）ではなく `left_a_partial_destination()`（作成途中のものを残したか）である。<strong>何を行ったかではなく、削除を許可する条件を名指しする</strong>名称とした。前者の名称を採用していたことが見落としの一因である。
+
+### パス名ではなくエントリ識別子による照合
+
+`PartialDestination` であっても不十分である。削除してよいのは、そのパスに現在存在するものではなく<strong>確保した時点のエントリ</strong>である。最初の節で述べた帰結の二つ目、すなわち同一のパスが異なるファイルを指しうるという性質が、ここで問題となる。
+
+ツリーを書き込んでいる数秒の間に、別のプロセスが当該の作成途中のものを削除し、そこに自身のものを配置しうる。パス名のみを根拠に削除すれば、相手のものを削除することになる。これは、この変更が防ごうとしている事象そのものである。
+
+そこで、確保した直後に `dev` と `ino` の組、すなわちデバイス番号と inode 番号の対を記録し、削除の前に照合する。inode 番号が一意であるのは同一デバイスの中に限られるため、デバイス番号と対にして初めてエントリの身元となる。照合が一致しない場合は何も行わない。
+
+<strong>ただし、これは窓を狭めるにとどまり、閉じてはいない。</strong>この点も明記を要する。
+
+- <strong>照合と削除は別々の呼び出しである。</strong>その間隙を突かれれば通過する。std には、開いているハンドルを経由してディレクトリツリーを削除する API が存在しない。
+- <strong>inode 番号は再利用される。</strong>作成途中のものを削除してから同名で作り直された場合、同一の番号が返ることがある。その場合は区別がつかない。
+
+<Callout title="テストの間欠的な失敗が示したもの">
+二点目は、記述したテストによって判明した。照合のテストでは、他のプロセスの振る舞いを「作成途中のものを削除してから同名で作成する」手順で再現していたが、この作り直しが<strong>確保した番号をそのまま取得する</strong>場合があった。約 20% の確率で失敗する。
+
+テストを、作成途中のものが存在するうちに別の場所で作成し、`rename` によって差し込む手順へ変更した。この手順であれば同一の番号にはならず、実際のプロセスが行う操作としても自然である。30 回連続で安定した。
+
+そして<strong>この不安定さは照合そのものの限界を示す報告であった</strong>ため、その内容をドキュメントに記載した。テストを修正して沈黙させることは、最も避けるべき対応である。
+</Callout>
+
+ファイル側については、確保に用いる `create_new` が<strong>開いたハンドルを返す</strong>ため、パスを再度 `stat` するのではなくハンドルから `fstat` する実装へ変更した。これは正確である。そのハンドルは、この呼び出しが作成したエントリそのものを指すためである。ディレクトリ側は `mkdir` がハンドルを返さないため、パス経由の窓が残る。残存する旨をコメントに明記した。
+
+### 未証明と証明済みの区別
+
+もう一点、指摘を受けた箇所がある。照合を次のように記述していた。
+
+```rust
+if ENTRY_IDENTITIES_AVAILABLE && entry_identity(dst) != self.claimed {
+    return Ok(());   // 一致しない場合は削除しない
+}
+delete_permanent(dst)
+```
+
+`claimed` が `None`、すなわち確保時に読み取れなかった場合で、現在も `None`、すなわちそこに何も存在しない場合、`None != None` は false となる。条件を通過して削除へ進む。
+
+筆者はこの点を認識しており、そこに何も存在しなければ削除は `NotFound` で失敗するのみであり無害であると判断していた。<strong>ただしそれは、パスが空のままであるという条件の下でのみ成立する。</strong>照合と削除は別々の呼び出しであるため、その間に他のプロセスが何かを作成すれば、それを削除する。確保を一度も証明できていない状態においてである。
+
+条件を次のように書き直しました。
+
+```rust
+if ENTRY_IDENTITIES_AVAILABLE
+    && !self.claimed.is_some_and(|claimed| entry_identity(dst) == Some(claimed))
+{
+    return Ok(());
+}
+delete_permanent(dst)
+```
+
+何を拒むかではなく<strong>何を要求するか</strong>によって記述した。両辺が実在する識別子であり、かつ一致すること。それ以外はすべて削除しない側に分類される。
+
+二重の `None` が見落とされたのは、前者の記述を採用していたためである。危険な組み合わせを列挙して排除する形の条件式は、<strong>列挙し忘れたものを通過させる</strong>。安全な条件を満たすことを要求する形であれば、想定しなかったものは排除される側に分類される。同一の関数において、この違いにより二度誤った。
+
+## 削除の可否と、削除の要否
+
+ここまでで答えたのは<strong>削除してよいか</strong>という問いである。<strong>削除すべきか</strong>は別の問いであり、最初の修正では意図的に手を付けなかった箇所が三つ残っていた。新しい名前、すなわちまだ何も待っていない名前へ書き込む経路である。
+
+そこでは、作成途中のものが残っても何も壊れない。ロールバックがその名前を待たないためである。したがって正しさの問題ではなく<strong>方針の問題</strong>となる。失敗したペースト自身の出力をどう扱うか、という問いである。
+
+残す側に十分な理由はない、というのが結論である。
+
+- 一覧には<strong>通常のフォルダとして並ぶ</strong>。途中で停止したことを示す表示は存在しない。
+- そして<strong>名前を占有する</strong>。次に同じものをペーストすると、番号付けが既存の名前を避けるため `report (2)` となる。以後 `report` は残存部分のものとなる。
+
+削除によって失われるのは、既に費やした時間のみである。<strong>再開する仕組みは存在しない</strong>ため、残しても次の試行は最初から書き直す。Finder も GNOME Files も削除する。
+
+### 単一の値が答える二つの問い
+
+この箇所において、再び同種の誤りを犯しました。
+
+後片付けを追加する際、`WholeDestination` については<strong>見え方</strong>の観点のみで検討していた。宛先は利用者が指定した名前そのものであるため、隠しパスと異なり所在が不明になるものはなく、したがってログも不要である、という判断である。
+
+この判断自体は正しいが、一段階手前で止まっている。エラーとして返すことは、そのコピー元が<strong>再試行の対象となる</strong>ことを意味する。そして再試行は、宛先の名前が<strong>当該の処理が書き込んだエントリによって</strong>占有されていることを検出する。
+
+<Diagram caption="同一の失敗、同一の三値であり、異なるのは立てた問いである。WholeDestination は削除不可であると同時に、処理が完了していることも示す。前者のみを読み取ると、宛先に完全なコピーが存在するまま、コピー元の残存部分がその隣に複製される。">
+  <svg viewBox="0 0 720 242" role="img" aria-label="同じ失敗を再試行可能なエラーとして返した場合と、完了として扱った場合の、ディレクトリの最終状態の比較">
+    <rect x="16" y="30" width="330" height="196" fill="none" stroke="currentColor" strokeOpacity="0.3" strokeDasharray="5 4" />
+    <text x="32" y="60" fontFamily="monospace" fontSize="13" fill="currentColor">Err として返す</text>
+    <line x1="32" y1="72" x2="330" y2="72" stroke="currentColor" strokeOpacity="0.2" />
+    <text x="32" y="98" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55">Documents/</text>
+    <text x="46" y="124" fontFamily="monospace" fontSize="12.5" fill="currentColor">report/</text>
+    <text x="160" y="124" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.7">完全なコピー</text>
+    <text x="46" y="150" fontFamily="monospace" fontSize="12.5" fill="var(--tan-ink)" fontWeight="700">report (2)/</text>
+    <text x="176" y="150" fontFamily="monospace" fontSize="11" fill="var(--tan-ink)">コピー元の残存部分</text>
+    <text x="32" y="188" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.75">再試行が使用中の名前を避け、</text>
+    <text x="32" y="208" fontFamily="monospace" fontSize="11.5" fill="currentColor" opacity="0.75">その隣に作成した</text>
+
+    <rect x="374" y="30" width="330" height="196" fill="none" stroke="currentColor" strokeWidth="1.8" />
+    <text x="390" y="60" fontFamily="monospace" fontSize="13" fill="currentColor">完了として扱う</text>
+    <line x1="390" y1="72" x2="688" y2="72" stroke="currentColor" strokeOpacity="0.2" />
+    <text x="390" y="98" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.55">Documents/</text>
+    <text x="404" y="124" fontFamily="monospace" fontSize="12.5" fill="currentColor">report/</text>
+    <text x="518" y="124" fontFamily="monospace" fontSize="11" fill="currentColor" opacity="0.7">完全なコピー</text>
+    <text x="390" y="176" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.7">warn: 元の削除が完了しなかった</text>
+    <text x="390" y="194" fontFamily="monospace" fontSize="10.5" fill="currentColor" opacity="0.7">      /Volumes/A/report</text>
+  </svg>
+</Diagram>
+
+<Callout title="同一の値、異なる問い">
+`WholeDestination` は、削除してよいかという問いに対して否と答える。それと同時に、この操作は完了したかという問いに対して是と答える。筆者は前者のために設計した分類を、新しい呼び出し元において<strong>前者の問いのみを立てたまま</strong>再利用した。
+
+分類を再利用する際に確認すべきなのは、その値が答えうる問いの<strong>すべて</strong>であり、その時点で念頭にある問いではない。
+</Callout>
+
+修正自体は一行に近い規模である。この失敗を完了として扱い、完了しなかった削除のみをログに記録する。同一の判断は別の経路に既に実装されていた。実装されていたにもかかわらず、この三箇所には反映されていなかった。
+
+### 未解決の競合状態の扱い
+
+身元の照合には、`stat` と削除が別々の呼び出しであるという窓が依然として残る。レビューでもこの点を指摘された。パス名による削除をやめ、残して報告する方針へ変更してはどうか、という内容である。
+
+この提案は採用しなかった。<strong>残して報告することは、本節で解消した挙動そのもの</strong>だからである。残存部分が名前を占有し続けることは確実に発生する事象であり、一方の窓は、一度その名前の取得に失敗した別のプロセスが、二つのシステムコールの間隙で再び同じ名前を取得するという条件を要する。<strong>確実な悪化と狭い競合状態の交換</strong>となる。
+
+代わりに、この窓を閉じるために何が必要かを issue に記載した。親ディレクトリの fd に対する `unlinkat`、ディレクトリの場合は `openat` によって降下する独自の再帰処理である。std にはいずれも存在しない。<strong>修正できないため記載しないのではなく、修正方法を記載して残す</strong>という方針である。
+
+## 再現不能な条件の扱い
+
+この不具合の中核部分は再現できない。コピーがツリーを書き込んでいる数秒の間に、別のプロセスが宛先ツリーの内部へ同名のエントリを作成することを要するためである。他者の都合で生じる競合であり、テストが待機できる対象ではない。
+
+移動については条件が異なる。CI のテンポラリディレクトリは ext4 ないし APFS の単一ボリューム上にあり、そこでの移動は rename 一回で完了してコピーのコードは実行されない。フォールバックへ分岐するための `EXDEV` が返らないためである。実際に CI が通しているのは `copy_path_no_replace` の側であり（`the_fallback_move_claims_the_destination_before_writing_to_it` など）、`move_path_no_replace` がクロスデバイスのフォールバックへ分岐する経路そのものは通っていない。<strong>記述した環境で実行されないテストは、テストとして機能しない。</strong>
+
+そこで、中核部分の代わりに<strong>それを決定する性質そのもの</strong>を固定した。すなわち、確保の成否はどこで失敗したかによって決まり、エラーの種類によっては決まらないという性質である。
+
+コピー元に Unix ドメインソケットを配置する。ソケットはファイルとして `open` できないため、コピーは必ず失敗する。しかも<strong>宛先を作成した後の既知の一点で</strong>停止する。入れ子の衝突が該当するのと同じ側である。決定的に再現でき、両プラットフォームで実行される。
+
+後半で修正した分岐についても同様である。`WholeDestination` に到達するには、`rename` が `EXDEV` で失敗し、<strong>かつ</strong>コピーが完走し、<strong>かつ</strong> `remove_dir_all` が途中で中断することを要する。この三つをテンポラリディレクトリの中で同時に成立させることはできない。
+
+そして、網羅できなかった範囲は PR とコードのコメントに記載した。<strong>テストが存在しないことと、テストが存在しないと認識していないことは異なる。</strong>前者は判断であり、後者は事故である。
+
+## 判断の基準
+
+設計上の判断を一行にまとめると次のとおりである。
+
+> コストが非対称であれば、扱いも非対称にする。
+
+中途半端な状態は後から修正できるが、削除は修正できない。したがって、判断が定まらない場合は触れない側を選択する。
+
+ただし、これを徹底しすぎるとロールバックが機能しなくなる。それが<strong>当初の不具合そのもの</strong>であった。触れないことを既定とするのみでは不十分である。
+
+したがって解は、触れるか触れないかの閾値の調整ではなく<strong>判断できない領域そのものを減らすこと</strong>であった。判断に必要な情報を失われる前に保持すること。エラーの種類からの推測をやめ、操作自身に報告させること。
+
+さらに、記述の仕方に関する論点が三点ある。
+
+- <strong>述語は、許可の条件を名指しする。</strong>確保したかではなく、削除してよいかを名称とする。
+- <strong>条件式は、要求として記述する。</strong>危険を排除する形ではなく、安全を証明する形とする。
+- <strong>分類を再利用する際は、それが答える問いをすべて確認する。</strong>その時点で念頭にある問いのみを立て直すと、同一の値の別の側面が見落とされる。
+
+この三点は、レビューで指摘された事項のうち三件の<strong>直接の原因</strong>であった。名称と条件式と分類の扱い方が、見落としを許すか否かを決定していたことになる。設計の適否を論じる以前の段階で、<strong>記述の仕方が誤りの余地を生んでいた</strong>ことになる。
+
+最後に、本稿の要点を一文にまとめる。<strong>errno から状況を推測するコードは、多くの場合、推測できないものを推測している。</strong>その値は単一の整数であり、必要とする情報の大半を含まない。
+
+コードは [noh-rs/nohrs](https://github.com/noh-rs/nohrs) にある。本稿で扱った変更は `crates/nohrs-services/src/fs/ops.rs` および `crates/nohrs-pages/src/explorer/file_ops.rs` である。

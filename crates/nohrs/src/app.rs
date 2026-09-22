@@ -15,6 +15,7 @@ use nohrs_core::config::{self, ConfigOverride};
 use nohrs_core::telemetry::logging::{FileLogConfig, init_logging_with_file};
 use nohrs_launcher::{LauncherIndex, ToggleLauncher};
 use nohrs_pages::RootView;
+use nohrs_services::fs::trash;
 use nohrs_services::search::SearchService;
 use nohrs_store::{KvStore, RedbKvStore, StoreLogConfig};
 use nohrs_ui::assets::Assets;
@@ -91,12 +92,22 @@ impl NohrsApp {
             // without session persistence rather than crashing.
             let store: Option<Arc<dyn KvStore>> = open_host_store();
 
+            // The trash ledger, on the platforms whose OS trash records nothing
+            // (macOS). Without it the explorer's Delete is a one-way door: the
+            // item is in `~/.Trash` but nothing knows where it came from, so
+            // neither `noh trash restore` nor a future in-app restore can put it
+            // back. Failing to open it is not fatal to the app and does not
+            // become "no ledger needed" either — `Ledger` carries the difference
+            // so Delete can refuse rather than silently lose the way back.
+            let trash_ledger = trash::Ledger::open();
+
             let opened = app.open_window(window_options, {
                 let config = config.clone();
                 let config_path = config_path.clone();
                 let config_overrides = config_overrides.clone();
                 let config_error = config_error.clone();
                 let store = store.clone();
+                let trash_ledger = trash_ledger.clone();
                 move |window, cx| {
                     // Initialize SearchService. Failure is non-fatal: the app starts
                     // with full-text search disabled rather than crashing.
@@ -114,10 +125,10 @@ impl NohrsApp {
                     // Kick off initial indexing on GPUI's background executor, which
                     // is a thread pool (replacing tokio::task::spawn_blocking;
                     // async-runtime.md §2).
-                    if let Some(service) = &search_service {
-                        if let Some(job) = service.take_initial_indexing_job() {
-                            cx.background_spawn(async move { job.run() }).detach();
-                        }
+                    if let Some(service) = &search_service
+                        && let Some(job) = service.take_initial_indexing_job()
+                    {
+                        cx.background_spawn(async move { job.run() }).detach();
                     }
 
                     let view = cx.new(|cx| {
@@ -125,6 +136,7 @@ impl NohrsApp {
                             resizable.clone(),
                             search_service,
                             store,
+                            trash_ledger,
                             config,
                             config_path,
                             config_overrides,

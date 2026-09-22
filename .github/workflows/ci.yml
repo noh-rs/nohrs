@@ -30,7 +30,7 @@ jobs:
     name: fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -49,12 +49,12 @@ jobs:
     name: typos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install typos
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
           tool: typos
 
@@ -71,7 +71,7 @@ jobs:
     name: config schema
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -79,7 +79,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Regenerate JSON Schema
         run: cargo run -p nohrs-core --example schema --locked > docs/config.schema.json
@@ -87,11 +87,14 @@ jobs:
       - name: Fail if the committed schema is stale
         run: git diff --exit-code -- docs/config.schema.json
 
-  # gpui renders with Metal/Blade and the GUI stack is only exercised on macOS.
-  # Linux therefore lints/tests/builds the headless `default-members` subset
-  # (nohrs-core / nohrs-models / nohrs-services without its `gui` feature), while
-  # macOS covers the full workspace with `--all-features` (pulling in gpui). This
-  # mirrors the `default-members` split documented in the workspace Cargo.toml.
+  # gpui renders with Metal/Blade, and only macOS *runs* the GUI, so `test` and
+  # `build` below stay on the headless `default-members` subset on Linux
+  # (nohrs-core / nohrs-models / nohrs-services without its `gui` feature) and
+  # cover the full workspace on macOS. Clippy is the exception: it type-checks
+  # without linking, so it lints the whole workspace — nohrs-ui / nohrs-pages /
+  # nohrs-launcher / nohrs included — on both. Without that, an explorer
+  # regression was caught by the macOS jobs alone, and a Linux-only break in the
+  # GUI crates by nothing at all.
   clippy:
     name: clippy (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -100,13 +103,21 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            args: "--all-targets"
+            args: "--workspace --all-targets --all-features"
           - os: macos-latest
             args: "--workspace --all-targets --all-features"
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # gpui's font stack resolves freetype and fontconfig through pkg-config in
+      # its build scripts, which run even under `cargo clippy`. The libraries it
+      # links against (xkbcommon, wayland, vulkan) are not needed: clippy does
+      # not link, which is what keeps this job to one apt call.
+      - name: Install GUI build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libfreetype6-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -114,7 +125,7 @@ jobs:
           components: clippy
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # `unwrap_used` / `expect_used` are enforced as warn-level workspace lints
       # (see [workspace.lints.clippy] in Cargo.toml), promoted to errors here by
@@ -134,7 +145,7 @@ jobs:
           - os: macos-latest
             args: "--workspace --all-features"
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -142,7 +153,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Test
         run: cargo test ${{ matrix.args }} --locked
@@ -161,7 +172,7 @@ jobs:
           - os: macos-latest
             args: "--workspace"
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -169,10 +180,88 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Build
         run: cargo build ${{ matrix.args }} --locked
+
+  # Every other job runs on `stable`, so nothing here would notice `rust-version`
+  # drifting below what the code and its dependencies actually need — which is how
+  # it sat at 1.85 while the real floor climbed to 1.95. This job compiles the
+  # workspace on exactly the declared version, so raising the floor becomes a
+  # deliberate edit to Cargo.toml rather than something a contributor discovers as
+  # an error inside a dependency's build script.
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The workspace `Cargo.toml` is the single declaration; every crate
+      # inherits it with `rust-version.workspace = true`.
+      #
+      # `1.95` means 1.95.0 to cargo but names the whole 1.95.x line to rustup,
+      # which would resolve it to the newest patch — so the gate would check a
+      # release later than the declared floor and pass on code that 1.95.0
+      # cannot build. Spelling the patch out pins it to the floor itself.
+      - name: Read the declared MSRV
+        id: msrv
+        run: |
+          version=$(grep -m1 '^rust-version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          test -n "$version"
+          case "$version" in
+            *.*.*) ;;
+            *) version="$version.0" ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install GUI build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libfreetype6-dev
+
+      - name: Install Rust ${{ steps.msrv.outputs.version }}
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # `rust-toolchain.toml` pins the channel to `stable` and would win over the
+      # toolchain installed above, so the version is forced through the
+      # environment instead.
+      - name: Check the workspace on the declared MSRV
+        run: cargo check --workspace --all-targets --all-features --locked
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.version }}
+
+  # Smoke-runs the criterion benchmarks (testing.md §5) so a bench cannot rot
+  # unnoticed: they compile against the real APIs and would break silently
+  # otherwise, since nothing else builds them. This is deliberately NOT a
+  # regression gate — a shared runner's timings are too noisy to threshold on,
+  # and criterion has no stored baseline to compare against here. Warm-up and
+  # measurement are each cut to 1s with 10 samples, which is enough to exercise
+  # every benchmark and not enough to trust the numbers; read real ones locally
+  # with `cargo bench --locked -p nohrs-store -p nohrs-services`.
+  bench:
+    name: bench (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Run benchmarks
+        run: |
+          cargo bench -p nohrs-store -p nohrs-services --locked -- \
+            --warm-up-time 1 --measurement-time 1 --sample-size 10
 
   # `bans` / `licenses` / `sources` are the required gate. `advisories` runs as a
   # separate informational step (continue-on-error) so transitive advisories from
@@ -181,12 +270,12 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
           tool: cargo-deny
 
@@ -226,7 +315,7 @@ jobs:
     outputs:
       rate: ${{ steps.rate.outputs.rate }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -238,11 +327,11 @@ jobs:
         with:
           components: llvm-tools-preview
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
           tool: cargo-llvm-cov
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # `-p nohrs-core` scopes the "core" tier to the foundational crate the 80%
       # target refers to (models/services are covered by the overall tier). Runs
       # the tests under instrumentation; the HTML report and threshold check below
@@ -262,7 +351,7 @@ jobs:
       # which cannot write coverage data.
       - name: Upload coverage to GitHub
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3 # v1
+        uses: actions/upload-code-coverage@d8e329117199404bba6fc81efe8093dc7c015e34 # v1
         with:
           file: cobertura-core.xml
           language: Rust
@@ -289,7 +378,7 @@ jobs:
     outputs:
       rate: ${{ steps.rate.outputs.rate }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -299,11 +388,11 @@ jobs:
         with:
           components: llvm-tools-preview
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
           tool: cargo-llvm-cov
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # `--all-features` pulls in gpui (Metal backend on macOS); the GUI crates
       # are instrumented and `#[gpui::test]` runs headlessly via `TestAppContext`.
       - name: Generate Cobertura XML
@@ -323,7 +412,7 @@ jobs:
           echo "rate=${pct}" >> "$GITHUB_OUTPUT"
       - name: Upload coverage to GitHub
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3 # v1
+        uses: actions/upload-code-coverage@d8e329117199404bba6fc81efe8093dc7c015e34 # v1
         with:
           file: cobertura-overall.xml
           language: Rust

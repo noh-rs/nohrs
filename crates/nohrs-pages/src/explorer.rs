@@ -1,4 +1,5 @@
 mod entries;
+pub(crate) mod file_ops;
 mod list_setup;
 mod navigation;
 /// The split-view container that owns one or more panes (`docs/explorer-essentials.md` §3).
@@ -15,6 +16,9 @@ mod tests;
 
 pub use page::ExplorerPage;
 pub use state::ExplorerPane;
+// Part of `status_for_footer`'s signature, so it has to travel with it. The rest
+// of `types` stays internal.
+pub use types::StatusLevel;
 
 use gpui::{Context, IntoElement, Render, Window};
 

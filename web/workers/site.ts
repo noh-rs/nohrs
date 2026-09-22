@@ -154,6 +154,13 @@ export default {
       })
     }
 
+    // Past the redirect above, any host left that is not the canonical one is a
+    // preview: `wrangler dev`, or a version upload answering on `workers.dev`.
+    // Those serve the same `robots.txt` and the same pages as production, so
+    // without this a preview of an unmerged branch is a second indexable copy
+    // of the site competing with it.
+    const preview = url.hostname !== CANONICAL_HOST
+
     if (url.pathname === THREAD_PATH) {
       if (request.method !== 'GET') {
         return json({ error: 'method' }, 405, { Allow: 'GET' })
@@ -183,6 +190,14 @@ export default {
       })
     }
 
-    return env.ASSETS.fetch(request)
+    const asset = await env.ASSETS.fetch(request)
+    if (!preview) {
+      return asset
+    }
+    // The body is passed through untouched; only the headers are copied, since
+    // the response the assets binding returns has immutable ones.
+    const headers = new Headers(asset.headers)
+    headers.set('X-Robots-Tag', 'noindex')
+    return new Response(asset.body, { status: asset.status, headers })
   },
 }

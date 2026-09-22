@@ -21,6 +21,27 @@
   "observability": {
     "enabled": true
   },
+  // Serves each uploaded version at `<version>-nohrs-web.<subdomain>.workers.dev`,
+  // which is what the `preview` job in `.github/workflows/web.yml` hands back on
+  // a pull request. It defaults to false, so it has to be asked for here.
+  //
+  // This line is what keeps the setting on; it is not what turns it on. Only
+  // `wrangler deploy` and `wrangler triggers deploy` apply it, and `versions
+  // upload` — all the preview job runs — just asks the API whether the Worker
+  // already has preview URLs and stays quiet if it does not. So the first time
+  // has to happen elsewhere: the dashboard, or the next deploy from `main`.
+  //
+  // `workers_dev` is left unset, which means false while `routes` is non-empty.
+  // Production therefore keeps answering only on nohrs.app, and the preview
+  // hostnames are the only thing this adds. wrangler warns at deploy time that
+  // the two settings disagree; that combination is the intent.
+  //
+  // A version upload is not a deployment: `routes` below belongs to the
+  // deployment, so nothing published this way can answer on nohrs.app. What a
+  // preview *does* share with production is this Worker's secrets — the
+  // Discussions token among them — which is why the job only runs for pull
+  // requests opened by the repository owner.
+  "preview_urls": true,
   "routes": [
     { "pattern": "nohrs.app", "custom_domain": true },
     { "pattern": "www.nohrs.app", "custom_domain": true }

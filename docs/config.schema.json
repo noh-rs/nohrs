@@ -184,11 +184,6 @@
           "type": "string"
         },
         {
-          "const": "sqlite-fts",
-          "description": "SQLite full-text search (FTS5).",
-          "type": "string"
-        },
-        {
           "const": "tantivy",
           "description": "The Tantivy index.",
           "type": "string"

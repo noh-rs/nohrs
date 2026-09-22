@@ -59,7 +59,7 @@ exclude = ["web"]
 [workspace.package]
 version      = "0.0.1"
 edition      = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 license      = "MIT"
 repository   = "https://github.com/noh-rs/nohrs"
 homepage     = "https://nohrs.app"
@@ -175,7 +175,7 @@ Launcher::on_query_change (launcher)
   ↓ debounced 50ms
 SearchService::search(query) (services::search)
   ↓
-SQLite FTS5 query (store) → Vec<SearchHit>
+Tantivy index query (services::search) → Vec<SearchResult>
   ↓
 nucleo で fuzzy 再ランキング + boost
   ↓

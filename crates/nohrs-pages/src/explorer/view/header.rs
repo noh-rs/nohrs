@@ -38,22 +38,16 @@ pub fn render(
             p.clone()
         };
 
-        let mut path_here = String::new();
+        // `PathBuf::push` knows the root component already ends in a separator;
+        // joining the strings by hand produced "//tmp" for every crumb under "/".
+        let mut prefix = std::path::PathBuf::new();
         for (j, part) in parts.iter().enumerate() {
-            if j == 0 {
-                path_here = if part.is_empty() {
-                    "/".to_string()
-                } else {
-                    part.clone()
-                };
-            } else {
-                path_here.push(std::path::MAIN_SEPARATOR);
-                path_here.push_str(part);
-            }
+            prefix.push(part);
             if j >= actual_i {
                 break;
             }
         }
+        let mut path_here = prefix.to_string_lossy().to_string();
         if path_here.is_empty() {
             path_here = page.cwd.clone();
         }
@@ -77,47 +71,55 @@ pub fn render(
         .flex()
         .items_center()
         .text_color(rgb(theme::FG))
-        .px(px(24.0))
-        .py(px(12.0))
+        .px(px(16.0))
+        .py(px(10.0))
         .gap_2()
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap_1()
                 .flex_shrink_0()
                 .child(
                     ListItem::new("nav-back")
                         .px(px(8.0))
                         .py(px(6.0))
                         .rounded(px(6.0))
-                        .when(!can_go_back, |this| this.opacity(0.3))
+                        .when(!can_go_back, |this| this.opacity(0.35))
                         .when(can_go_back, |this| {
                             this.on_click(
                                 cx.listener(|view, _, window, cx| view.go_back(window, cx)),
                             )
                         })
-                        .child(div().text_sm().text_color(rgb(theme::GRAY_600)).child("←")),
+                        .child(
+                            Icon::new(IconName::ArrowLeft)
+                                .size_4()
+                                .text_color(rgb(theme::GRAY_600)),
+                        ),
                 )
                 .child(
                     ListItem::new("nav-forward")
                         .px(px(8.0))
                         .py(px(6.0))
                         .rounded(px(6.0))
-                        .when(!can_go_forward, |this| this.opacity(0.3))
+                        .when(!can_go_forward, |this| this.opacity(0.35))
                         .when(can_go_forward, |this| {
                             this.on_click(
                                 cx.listener(|view, _, window, cx| view.go_forward(window, cx)),
                             )
                         })
-                        .child(div().text_sm().text_color(rgb(theme::GRAY_600)).child("→")),
+                        .child(
+                            Icon::new(IconName::ArrowRight)
+                                .size_4()
+                                .text_color(rgb(theme::GRAY_600)),
+                        ),
                 )
                 .child(
                     div()
                         .w(px(1.0))
                         .h(px(20.0))
                         .bg(rgb(theme::BORDER))
-                        .mx(px(4.0)),
+                        .mx(px(6.0)),
                 ),
         )
         .child(
@@ -138,6 +140,7 @@ pub fn render(
                         .text_xs()
                         .text_color(rgb(theme::FG_SECONDARY))
                         .whitespace_nowrap()
+                        .mr(px(4.0))
                         .child(format!("{} items", entry_count)),
                 )
                 .child(render_view_mode_toggle(page, cx))
@@ -168,11 +171,18 @@ fn render_view_mode_toggle(
         .flex()
         .items_center()
         .gap_1()
+        .p(px(2.0))
+        .rounded(px(8.0))
+        .bg(rgb(theme::BG_SECONDARY))
+        .border_1()
+        .border_color(rgb(theme::BORDER))
+        // `list.svg` ships with this crate but has no `IconName` variant, so it
+        // is loaded by asset path.
         .child(view_mode_button(
             page,
             ViewMode::List,
             "view-mode-list",
-            IconName::PanelBottomOpen,
+            Icon::new(Icon::empty()).path(SharedString::from("icons/list.svg")),
             "List",
             cx,
         ))
@@ -180,7 +190,7 @@ fn render_view_mode_toggle(
             page,
             ViewMode::Grid,
             "view-mode-grid",
-            IconName::LayoutDashboard,
+            Icon::new(IconName::LayoutDashboard),
             "Grid",
             cx,
         ))
@@ -190,30 +200,33 @@ fn view_mode_button(
     page: &mut ExplorerPane,
     mode: ViewMode,
     id: &'static str,
-    icon: IconName,
+    icon: Icon,
     label: &'static str,
     cx: &mut Context<ExplorerPane>,
 ) -> impl IntoElement + use<> {
     let is_active = page.view_mode == mode;
+    // The active segment lifts onto white so its accent icon reads against the
+    // group's tinted track, rather than accent-on-gray.
     ListItem::new(id)
         .px(px(8.0))
-        .py(px(6.0))
+        .py(px(4.0))
         .rounded(px(6.0))
-        .when(is_active, |this| this.bg(rgb(theme::BG_HOVER)))
+        .when(is_active, |this| this.bg(rgb(theme::BG)).shadow_sm())
         .on_click(cx.listener(move |this, _, _, cx| this.set_view_mode(mode, cx)))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap_1()
-                .child(Icon::new(icon).size_4().text_color(if is_active {
+                .gap_1p5()
+                .child(icon.size_4().text_color(if is_active {
                     rgb(theme::ACCENT)
                 } else {
-                    rgb(theme::GRAY_600)
+                    rgb(theme::GRAY_500)
                 }))
                 .child(
                     div()
                         .text_xs()
+                        .when(is_active, |this| this.font_weight(gpui::FontWeight::MEDIUM))
                         .text_color(if is_active {
                             rgb(theme::FG)
                         } else {

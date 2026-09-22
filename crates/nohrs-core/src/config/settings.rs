@@ -259,8 +259,6 @@ pub enum SearchBackend {
     /// Pick the best available backend at runtime (the default).
     #[default]
     Auto,
-    /// SQLite full-text search (FTS5).
-    SqliteFts,
     /// The Tantivy index.
     Tantivy,
     /// External `ripgrep`.
@@ -268,11 +266,9 @@ pub enum SearchBackend {
 }
 
 impl SearchBackend {
-    /// Parse the `config.toml` spelling
-    /// (`sqlite-fts`/`tantivy`/`ripgrep`/`auto`).
+    /// Parse the `config.toml` spelling (`tantivy`/`ripgrep`/`auto`).
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "sqlite-fts" => Some(Self::SqliteFts),
             "tantivy" => Some(Self::Tantivy),
             "ripgrep" => Some(Self::Ripgrep),
             "auto" => Some(Self::Auto),
@@ -653,7 +649,7 @@ impl Config {
              globs = []\n\
              \n\
              [search]\n\
-             backend = \"auto\"   # \"sqlite-fts\" | \"tantivy\" | \"ripgrep\" | \"auto\"\n\
+             backend = \"auto\"   # \"tantivy\" | \"ripgrep\" | \"auto\"\n\
              \n\
              [launcher]\n\
              hotkey = \"Cmd+Shift+Space\"\n\
@@ -794,15 +790,15 @@ fn read_keybindings(
 }
 
 fn read_plugins(table: &toml::Table, plugins: &mut Plugins, diagnostics: &mut Vec<Diagnostic>) {
-    if let Some(value) = table.get("core") {
-        if let Some(core) = read_string_array(value, "plugins.core", diagnostics) {
-            plugins.core = core;
-        }
+    if let Some(value) = table.get("core")
+        && let Some(core) = read_string_array(value, "plugins.core", diagnostics)
+    {
+        plugins.core = core;
     }
-    if let Some(value) = table.get("community") {
-        if let Some(community) = read_string_array(value, "plugins.community", diagnostics) {
-            plugins.community = community;
-        }
+    if let Some(value) = table.get("community")
+        && let Some(community) = read_string_array(value, "plugins.community", diagnostics)
+    {
+        plugins.community = community;
     }
     warn_unknown_keys(table, &["core", "community"], "plugins.", diagnostics);
 }
@@ -833,15 +829,15 @@ fn read_indexing_exclude(
     exclude: &mut IndexingExclude,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if let Some(value) = table.get("paths") {
-        if let Some(paths) = read_string_array(value, "indexing.exclude.paths", diagnostics) {
-            exclude.paths = paths;
-        }
+    if let Some(value) = table.get("paths")
+        && let Some(paths) = read_string_array(value, "indexing.exclude.paths", diagnostics)
+    {
+        exclude.paths = paths;
     }
-    if let Some(value) = table.get("globs") {
-        if let Some(globs) = read_string_array(value, "indexing.exclude.globs", diagnostics) {
-            exclude.globs = globs;
-        }
+    if let Some(value) = table.get("globs")
+        && let Some(globs) = read_string_array(value, "indexing.exclude.globs", diagnostics)
+    {
+        exclude.globs = globs;
     }
     warn_unknown_keys(table, &["paths", "globs"], "indexing.exclude.", diagnostics);
 }

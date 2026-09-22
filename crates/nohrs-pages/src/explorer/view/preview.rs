@@ -1,6 +1,7 @@
 use crate::explorer::ExplorerPane;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::{Icon, IconName};
 use nohrs_ui::theme::theme;
 
 // Calculate the maximum line width in characters for horizontal scroll sizing
@@ -21,7 +22,7 @@ pub fn render(page: &mut ExplorerPane, _window: &mut Window) -> impl IntoElement
             .flex()
             .items_center()
             .justify_center()
-            .bg(rgb(0x181818)) // Dark background for images
+            .bg(rgb(theme::PREVIEW_BACKDROP))
             .child(
                 img(image_path.clone())
                     .h_full()
@@ -42,10 +43,21 @@ pub fn render(page: &mut ExplorerPane, _window: &mut Window) -> impl IntoElement
         div()
             .flex_1()
             .flex()
+            .flex_col()
             .items_center()
             .justify_center()
-            .text_color(rgb(theme::MUTED))
-            .child("No file selected")
+            .gap_3()
+            .child(
+                Icon::new(IconName::File)
+                    .size_8()
+                    .text_color(rgb(theme::GRAY_300)),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(theme::MUTED))
+                    .child("No file selected"),
+            )
             .into_any_element()
     };
 
@@ -55,17 +67,24 @@ pub fn render(page: &mut ExplorerPane, _window: &mut Window) -> impl IntoElement
         .flex_col()
         .bg(rgb(theme::BG))
         .child(
-            // Header
+            // Header. Matches the listing's column-header height so the two
+            // line up across the divider between the panes.
             div()
+                .h(px(super::listing::list::HEADER_HEIGHT))
+                .flex()
+                .items_center()
+                .flex_shrink_0()
                 .px(px(16.0))
-                .py(px(12.0))
                 .border_b_1()
                 .border_color(rgb(theme::BORDER))
                 .child(
                     div()
-                        .text_sm()
+                        .text_xs()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(rgb(theme::FG))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
                         .child(title),
                 ),
         )

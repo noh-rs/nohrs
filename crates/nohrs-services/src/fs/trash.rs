@@ -181,7 +181,9 @@ impl Store for LedgerStore {
         // `free_destination` reports an occupied path in the words the CLI
         // wants; this makes the move itself refuse one, so nothing that appears
         // between the two is overwritten.
-        ops::move_path_no_replace(&source, &destination).map_err(occupied_destination)?;
+        if let Err(failure) = ops::move_path_no_replace(&source, &destination) {
+            return Err(restore_failure(failure, &destination));
+        }
         self.forget(item, row)
     }
 
@@ -304,6 +306,106 @@ pub const OS_INDEX_AVAILABLE: bool = cfg!(any(
     )
 ));
 
+/// File name of the metadata database inside the nohrs data directory.
+const LEDGER_DATABASE_FILE: &str = "db.sqlite";
+
+/// Whether deleting on this platform has to write the ledger for the item to be
+/// restorable later.
+///
+/// Every caller that trashes something — the CLI and the explorer alike — decides
+/// here rather than each reaching its own conclusion about the platform: pass
+/// `None` to [`ops::trash_path`] where this is `false`, and the ledger where it
+/// is `true`.
+pub fn ledger_required() -> bool {
+    !OS_INDEX_AVAILABLE
+}
+
+/// Where the ledger lives, whether or not it exists yet. Reading this creates
+/// nothing.
+pub fn ledger_path() -> PathBuf {
+    nohrs_core::config::paths::data_dir().join(LEDGER_DATABASE_FILE)
+}
+
+/// Open the ledger, creating the data directory and the database if needed.
+pub fn open_ledger() -> Result<Arc<dyn TrashLedger>> {
+    open_ledger_at(&ledger_path())
+}
+
+/// Open the ledger held in the database at `path`, creating its directory and
+/// running any pending migrations.
+pub fn open_ledger_at(path: &Path) -> Result<Arc<dyn TrashLedger>> {
+    // A bare file name has a parent, but it is empty, and `create_dir_all("")`
+    // fails — the database would then never be created.
+    if let Some(directory) = path
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(directory)?;
+    }
+    let store = nohrs_store::SqliteStore::open(path, &nohrs_store::StoreLogConfig::default())
+        .map_err(|error| Error::Other(format!("{}: {error}", path.display())))?;
+    Ok(Arc::new(store))
+}
+
+/// The ledger, or `None` where this platform does not use one — in which case
+/// nothing is opened and no data directory is created.
+pub fn open_ledger_if_needed() -> Result<Option<Arc<dyn TrashLedger>>> {
+    if ledger_required() {
+        open_ledger().map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// What a caller that trashes something has to record, resolved once.
+///
+/// The distinction that matters is between "nothing needs recording" and "the
+/// record could not be opened": both leave the caller without a ledger, but only
+/// the first is safe to delete on. Collapsing them into one `Option` is how an
+/// item ends up in the trash on a platform that indexes nothing, with no way
+/// back and nothing said about it.
+#[derive(Clone)]
+pub enum Ledger {
+    /// The OS trash records where an item came from, so nothing else has to.
+    KeptByOs,
+    /// Nothing else records it: every trashed item goes in here.
+    Ours(Arc<dyn TrashLedger>),
+    /// Needed here, and not available. Trashing would be a one-way door, so it
+    /// must not happen; the string says why.
+    Unavailable(Arc<str>),
+}
+
+impl Ledger {
+    /// Resolve what this platform needs, opening the database only where one is
+    /// actually read.
+    pub fn open() -> Self {
+        if !ledger_required() {
+            return Self::KeptByOs;
+        }
+        match open_ledger() {
+            Ok(ledger) => Self::Ours(ledger),
+            Err(error) => Self::Unavailable(
+                format!(
+                    "the trash ledger at {} could not be opened, and nothing else \
+                     on this system records where a trashed item came from: {error}",
+                    ledger_path().display()
+                )
+                .into(),
+            ),
+        }
+    }
+
+    /// What to hand [`ops::trash_path`], or why the item must not be trashed at
+    /// all.
+    pub fn to_record(&self) -> Result<Option<&dyn TrashLedger>> {
+        match self {
+            Self::KeptByOs => Ok(None),
+            Self::Ours(ledger) => Ok(Some(ledger.as_ref())),
+            Self::Unavailable(reason) => Err(Error::Other(reason.to_string())),
+        }
+    }
+}
+
 /// The store for this platform: the OS trash index where there is one, and the
 /// nohrs ledger where there is not.
 ///
@@ -425,6 +527,34 @@ fn occupied_destination(error: Error) -> Error {
         }
         _ => error,
     }
+}
+
+// Turns a failed restore into what the CLI reports, clearing away a half-written
+// tree the restore itself left at the original path.
+//
+// The item is still in the trash, so that tree is not a copy of anything: it
+// stands exactly where the user will look for the file, and it is what makes the
+// retry fail as "occupied". Nothing that got that far was refused for being
+// occupied either, so those are the wrong words for it — an `AlreadyExists` on
+// this side of the claim named a path *inside* what the restore was writing, not
+// the destination.
+//
+// Only a half-written one. A restore that copied everything and then failed to
+// empty the trash entry leaves a whole file at the original path and possibly a
+// fragment in the trash, so removing it would be the one deletion that loses
+// data; `left_a_partial_destination` is what keeps the two apart.
+fn restore_failure(failure: ops::ClaimFailure, destination: &Path) -> Error {
+    if !failure.left_a_partial_destination() {
+        return occupied_destination(failure.into());
+    }
+    if let Err(error) = failure.discard_partial_destination(destination) {
+        tracing::warn!(
+            path = %destination.display(),
+            %error,
+            "could not clear away what a failed restore left at the original path"
+        );
+    }
+    failure.into()
 }
 
 /// Where a restore should land: the original path, refusing to overwrite
