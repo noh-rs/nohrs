@@ -135,13 +135,14 @@ globs = ["*.iso", "*.mov"]
 
 ### 5.1 部分一致 (`*abc*`) の仕様
 
-`filename_ngram` / `path_ngram` の 2 フィールドが担う。いずれも `NgramTokenizer::all_ngrams(3, 3)` に `LowerCaser` を重ねた tokenizer で索引する。
+`filename_ngram` / `path_ngram` の 2 フィールドが担う。いずれも `NgramTokenizer::all_ngrams(3, 3)` で索引する。小文字化は tokenizer の後段フィルタではなく、gram に切る**前**に `ngram_source` が行う (理由は下表「大文字小文字」)。
 
 | 観点 | 挙動 |
 |------|------|
 | 対象 | ファイル名とパス。**本文 (`content`) は対象外** (索引肥大を避けるため、[ADR 0009](./adr/0009-drop-fts5-ngram-in-tantivy.md)) |
 | 最小長 | **3 文字**。それ未満は gram が 1 つも生成されず一致し得ないため、空の結果ではなくエラーを返す |
-| 大文字小文字 | 区別しない。`LowerCaser` は必須で、これが無いと `*rerfile*` が `ExplorerFileOps.rs` を取り逃がす |
+| 大文字小文字 | 区別しない。これが無いと `*rerfile*` が `ExplorerFileOps.rs` を取り逃がす。畳み込みは gram に切る**前** (`ngram_source`) に行う: `İ` は `i` + 結合ドットの 2 文字に畳まれるため、`LowerCaser` のように切った**後**で畳むと索引側は元の境界・クエリ側は畳んだ後の境界で切ることになり、両者が噛み合わない (macOS の分解済みファイル名で実際に起きる) |
+| 結合文字 | **畳み込むのは case のみ**。`İ` は `i` + 結合ドットにはなるが素の `i` にはならないので、`*istanbul*` は `İstanbul.txt` に一致しない (Unicode の default caseless matching どおり)。通常クエリ経路も同じ挙動であり、結合文字を無視する検索にするなら両経路まとめての判断となる ([#313](https://github.com/noh-rs/nohrs/issues/313)) |
 | 一致の確定 | **ngram は候補の絞り込みにすぎない。** `NgramTokenizer::all_ngrams` は 1 語の gram をすべて同じ位置に置くため、索引だけでは `abcd` と `abc---bcd` を区別できない。実際に部分文字列を含むかは、`STORED` の `path` に対して `IndexManager::search` が確認する (ディスクは読まない)。SQLite FTS5 の trigram も同じ構造である |
 | 順序 | 上の確認によって保持される。`*lph*` は `alpha.txt` に一致し、`*hpl*` は一致しない |
 | 記号 | needle はクエリパーサを通らない。索引と同じ analyzer で gram に切り、`TermQuery` を直接組むため、`:` `[` `AND` 等はエスケープの対象ですらなく常にテキストである |

@@ -7,7 +7,7 @@ use tantivy::schema::{
     FAST, Field, IndexRecordOption, STORED, STRING, Schema, TEXT, Term, TextFieldIndexing,
     TextOptions, Value,
 };
-use tantivy::tokenizer::{LowerCaser, NgramTokenizer, TextAnalyzer};
+use tantivy::tokenizer::{NgramTokenizer, TextAnalyzer};
 use tantivy::{Index, IndexWriter}; // Import trait for add_text etc? No, TantivyDocument implements it.
 
 /// Name the n-gram tokenizer is registered under. Tantivy resolves a field's
@@ -137,17 +137,12 @@ impl IndexManager {
         // including on the branch that opened an existing index, whose manager
         // is registered per process rather than stored on disk.
         //
-        // `LowerCaser` is not optional. `NgramTokenizer` on its own cuts grams
-        // verbatim, while every other search path here folds case: tantivy's
-        // default `TEXT` tokenizer lowercases, and `find_all_match_lines`
-        // lowercases both sides. Without it, `*rerfile*` misses
-        // `ExplorerFileOps.rs` that `*rerFile*` finds, which reads as the
-        // substring being absent.
+        // No `LowerCaser` here: case folding happens in [`ngram_source`],
+        // before the grams are cut, and doing it twice in two places is how the
+        // boundary bug it fixes got missed in the first place.
         index.tokenizers().register(
             NGRAM_TOKENIZER,
-            TextAnalyzer::builder(NgramTokenizer::all_ngrams(NGRAM_SIZE, NGRAM_SIZE)?)
-                .filter(LowerCaser)
-                .build(),
+            TextAnalyzer::builder(NgramTokenizer::all_ngrams(NGRAM_SIZE, NGRAM_SIZE)?).build(),
         );
 
         let writer = index.writer(50_000_000)?;
@@ -292,8 +287,8 @@ impl IndexManager {
         doc.add_text(fields.filename, &filename);
         doc.add_text(fields.content, &filename); // Allow searching dir by name content
         doc.add_u64(fields.is_directory, 1);
-        doc.add_text(fields.filename_ngram, &filename);
-        doc.add_text(fields.path_ngram, &path_str);
+        doc.add_text(fields.filename_ngram, ngram_source(&filename));
+        doc.add_text(fields.path_ngram, ngram_source(&path_str));
 
         writer.delete_term(Term::from_field_text(fields.path, &path_str));
         writer.add_document(doc)?;
@@ -339,8 +334,8 @@ impl IndexManager {
                 // Only the name and the path get n-grams. Applying them to
                 // `content` would multiply the postings for every file body in
                 // the home directory, which ADR 0009 rules out.
-                doc.add_text(fields.filename_ngram, &filename);
-                doc.add_text(fields.path_ngram, &path_str);
+                doc.add_text(fields.filename_ngram, ngram_source(&filename));
+                doc.add_text(fields.path_ngram, ngram_source(&path_str));
 
                 // Delete existing doc with same path to avoid duplicates (upsert)
                 // Note: This matches exact path string.
@@ -441,7 +436,8 @@ impl IndexManager {
             .get(NGRAM_TOKENIZER)
             .context("n-gram tokenizer not registered")?;
         let mut grams = Vec::new();
-        let mut stream = analyzer.token_stream(needle);
+        let folded = ngram_source(needle);
+        let mut stream = analyzer.token_stream(&folded);
         while let Some(token) = stream.next() {
             grams.push(token.text.clone());
         }
@@ -472,6 +468,21 @@ impl IndexManager {
     }
 }
 
+/// The form the n-gram fields are cut from, at index and query time alike.
+///
+/// Folding case has to happen *before* the grams are cut, not as a token filter
+/// after them. `İ` folds to two characters, so filtering afterwards leaves the
+/// index cutting on the original boundaries while the query cuts on the folded
+/// ones, and the two never meet — measured, and it is what a decomposed macOS
+/// name runs into.
+///
+/// This folds case and nothing else, so `İ` reaches `i` plus a combining dot
+/// rather than a bare `i`. The plain query path answers the same way; being
+/// blind to combining marks would have to be decided for both.
+fn ngram_source(text: &str) -> String {
+    text.to_lowercase()
+}
+
 /// Whether `haystack` actually contains `needle`, ignoring case.
 ///
 /// The n-gram index cannot answer this on its own, so it is what turns a
@@ -497,8 +508,6 @@ fn substring_needle(query: &str) -> Option<&str> {
 impl super::backend::SearchBackend for IndexManager {
     fn search(&self, query_str: &str) -> Result<Vec<super::SearchResult>> {
         let reader = self.index.reader()?;
-        // Wait, self.index.reader()? self.index is Index.
-        // Correct way:
         let searcher = reader.searcher();
 
         let fields = Fields::resolve(&self.index.schema())?;
@@ -519,14 +528,31 @@ impl super::backend::SearchBackend for IndexManager {
         // which appears in no file.
         let line_needle = needle.unwrap_or(query_str);
 
-        // Removed limit from TopDocs to return all results
-        let top_docs = searcher.search(
-            &query,
-            &tantivy::collector::TopDocs::with_limit(10000).order_by_score(),
-        )?;
+        // A substring query collects every candidate rather than the top N.
+        // Its hits are decided below, by whether the stored path holds the
+        // needle — a question scoring knows nothing about — so cutting to the
+        // best-scoring candidates first would discard true matches that happen
+        // to score low. Measured: 10,500 decoys sharing the needle's grams plus
+        // one long-named true match, and `*aaabbb*` returned nothing at all.
+        // Ordinary queries keep the top-N cut, where score is the answer.
+        let addresses: Vec<tantivy::DocAddress> = if needle.is_some() {
+            searcher
+                .search(&query, &tantivy::collector::DocSetCollector)?
+                .into_iter()
+                .collect()
+        } else {
+            searcher
+                .search(
+                    &query,
+                    &tantivy::collector::TopDocs::with_limit(10000).order_by_score(),
+                )?
+                .into_iter()
+                .map(|(_score, address)| address)
+                .collect()
+        };
 
         let mut results = Vec::new();
-        for (_score, doc_address) in top_docs {
+        for doc_address in addresses {
             let retrieved_doc: TantivyDocument = searcher.doc(doc_address)?;
 
             // value is OwnedValue.
@@ -717,6 +743,60 @@ mod tests {
         assert!(
             !hit_names(&manager.search("*hpl*").unwrap()).contains(&"alpha.txt".to_string()),
             "a reversed substring must not match"
+        );
+    }
+
+    #[test]
+    fn a_needle_that_folds_to_more_characters_than_it_has_still_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        // macOS stores names decomposed, so this file is `I` plus a combining
+        // dot — exactly what the precomposed `\u{130}` in the query below folds
+        // to. Folding as a token filter, after the grams were already cut, left
+        // the index holding a 4-character `i\u{307}st` while the query asked for
+        // the 3-character grams of the folded form, and the two never met.
+        let manager = indexed(dir.path(), &[("I\u{307}stanbul.txt", "x")]);
+
+        assert_eq!(
+            hit_names(&manager.search("*\u{130}stanbul*").unwrap()),
+            vec!["I\u{307}stanbul.txt".to_string()],
+            "a needle whose folded form is longer than itself must still match"
+        );
+
+        // The other half of the same rule: `\u{130}` folds to `i` plus a
+        // combining dot, never to a bare `i`, so an ASCII needle does not reach
+        // it. That is Unicode default caseless matching, and the plain query
+        // path answers the same way — measured. Making either blind to
+        // combining marks is a change to both paths, not to this one.
+        assert!(
+            hit_names(&manager.search("*istanbul*").unwrap()).is_empty(),
+            "an ASCII needle is not expected to reach a dotted capital I"
+        );
+    }
+
+    // 10,500 files is far too slow for the default suite, so this one is opt-in:
+    // `cargo test -p nohrs-services --release -- --ignored`. It is kept because
+    // nothing cheaper distinguishes collecting every candidate from taking the
+    // best-scoring 10,000 of them, and that distinction was a silent bug.
+    #[test]
+    #[ignore = "indexes 10,500 files"]
+    fn a_true_match_is_not_lost_behind_better_scoring_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for index in 0..10_500 {
+            std::fs::write(root.join(format!("aaa-abb-aab-bbb-{index}.txt")), "x").unwrap();
+        }
+        // Long, so BM25's length normalisation scores it below every decoy —
+        // and it is the only file that actually contains `aaabbb`.
+        let long = format!("{}_aaabbb_{}.txt", "q".repeat(120), "w".repeat(120));
+        std::fs::write(root.join(&long), "x").unwrap();
+
+        let manager = IndexManager::new_with_path(root.join(".index"), root.to_path_buf()).unwrap();
+        manager.index_home(None).unwrap();
+
+        assert_eq!(
+            hit_names(&manager.search("*aaabbb*").unwrap()),
+            vec![long],
+            "the only true match must survive the decoys"
         );
     }
 
