@@ -301,33 +301,22 @@ impl IndexManager {
         writer: &mut IndexWriter,
         fields: Fields,
     ) -> Result<()> {
+        let metadata = fs::metadata(path)?;
+        // The watcher hands this function every changed path, directories
+        // included, and a directory has no body to read. Writing one through
+        // here would replace its document with `is_directory = 0` and turn it
+        // into a file until the next full re-index.
+        if metadata.is_dir() {
+            return self.index_single_directory(path, writer, fields);
+        }
+
         let path_str = path.to_string_lossy();
         let filename = path.file_name().unwrap_or_default().to_string_lossy();
 
         // Only the body is conditional. A photo, a 2 GB disk image and a file
         // the user cannot read are all still things they search for by name, so
         // the document is written either way and skipping costs only `content`.
-        let metadata = fs::metadata(path)?;
-        let body = if metadata.len() > 10 * 1024 * 1024 {
-            tracing::debug!("Indexing name only, file is large: {:?}", path);
-            None
-        } else {
-            // Indexing runs on the search backend's own threads, never the GPUI
-            // foreground loop, so the blocking read is fine here.
-            #[allow(clippy::disallowed_methods)]
-            match fs::read_to_string(path) {
-                // A null byte means binary that happened to decode as UTF-8.
-                Ok(content) if content.contains('\0') => {
-                    tracing::debug!("Indexing name only, file looks binary: {:?}", path);
-                    None
-                }
-                Ok(content) => Some(content),
-                Err(error) => {
-                    tracing::debug!("Indexing name only, file is unreadable: {path:?}: {error}");
-                    None
-                }
-            }
-        };
+        let body = indexable_body(path, &metadata);
 
         let mut doc = TantivyDocument::default();
         doc.add_text(fields.path, &path_str);
@@ -467,6 +456,41 @@ impl IndexManager {
         }
 
         Ok(Box::new(tantivy::query::BooleanQuery::new(clauses)))
+    }
+}
+
+/// Largest body this index will hold. Above it a file is searchable by name and
+/// path alone.
+const MAX_INDEXED_BODY_BYTES: u64 = 10 * 1024 * 1024;
+
+/// The text of `path` if this index holds its body, `None` if the file is
+/// searchable by name and path alone.
+///
+/// One decision in one place, because both callers have to agree on it:
+/// [`IndexManager::index_single_file`] writes the `content` field from it, and
+/// [`find_all_match_lines`] must not read a body the index never held — which
+/// for a multi-gigabyte disk image matched by its name would mean reading the
+/// whole thing into memory to return a hit that carries no line at all.
+fn indexable_body(path: &Path, metadata: &fs::Metadata) -> Option<String> {
+    if metadata.len() > MAX_INDEXED_BODY_BYTES {
+        tracing::debug!("Name only, file is large: {path:?}");
+        return None;
+    }
+
+    // Indexing and searching both run on the search backend's own threads,
+    // never the GPUI foreground loop, so the blocking read is fine here.
+    #[allow(clippy::disallowed_methods)]
+    match fs::read_to_string(path) {
+        // A null byte means binary that happened to decode as UTF-8.
+        Ok(content) if content.contains('\0') => {
+            tracing::debug!("Name only, file looks binary: {path:?}");
+            None
+        }
+        Ok(content) => Some(content),
+        Err(error) => {
+            tracing::debug!("Name only, file is unreadable: {path:?}: {error}");
+            None
+        }
     }
 }
 
@@ -625,7 +649,10 @@ impl super::backend::SearchBackend for IndexManager {
 #[allow(clippy::disallowed_methods)]
 fn find_all_match_lines(path: &Path, query: &str) -> Vec<(usize, String)> {
     let mut matches = Vec::new();
-    if let Ok(content) = fs::read_to_string(path) {
+    if let Some(content) = fs::metadata(path)
+        .ok()
+        .and_then(|metadata| indexable_body(path, &metadata))
+    {
         let query_lower = query.to_lowercase();
         for (idx, line) in content.lines().enumerate() {
             if line.to_lowercase().contains(&query_lower) {
@@ -745,6 +772,77 @@ mod tests {
         assert!(
             !hit_names(&manager.search("*hpl*").unwrap()).contains(&"alpha.txt".to_string()),
             "a reversed substring must not match"
+        );
+    }
+
+    fn is_directory_flag(manager: &IndexManager, path: &Path) -> Option<u64> {
+        let reader = manager.index().reader().ok()?;
+        let searcher = reader.searcher();
+        let fields = Fields::resolve(&manager.index().schema()).ok()?;
+        let term = Term::from_field_text(fields.path, &path.to_string_lossy());
+        let query = tantivy::query::TermQuery::new(term, IndexRecordOption::Basic);
+        let address = searcher
+            .search(&query, &tantivy::collector::DocSetCollector)
+            .ok()?
+            .into_iter()
+            .next()?;
+        let document: TantivyDocument = searcher.doc(address).ok()?;
+        document.get_first(fields.is_directory)?.as_u64()
+    }
+
+    #[test]
+    fn a_directory_stays_a_directory_when_its_own_change_is_processed() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = indexed(dir.path(), &[("papers/notes.txt", "x")]);
+        let papers = dir.path().join("papers");
+
+        assert_eq!(
+            is_directory_flag(&manager, &papers),
+            Some(1),
+            "the initial index should have it as a directory"
+        );
+
+        // The watcher forwards directory paths here too, and a directory cannot
+        // be read as a body.
+        manager
+            .process_changes(std::slice::from_ref(&papers))
+            .unwrap();
+
+        assert_eq!(
+            is_directory_flag(&manager, &papers),
+            Some(1),
+            "re-processing a directory must not turn it into a file"
+        );
+    }
+
+    #[test]
+    fn a_body_the_index_does_not_hold_is_not_read_to_answer_a_name_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // The needle is in the name *and* in the body, so a hit carrying a line
+        // proves the body was read. Both files are ones the index stores by
+        // name alone: one binary, one over the size limit.
+        std::fs::write(root.join("holiday_snapshot.png"), "\u{0}day_snap").unwrap();
+        let oversized = format!("day_snap\n{}", "p".repeat(MAX_INDEXED_BODY_BYTES as usize));
+        std::fs::write(root.join("day_snap_archive.bin"), oversized).unwrap();
+
+        let manager = IndexManager::new_with_path(root.join(".index"), root.to_path_buf()).unwrap();
+        manager.index_home(None).unwrap();
+
+        let results = manager.search("*day_snap*").unwrap();
+        assert_eq!(
+            hit_names(&results),
+            vec![
+                "day_snap_archive.bin".to_string(),
+                "holiday_snapshot.png".to_string()
+            ],
+            "both should match by name"
+        );
+        assert!(
+            results
+                .iter()
+                .all(|result| result.line_number == 0 && result.line_content.is_empty()),
+            "a name-only hit must carry no line: {results:?}"
         );
     }
 
