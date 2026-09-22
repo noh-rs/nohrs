@@ -52,7 +52,7 @@ jobs:
     outputs:
       sha: ${{ steps.revision.outputs.sha }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.DEPLOY_REF }}
           # `npm ci` runs below, and a dependency lifecycle script must not be
@@ -132,7 +132,7 @@ jobs:
     steps:
       # The commit `build` validated, for the same reason `deploy` does it:
       # `wrangler.jsonc` and the Workers have to match the assets.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.build.outputs.sha }}
           persist-credentials: false
@@ -253,7 +253,7 @@ jobs:
     steps:
       # The commit `build` validated, not the branch it was on: `wrangler.jsonc`
       # and the Workers have to come from the same revision as the assets.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.build.outputs.sha }}
           persist-credentials: false
