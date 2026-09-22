@@ -27,7 +27,6 @@ use tempfile::TempDir;
 /// past the limit costs to page through.
 const LARGE: usize = 10_000;
 
-/// Smaller directory sizes, measured alongside `LARGE`.
 const SMALL_SIZES: [usize; 3] = [10, 100, 1_000];
 
 /// The page size the explorer asks for.
@@ -46,7 +45,6 @@ fn directory_of(count: usize) -> TempDir {
     directory
 }
 
-/// Builds a directory of `count` empty subdirectories.
 fn directory_of_dirs(count: usize) -> TempDir {
     let directory = TempDir::new().expect("create temp dir");
     for index in 0..count {
