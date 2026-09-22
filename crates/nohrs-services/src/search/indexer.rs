@@ -3,8 +3,72 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tantivy::TantivyDocument;
-use tantivy::schema::{FAST, Field, STORED, STRING, Schema, TEXT, Term, Value};
+use tantivy::schema::{
+    FAST, Field, IndexRecordOption, STORED, STRING, Schema, TEXT, Term, TextFieldIndexing,
+    TextOptions, Value,
+};
+use tantivy::tokenizer::{LowerCaser, NgramTokenizer, TextAnalyzer};
 use tantivy::{Index, IndexWriter}; // Import trait for add_text etc? No, TantivyDocument implements it.
+
+/// Name the n-gram tokenizer is registered under. Tantivy resolves a field's
+/// tokenizer by this name at both index and query time, so the registration in
+/// [`IndexManager::new_internal`] and the `set_tokenizer` call in
+/// [`IndexManager::create_schema`] have to agree on it.
+const NGRAM_TOKENIZER: &str = "ngram3";
+
+/// Gram width. Trigrams are what SQLite's FTS5 uses for the same job, and the
+/// floor on a substring query: a shorter needle produces no grams at all and so
+/// cannot be answered from this index (see [`IndexManager::substring_query`]).
+const NGRAM_SIZE: usize = 3;
+
+/// Every field the current schema declares. An index that predates any of them
+/// is rebuilt from scratch rather than queried through a schema it does not
+/// have — see [`IndexManager::new_internal`]. Adding a field to
+/// [`IndexManager::create_schema`] means adding it here too, which is what
+/// makes existing indexes pick it up.
+const SCHEMA_FIELDS: [&str; 7] = [
+    "path",
+    "filename",
+    "content",
+    "last_modified",
+    "is_directory",
+    "filename_ngram",
+    "path_ngram",
+];
+
+/// The schema's fields, looked up once.
+///
+/// Without this, every function that writes a document takes one `Field`
+/// parameter per field and every caller re-resolves them by name; adding the
+/// two n-gram fields would have made that eight positional arguments of the
+/// same type, which is a swap waiting to happen.
+#[derive(Clone, Copy)]
+struct Fields {
+    path: Field,
+    filename: Field,
+    content: Field,
+    is_directory: Field,
+    filename_ngram: Field,
+    path_ngram: Field,
+}
+
+impl Fields {
+    fn resolve(schema: &Schema) -> Result<Self> {
+        let field = |name: &str| {
+            schema
+                .get_field(name)
+                .with_context(|| format!("Schema error: {name} field missing"))
+        };
+        Ok(Self {
+            path: field("path")?,
+            filename: field("filename")?,
+            content: field("content")?,
+            is_directory: field("is_directory")?,
+            filename_ngram: field("filename_ngram")?,
+            path_ngram: field("path_ngram")?,
+        })
+    }
+}
 
 /// Owns the tantivy index and its writer, and performs full and incremental indexing.
 pub struct IndexManager {
@@ -40,12 +104,21 @@ impl IndexManager {
             let existing_index = Index::open_in_dir(&index_path)?;
             let existing_schema = existing_index.schema();
 
-            // Check if schema has required fields (e.g., filename was added later)
-            if existing_schema.get_field("filename").is_err()
-                || existing_schema.get_field("is_directory").is_err()
-            {
+            let missing: Vec<&str> = SCHEMA_FIELDS
+                .iter()
+                .copied()
+                .filter(|name| existing_schema.get_field(name).is_err())
+                .collect();
+
+            if missing.is_empty() {
+                existing_index
+            } else {
+                // An index written before a field existed has no postings for
+                // it, so querying that field would silently return nothing.
+                // Rebuilding is the only way to populate it.
                 tracing::info!(
-                    "Schema outdated (missing filename or is_directory field), recreating index..."
+                    "Schema outdated (missing {}), recreating index...",
+                    missing.join(", ")
                 );
                 drop(existing_index);
                 // Delete old index
@@ -54,12 +127,28 @@ impl IndexManager {
                 }
                 fs::create_dir_all(&index_path)?;
                 Index::create_in_dir(&index_path, schema)?
-            } else {
-                existing_index
             }
         } else {
             Index::create_in_dir(&index_path, schema)?
         };
+
+        // The n-gram fields name this tokenizer in their schema options, so it
+        // has to be registered before the index is written to or queried —
+        // including on the branch that opened an existing index, whose manager
+        // is registered per process rather than stored on disk.
+        //
+        // `LowerCaser` is not optional. `NgramTokenizer` on its own cuts grams
+        // verbatim, while every other search path here folds case: tantivy's
+        // default `TEXT` tokenizer lowercases, and `find_all_match_lines`
+        // lowercases both sides. Without it, `*rerfile*` misses
+        // `ExplorerFileOps.rs` that `*rerFile*` finds, which reads as the
+        // substring being absent.
+        index.tokenizers().register(
+            NGRAM_TOKENIZER,
+            TextAnalyzer::builder(NgramTokenizer::all_ngrams(NGRAM_SIZE, NGRAM_SIZE)?)
+                .filter(LowerCaser)
+                .build(),
+        );
 
         let writer = index.writer(50_000_000)?;
 
@@ -89,6 +178,28 @@ impl IndexManager {
         // is_directory: fast field (0=false, 1=true)
         schema_builder.add_u64_field("is_directory", FAST | STORED);
 
+        // filename_ngram / path_ngram: the same text again, cut into trigrams,
+        // so that a needle landing inside a token can still be found. The
+        // default tokenizer above splits on word boundaries, which is why
+        // `filename` alone cannot answer `*er_fil*` against
+        // "explorer_file_ops.rs" (ADR 0009).
+        //
+        // Positions are required, not optional: the query string is cut into
+        // the same trigram sequence and `QueryParser` turns that into a phrase
+        // query, which needs positions to check the grams are adjacent. Without
+        // them the query fails at runtime with "does not have positions
+        // indexed" — and with only frequencies, `abc` and `cba` would match the
+        // same documents.
+        let ngram_options = TextOptions::default().set_indexing_options(
+            TextFieldIndexing::default()
+                .set_tokenizer(NGRAM_TOKENIZER)
+                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+        );
+        schema_builder.add_text_field("filename_ngram", ngram_options.clone());
+        // `path` itself stays `STRING`: it is the deletion key, matched as an
+        // exact term by `delete_term`, and tokenizing it would break that.
+        schema_builder.add_text_field("path_ngram", ngram_options);
+
         schema_builder.build()
     }
 
@@ -106,19 +217,7 @@ impl IndexManager {
             .writer
             .lock()
             .map_err(|e| anyhow::anyhow!("Poisoned lock: {}", e))?;
-        let schema = self.index.schema();
-        let path_field = schema
-            .get_field("path")
-            .context("Schema error: path field missing")?;
-        let filename_field = schema
-            .get_field("filename")
-            .context("Schema error: filename field missing")?;
-        let content_field = schema
-            .get_field("content")
-            .context("Schema error: content field missing")?;
-        let is_directory_field = schema
-            .get_field("is_directory")
-            .context("Schema error: is_directory field missing")?;
+        let fields = Fields::resolve(&self.index.schema())?;
 
         // 1. Count files if progress tracking is enabled
         let mut total_files = 0;
@@ -148,25 +247,11 @@ impl IndexManager {
                 Ok(entry) => {
                     let path = entry.path();
                     if path.is_file() {
-                        if let Err(e) = self.index_single_file(
-                            path,
-                            &mut writer_guard,
-                            path_field,
-                            filename_field,
-                            content_field,
-                            is_directory_field,
-                        ) {
+                        if let Err(e) = self.index_single_file(path, &mut writer_guard, fields) {
                             tracing::warn!("Failed to index file {:?}: {}", path, e);
                         }
                     } else if path.is_dir()
-                        && let Err(e) = self.index_single_directory(
-                            path,
-                            &mut writer_guard,
-                            path_field,
-                            filename_field,
-                            content_field,
-                            is_directory_field,
-                        )
+                        && let Err(e) = self.index_single_directory(path, &mut writer_guard, fields)
                     {
                         tracing::warn!("Failed to index directory {:?}: {}", path, e);
                     }
@@ -196,21 +281,20 @@ impl IndexManager {
         &self,
         path: &Path,
         writer: &mut IndexWriter,
-        path_field: Field,
-        filename_field: Field,
-        content_field: Field,
-        is_directory_field: Field,
+        fields: Fields,
     ) -> Result<()> {
         let path_str = path.to_string_lossy();
         let filename = path.file_name().unwrap_or_default().to_string_lossy();
 
         let mut doc = TantivyDocument::default();
-        doc.add_text(path_field, &path_str);
-        doc.add_text(filename_field, &filename);
-        doc.add_text(content_field, &filename); // Allow searching dir by name content
-        doc.add_u64(is_directory_field, 1);
+        doc.add_text(fields.path, &path_str);
+        doc.add_text(fields.filename, &filename);
+        doc.add_text(fields.content, &filename); // Allow searching dir by name content
+        doc.add_u64(fields.is_directory, 1);
+        doc.add_text(fields.filename_ngram, &filename);
+        doc.add_text(fields.path_ngram, &path_str);
 
-        writer.delete_term(Term::from_field_text(path_field, &path_str));
+        writer.delete_term(Term::from_field_text(fields.path, &path_str));
         writer.add_document(doc)?;
         Ok(())
     }
@@ -219,10 +303,7 @@ impl IndexManager {
         &self,
         path: &Path,
         writer: &mut IndexWriter,
-        path_field: Field,
-        filename_field: Field,
-        content_field: Field,
-        is_directory_field: Field,
+        fields: Fields,
     ) -> Result<()> {
         let metadata = fs::metadata(path)?;
         if metadata.len() > 10 * 1024 * 1024 {
@@ -250,14 +331,19 @@ impl IndexManager {
                 let searchable_content = format!("{}\n{}", path_str, content);
 
                 let mut doc = TantivyDocument::default();
-                doc.add_text(path_field, &path_str);
-                doc.add_text(filename_field, &filename);
-                doc.add_text(content_field, &searchable_content);
-                doc.add_u64(is_directory_field, 0);
+                doc.add_text(fields.path, &path_str);
+                doc.add_text(fields.filename, &filename);
+                doc.add_text(fields.content, &searchable_content);
+                doc.add_u64(fields.is_directory, 0);
+                // Only the name and the path get n-grams. Applying them to
+                // `content` would multiply the postings for every file body in
+                // the home directory, which ADR 0009 rules out.
+                doc.add_text(fields.filename_ngram, &filename);
+                doc.add_text(fields.path_ngram, &path_str);
 
                 // Delete existing doc with same path to avoid duplicates (upsert)
                 // Note: This matches exact path string.
-                writer.delete_term(Term::from_field_text(path_field, &path_str));
+                writer.delete_term(Term::from_field_text(fields.path, &path_str));
                 writer.add_document(doc)?;
             }
             Err(_) => {
@@ -297,27 +383,16 @@ impl IndexManager {
             .writer
             .lock()
             .map_err(|e| anyhow::anyhow!("Poisoned lock: {}", e))?;
-        let schema = self.index.schema();
-        let path_field = schema.get_field("path").context("Schema error")?;
-        let filename_field = schema.get_field("filename").context("Schema error")?;
-        let content_field = schema.get_field("content").context("Schema error")?;
-        let is_directory_field = schema.get_field("is_directory").context("Schema error")?;
+        let fields = Fields::resolve(&self.index.schema())?;
 
         for path in paths {
             if path.exists() {
-                if let Err(e) = self.index_single_file(
-                    path,
-                    &mut writer_guard,
-                    path_field,
-                    filename_field,
-                    content_field,
-                    is_directory_field,
-                ) {
+                if let Err(e) = self.index_single_file(path, &mut writer_guard, fields) {
                     tracing::warn!("Failed to update index for {:?}: {}", path, e);
                 }
             } else {
                 let path_str = path.to_string_lossy();
-                writer_guard.delete_term(Term::from_field_text(path_field, &path_str));
+                writer_guard.delete_term(Term::from_field_text(fields.path, &path_str));
             }
         }
 
@@ -332,6 +407,53 @@ impl IndexManager {
     pub fn update_file(&self, path: &Path) -> Result<()> {
         self.process_changes(&[path.to_path_buf()])
     }
+
+    /// Builds the query behind `*needle*`: match `needle` anywhere in a name or
+    /// a path, including across the token boundaries the default tokenizer
+    /// splits on.
+    ///
+    /// The parser cuts `needle` into the same trigram sequence the fields were
+    /// indexed with and joins them as a phrase, so a document matches only when
+    /// its grams sit adjacent in that order — which reconstructs the substring.
+    fn substring_query(
+        &self,
+        needle: &str,
+        fields: Fields,
+    ) -> Result<Box<dyn tantivy::query::Query>> {
+        // Fewer characters than one gram produces an empty token stream, and an
+        // empty query matches nothing. Saying so beats returning zero hits and
+        // letting the user conclude the substring is absent.
+        if needle.chars().count() < NGRAM_SIZE {
+            anyhow::bail!(
+                "substring search needs at least {NGRAM_SIZE} characters; `{needle}` has {}",
+                needle.chars().count()
+            );
+        }
+
+        let parser = tantivy::query::QueryParser::for_index(
+            &self.index,
+            vec![fields.filename_ngram, fields.path_ngram],
+        );
+        // Quoted so that a needle containing the parser's own syntax — a colon,
+        // a bracket, `AND` — is taken as text rather than as an operator. The
+        // escape covers a needle that itself contains a quote.
+        let escaped = needle.replace('\\', r"\\").replace('"', r#"\""#);
+        Ok(parser.parse_query(&format!("\"{escaped}\""))?)
+    }
+}
+
+/// Recognises the `*abc*` substring form and returns `abc`.
+///
+/// Anything else — including a bare `*`, `**`, and a leading-or-trailing-only
+/// star — is left to the ordinary parser, so that a query which merely contains
+/// a star is not silently reinterpreted.
+fn substring_needle(query: &str) -> Option<&str> {
+    let trimmed = query.trim();
+    let inner = trimmed.strip_prefix('*')?.strip_suffix('*')?;
+    if inner.is_empty() || inner.contains('*') {
+        return None;
+    }
+    Some(inner)
 }
 
 impl super::backend::SearchBackend for IndexManager {
@@ -341,19 +463,23 @@ impl super::backend::SearchBackend for IndexManager {
         // Correct way:
         let searcher = reader.searcher();
 
-        let schema = self.index.schema();
-        let path_field = schema.get_field("path").context("Field not found")?;
-        let filename_field = schema.get_field("filename").context("Field not found")?;
-        let content_field = schema.get_field("content").context("Field not found")?;
-        let is_directory_field = schema
-            .get_field("is_directory")
-            .context("Field not found")?;
+        let fields = Fields::resolve(&self.index.schema())?;
+        let path_field = fields.path;
+        let is_directory_field = fields.is_directory;
 
-        let query_parser = tantivy::query::QueryParser::for_index(
-            &self.index,
-            vec![filename_field, content_field],
-        );
-        let query = query_parser.parse_query(query_str)?;
+        let needle = substring_needle(query_str);
+        let query = match needle {
+            Some(needle) => self.substring_query(needle, fields)?,
+            None => tantivy::query::QueryParser::for_index(
+                &self.index,
+                vec![fields.filename, fields.content],
+            )
+            .parse_query(query_str)?,
+        };
+        // A `*abc*` hit is a name or path match, so the per-line scan below
+        // looks for `abc` rather than for the wrapped form the user typed,
+        // which appears in no file.
+        let line_needle = needle.unwrap_or(query_str);
 
         // Removed limit from TopDocs to return all results
         let top_docs = searcher.search(
@@ -391,7 +517,7 @@ impl super::backend::SearchBackend for IndexManager {
                     _ => {
                         // File match
                         // Find ALL matching lines in file
-                        let match_lines = find_all_match_lines(&path_buf, query_str);
+                        let match_lines = find_all_match_lines(&path_buf, line_needle);
 
                         if match_lines.is_empty() {
                             // No content matches, but file matched by filename - add with empty line
@@ -441,4 +567,184 @@ fn find_all_match_lines(path: &Path, query: &str) -> Vec<(usize, String)> {
         );
     }
     matches
+}
+
+#[cfg(test)]
+// Fixture trees are built with `std::fs::write`, which is banned in app code to
+// keep blocking I/O off the GPUI foreground thread. Same exemption as
+// `file_index.rs`.
+#[allow(clippy::disallowed_methods)]
+mod tests {
+    use super::*;
+    use crate::search::backend::SearchBackend;
+
+    /// An index over `root`, with `files` (name, contents) written into it.
+    fn indexed(root: &Path, files: &[(&str, &str)]) -> IndexManager {
+        for (name, contents) in files {
+            let path = root.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, contents).unwrap();
+        }
+        let manager = IndexManager::new_with_path(root.join(".index"), root.to_path_buf()).unwrap();
+        manager.index_home(None).unwrap();
+        manager
+    }
+
+    fn hit_names(results: &[crate::search::SearchResult]) -> Vec<String> {
+        let mut names: Vec<String> = results
+            .iter()
+            .filter_map(|result| result.path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
+    #[test]
+    fn a_substring_inside_a_token_is_found_where_a_plain_query_misses_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = indexed(dir.path(), &[("explorer_file_ops.rs", "fn apply() {}")]);
+
+        // `er_fil` straddles the boundary the default tokenizer splits on, so
+        // the ordinary query cannot see it. This is the whole reason the n-gram
+        // fields exist (ADR 0009).
+        let plain = manager.search("er_fil").unwrap();
+        assert!(
+            !hit_names(&plain).contains(&"explorer_file_ops.rs".to_string()),
+            "plain query unexpectedly matched: {:?}",
+            hit_names(&plain)
+        );
+
+        let substring = manager.search("*er_fil*").unwrap();
+        assert!(
+            hit_names(&substring).contains(&"explorer_file_ops.rs".to_string()),
+            "substring query missed the file: {:?}",
+            hit_names(&substring)
+        );
+    }
+
+    #[test]
+    fn a_substring_query_matches_the_path_as_well_as_the_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = indexed(dir.path(), &[("deeply/nested/leaf.txt", "x")]);
+
+        // `epl` appears only in the `deeply` directory component, never in the
+        // file's own name.
+        let results = manager.search("*epl*").unwrap();
+        assert!(
+            hit_names(&results).contains(&"leaf.txt".to_string()),
+            "path substring missed the file: {:?}",
+            hit_names(&results)
+        );
+    }
+
+    #[test]
+    fn gram_order_matters_so_a_reversed_substring_does_not_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = indexed(dir.path(), &[("alpha.txt", "x")]);
+
+        assert!(
+            hit_names(&manager.search("*lph*").unwrap()).contains(&"alpha.txt".to_string()),
+            "the substring itself should match"
+        );
+        // Indexing the grams without positions would make these two queries
+        // indistinguishable, which is why the fields carry positions.
+        assert!(
+            !hit_names(&manager.search("*hpl*").unwrap()).contains(&"alpha.txt".to_string()),
+            "a reversed substring must not match"
+        );
+    }
+
+    #[test]
+    fn a_needle_shorter_than_one_gram_is_an_error_rather_than_an_empty_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = indexed(dir.path(), &[("alpha.txt", "x")]);
+
+        let error = manager.search("*al*").unwrap_err().to_string();
+        assert!(
+            error.contains("at least 3 characters"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_needle_carrying_query_syntax_is_matched_as_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = indexed(dir.path(), &[("a:b[c].txt", "x")]);
+
+        // Unquoted, `a:b[c]` would parse as a field query against a field named
+        // `a` with a range in it, and fail.
+        let results = manager.search("*a:b[c]*").unwrap();
+        assert!(
+            hit_names(&results).contains(&"a:b[c].txt".to_string()),
+            "syntax-bearing needle missed the file: {:?}",
+            hit_names(&results)
+        );
+    }
+
+    #[test]
+    fn a_substring_query_folds_case_like_every_other_search_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = indexed(dir.path(), &[("ExplorerFileOps.rs", "x")]);
+
+        for needle in ["*rerfile*", "*rerFile*", "*RERFILE*"] {
+            assert!(
+                hit_names(&manager.search(needle).unwrap())
+                    .contains(&"ExplorerFileOps.rs".to_string()),
+                "{needle} missed the file"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_wrapped_form_is_treated_as_a_substring_query() {
+        assert_eq!(substring_needle("*abc*"), Some("abc"));
+        assert_eq!(substring_needle("  *abc*  "), Some("abc"));
+        // A bare or doubled star names no needle, and a one-sided star is a
+        // plain query that happens to contain one.
+        assert_eq!(substring_needle("*"), None);
+        assert_eq!(substring_needle("**"), None);
+        assert_eq!(substring_needle("*abc"), None);
+        assert_eq!(substring_needle("abc*"), None);
+        assert_eq!(substring_needle("abc"), None);
+        // Two needles in one query is not a form this answers.
+        assert_eq!(substring_needle("*a*b*"), None);
+    }
+
+    #[test]
+    fn an_index_missing_a_field_is_rebuilt_rather_than_queried_through_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_path = dir.path().join(".index");
+
+        // An index written before the n-gram fields existed.
+        std::fs::create_dir_all(&index_path).unwrap();
+        let mut old = Schema::builder();
+        old.add_text_field("path", STRING | STORED);
+        old.add_text_field("filename", TEXT | STORED);
+        old.add_text_field("content", TEXT);
+        old.add_u64_field("last_modified", FAST);
+        old.add_u64_field("is_directory", FAST | STORED);
+        drop(Index::create_in_dir(&index_path, old.build()).unwrap());
+
+        std::fs::write(dir.path().join("explorer_file_ops.rs"), "fn apply() {}").unwrap();
+        let manager = IndexManager::new_with_path(index_path, dir.path().to_path_buf()).unwrap();
+        manager.index_home(None).unwrap();
+
+        // Opening it would otherwise succeed and then answer every substring
+        // query with nothing, because the field has no postings.
+        for name in SCHEMA_FIELDS {
+            assert!(
+                manager.index().schema().get_field(name).is_ok(),
+                "{name} missing after reopen"
+            );
+        }
+        assert!(
+            hit_names(&manager.search("*er_fil*").unwrap())
+                .contains(&"explorer_file_ops.rs".to_string()),
+            "rebuilt index did not answer a substring query"
+        );
+    }
 }
