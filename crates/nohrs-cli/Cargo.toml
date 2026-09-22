@@ -27,9 +27,12 @@ nohrs-core = { path = "../nohrs-core" }
 # without any UI toolkit (it is part of `default-members`).
 nohrs-services = { path = "../nohrs-services" }
 nohrs-store = { path = "../nohrs-store" }
+nohrs-indexd = { path = "../nohrs-indexd" }
 clap.workspace = true
 clap_complete.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 dirs = "6"
 
 [dev-dependencies]

@@ -8,12 +8,16 @@
 
 /// `doctor`: check that the pieces `noh rm` relies on are in place.
 pub mod doctor;
+/// `index`: the state of the search index, and building it.
+pub mod index;
 /// Opening the trash ledger the CLI writes to and restores from.
 pub mod ledger;
 /// `log`: read back the rolling log file nohrs writes about itself.
 pub mod log;
 /// `rm`: trash-by-default removal.
 pub mod rm;
+/// `search`: find files by their contents or by their names.
+pub mod search;
 /// `shim`: install and remove the symlinks that shadow a system command.
 pub mod shim;
 /// `trash` and `restore`: the recoverable half of `rm`.
@@ -54,6 +58,11 @@ pub enum Command {
     /// Inspect and empty the trash.
     #[command(subcommand)]
     Trash(trash::Command),
+    /// Find files by what is in them, or by what they are called.
+    Search(search::Args),
+    /// Inspect or build the index that answers searches.
+    #[command(subcommand)]
+    Index(index::Command),
     /// Show what nohrs recorded about itself, including how long each
     /// operation took.
     #[command(subcommand)]

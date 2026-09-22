@@ -195,7 +195,7 @@ impl<'a> Session<'a> {
 
         if args.json {
             for item in &items {
-                writeln!(self.output, "{}", json_line(item))?;
+                writeln!(self.output, "{}", json_line(item)?)?;
             }
             return Ok(self.summary);
         }
@@ -431,14 +431,32 @@ fn names(item: &Item, operand: &Path) -> bool {
     item.original_path.file_name() == Some(operand.as_os_str())
 }
 
-fn json_line(item: &Item) -> String {
-    serde_json::json!({
-        "id": item.id,
-        "original_path": item.original_path,
-        "deleted_at_unix": item.deleted_at_unix,
-        "is_dir": item.is_dir,
-    })
-    .to_string()
+/// One line of `--json` output.
+///
+/// A struct rather than `serde_json::json!` for the reason given on the
+/// `search` command's own `Record`: the macro's key order follows serde_json's
+/// `preserve_order` feature, which `gpui` turns on, so the same `noh` would
+/// order the keys differently depending on whether the GUI crates were in the
+/// build. A struct serializes in declaration order either way.
+#[derive(serde::Serialize)]
+struct Record<'a> {
+    id: &'a str,
+    /// Lossy rather than serialized: `serde_json` refuses a `Path` that is not
+    /// valid UTF-8, and a path off someone's filesystem may well not be. A
+    /// trashed item is still worth listing.
+    original_path: std::borrow::Cow<'a, str>,
+    deleted_at_unix: i64,
+    is_dir: bool,
+}
+
+fn json_line(item: &Item) -> io::Result<String> {
+    let record = Record {
+        id: &item.id,
+        original_path: item.original_path.to_string_lossy(),
+        deleted_at_unix: item.deleted_at_unix,
+        is_dir: item.is_dir,
+    };
+    serde_json::to_string(&record).map_err(io::Error::other)
 }
 
 /// A relative age, which sidesteps rendering a wall-clock time in the viewer's
