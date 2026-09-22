@@ -649,10 +649,18 @@ impl super::backend::SearchBackend for IndexManager {
 #[allow(clippy::disallowed_methods)]
 fn find_all_match_lines(path: &Path, query: &str) -> Vec<(usize, String)> {
     let mut matches = Vec::new();
-    if let Some(content) = fs::metadata(path)
-        .ok()
-        .and_then(|metadata| indexable_body(path, &metadata))
-    {
+    let body = match fs::metadata(path) {
+        Ok(metadata) => indexable_body(path, &metadata),
+        Err(error) => {
+            // A file the index knows about but cannot be stat'd now — deleted
+            // between the search and this read, or permissions changed. The
+            // name match still stands, so this is a missing line rather than a
+            // missing hit, but it should not pass in silence.
+            tracing::debug!("Name only, metadata unavailable: {path:?}: {error}");
+            None
+        }
+    };
+    if let Some(content) = body {
         let query_lower = query.to_lowercase();
         for (idx, line) in content.lines().enumerate() {
             if line.to_lowercase().contains(&query_lower) {
