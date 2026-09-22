@@ -36,7 +36,7 @@ unicode-segmentation = "1"
 # `org.freedesktop.portal.GlobalShortcuts`. Pinned to the same version and
 # feature set gpui already depends on, so the app links one zbus/async-io stack
 # and no tokio enters the tree (ADR 0004).
-ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
+ashpd = { version = "0.12", default-features = false, features = ["async-std"] }
 async-channel = "2"
 futures-util = { version = "0.3", default-features = false }
 
