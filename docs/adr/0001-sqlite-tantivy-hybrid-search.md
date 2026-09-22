@@ -30,9 +30,9 @@
 
 - **V1 (現状)**: ripgrep オンデマンド検索
 - ~~**V2 (P3)**: SQLite FTS5~~
-- **V3 (P4)**: SQLite + Tantivy 統合
+- ~~**V3 (P4)**: SQLite + Tantivy 統合~~
 
-> 取り消し線の 2 箇所は [ADR 0009](./0009-drop-fts5-ngram-in-tantivy.md) が廃した。SQLite に FTS5 全文検索は持たせず、V2 は Tantivy に ngram フィールドを足す段に置き換わっている。ハイブリッド採用と Spotlight 一本化の棄却という本 ADR の判断自体は有効である。
+> 取り消し線の 3 箇所は [ADR 0009](./0009-drop-fts5-ngram-in-tantivy.md) が置き換えた。SQLite に FTS5 全文検索は持たせず、V2 は Tantivy に ngram フィールドを足す段、V3 は code-aware (identifier 分解・plugin への WIT 公開) の段となる。Tantivy 統合自体が V3 待ちだったのは、当時まだ実装が無かったためで、現在は home スコープについて出荷済みである。ハイブリッド採用と Spotlight 一本化の棄却という本 ADR の判断自体は有効である。
 
 詳細は [`docs/search.md`](../search.md) 参照。
 
