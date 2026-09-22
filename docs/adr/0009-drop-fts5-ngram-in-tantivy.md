@@ -41,7 +41,11 @@ plain TEXT field, substring 'er_fil' -> 0 hit(s)
 
 文字列 `"explorer_file_ops.rs"` (ファイル名を模した 1 語のトークン) を両フィールドに投入し、トークン境界をまたぐ部分文字列 `er_fil` を照会した結果である。`NgramTokenizer::all_ngrams(3, 3)` を `index.tokenizers().register("tri", ...)` で登録したフィールドは一致し、既定の `TEXT` は一致しない。FTS5 の trigram と同一の手法がライブラリ側に用意されており、部分一致はトークナイザの選択の問題であって原理的制約ではない。
 
-実装上の要点として、ngram フィールドは `IndexRecordOption::WithFreqsAndPositions` を要する。クエリ文字列も同じトークナイザで 3-gram 列に分解され、`QueryParser` がそれをフレーズクエリとして扱うため、位置情報がないと `The field ... does not have positions indexed` で失敗する。gram の順序で部分文字列を再構成する点は FTS5 trigram と同じである。
+> **2026-09-22 訂正。** ここには当初「ngram フィールドは `IndexRecordOption::WithFreqsAndPositions` を要する。`QueryParser` がフレーズクエリとして扱うため、gram の順序で部分文字列が再構成される」と書いていたが、**後半は誤りだった**。実装 (#312) で実測したところ、`NgramTokenizer::all_ngrams` は 1 語の gram をすべて同じ位置に出力するため、フレーズクエリは「これらの gram をどこかに全部持っている」にしかならない。`*abcd*` が `abc---bcd.txt` に一致した。
+>
+> 正しくは、**ngram 索引は候補の絞り込みであり、一致の確定ではない**。実際に部分文字列を含むかは `STORED` のテキストに対して確認する必要がある。FTS5 の trigram と同じ構造であるという結論は変わらないが、同じなのは「gram の順序で再構成する」点ではなく「候補を絞ってから確認する」点である。
+>
+> 位置情報は隣接を保証しないので、フィールドは `WithFreqs` で索引する。詳細は [`docs/search.md`](../search.md) §5.1。
 
 加えて tantivy 0.26.1 は `RegexQuery` を備え、その doc がワイルドカード (`ho*se`) を regex へ変換して実現する旨を明示している。
 
@@ -72,7 +76,8 @@ SQLite の役割は検索から外し、**状態管理に専念させる**。
 
 ### Negative
 
-- ngram フィールドは索引が膨らむ。3-gram は位置情報を要するため posting list はさらに大きくなる。対象を `filename` / `path` に限定して緩和する。`content` への ngram 適用は行わない
+- ngram フィールドは索引が膨らむ。対象を `filename` / `path` に限定して緩和する。`content` への ngram 適用は行わない。実測では `crates/` に対し +5.1% (376,692 → 396,045 bytes)
+- ngram のヒットは候補にすぎず、`STORED` のテキストに対する確認が一件ごとに要る。ディスクは読まないが、検索経路に一段増える
 - SQLite 側に全文検索の退避経路がなくなるため、tantivy インデックスの破損時は再構築が必要となる (既存の `InitialIndexingJob` が空インデックスを検出して再構築する経路を持つ)
 - `search.backend` の選択肢から `sqlite-fts` を削除する。未実装の綴りであり、この設定を書いたファイルは存在し得ないが、書かれていた場合は警告付きで既定値 (`auto`) に落ちる
 
