@@ -351,7 +351,7 @@ jobs:
       # which cannot write coverage data.
       - name: Upload coverage to GitHub
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: actions/upload-code-coverage@d8e329117199404bba6fc81efe8093dc7c015e34 # v1
+        uses: actions/upload-code-coverage@bfa741d815a28cb064a8e3a0837e577457a017d5 # v1
         with:
           file: cobertura-core.xml
           language: Rust
@@ -412,7 +412,7 @@ jobs:
           echo "rate=${pct}" >> "$GITHUB_OUTPUT"
       - name: Upload coverage to GitHub
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: actions/upload-code-coverage@d8e329117199404bba6fc81efe8093dc7c015e34 # v1
+        uses: actions/upload-code-coverage@bfa741d815a28cb064a8e3a0837e577457a017d5 # v1
         with:
           file: cobertura-overall.xml
           language: Rust
